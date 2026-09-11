@@ -47,9 +47,7 @@ android {
                 "proguard-rules.pro"
             )
         }
-        debug {
-            signingConfig = signingConfigs.getByName("release")
-        }
+        // Debug builds use the standard local debug key.
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
