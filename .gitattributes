@@ -3,3 +3,14 @@
 termux-bridge/* text eol=lf
 *.py text eol=lf
 *.kt text eol=lf
+
+# Binary files
+*.jar binary
+*.apk binary
+*.aab binary
+*.so binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+

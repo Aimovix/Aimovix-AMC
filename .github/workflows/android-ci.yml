@@ -21,21 +21,25 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Gradle Cache
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+          build-root-directory: android
 
       - name: Grant Execute Permission for Gradlew
-        run: chmod +x android/gradlew
+        run: |
+          chmod +x android/gradlew || true
 
       - name: Run Unit Tests
+        working-directory: android
         run: |
-          cd android
-          ./gradlew testDebugUnitTest --no-daemon
+          ./gradlew testDebugUnitTest --no-daemon || gradle testDebugUnitTest --no-daemon
 
       - name: Assemble Debug APK
+        working-directory: android
         run: |
-          cd android
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon || gradle assembleDebug --no-daemon
 
       - name: Upload Test Reports
         if: always()
