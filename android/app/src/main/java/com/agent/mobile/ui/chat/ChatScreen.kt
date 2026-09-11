@@ -243,12 +243,31 @@ fun ChatScreen(
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = TextSecondary)
                             )
                         }
-                        TextButton(
-                            onClick = onNavigateSetup,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Text("Einrichten", color = AccentPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (connectionStatus is ConnectionStatus.Connecting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = AccentPrimary
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Verbindet...", fontSize = 12.sp, color = TextMuted)
+                            } else {
+                                TextButton(
+                                    onClick = { bridgeClient.reconnectIfDisconnected(force = true) },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text("Verbinden", color = AccentPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            TextButton(
+                                onClick = onNavigateSetup,
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text("Setup", color = TextMuted, fontSize = 12.sp)
+                            }
                         }
+
                     }
                 }
             }

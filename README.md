@@ -22,11 +22,28 @@ Installiere beide Apps über **F-Droid** (die Version aus dem Google Play Store 
 curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridge/setup.sh | bash
 ```
 
-Das Skript richtet die Umgebung automatisch ein:
-- Aktiviert `termux-wake-lock`, um das Beenden des Prozesses durch Android im Standby zu verhindern.
-- Installiert `python`, `termux-api`, `git`, `curl`, `jq` und `websockets`.
-- Richtet den WebSocket-Bridge-Dienst ein und startet ihn auf `ws://127.0.0.1:8765`.
-- Generiert einen sicheren Authentifizierungs-Token in `~/.termux_agent_token`.
+Das Skript richtet die Umgebung automatisch als echten, robusten Hintergrunddienst ein:
+- **CLI-Tool `amc`:** Installiert den Service-Manager direkt nach `$PREFIX/bin/amc`.
+- **Hintergrund-Daemon (`nohup` + `disown` + `setsid`):** Der Prozess läuft vollständig entkoppelt von der interaktiven Shell und ignoriert `SIGHUP` (läuft weiter, wenn Termux geschlossen oder minimiert wird).
+- **Vordergrund-Benachrichtigung:** Startet eine dauerhafte Android-Benachrichtigung (`termux-notification --ongoing`), die Android signalisiert, dass der Prozess aktiv ist.
+- **CPU-Wake-Lock:** Aktiviert `termux-wake-lock`, um Tiefschlaf des Prozessors zu unterbinden.
+- **Auto-Start:** Richtet automatischen Start für Termux:Boot (`~/.termux/boot/`) und die Shell (`~/.bashrc`) ein.
+- **Auto-Reconnect in AMC:** Die Android-App verbindet sich beim Öffnen (`onResume`) und im Hintergrund automatisch im Sekundentakt neu.
+
+#### Wichtiger Schritt für Android-Geräte (Akku-Optimierung)
+Damit Android Termux beim Wechseln der Apps nicht pausiert:
+1. Öffne die **Android-Einstellungen** deines Smartphones.
+2. Gehe zu **Apps -> Termux -> Akku / Akkunutzung**.
+3. Wähle **„Nicht optimiert“** bzw. **„Uneingeschränkt“** (*Unrestricted*).
+
+#### Termux Service-Befehle:
+```bash
+amc status     # Prüft Status, PID, Port 8765, Akku & Token
+amc logs       # Zeigt Live-Logs der Bridge
+amc restart    # Startet den Hintergrunddienst neu
+amc stop       # Beendet den Dienst
+```
+
 
 ---
 

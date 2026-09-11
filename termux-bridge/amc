@@ -1,0 +1,239 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ==============================================================================
+# AMC - AI Mobile Center CLI Service Manager for Termux
+# Usage: amc [start|stop|restart|status|logs|autostart]
+# ==============================================================================
+
+set -e
+
+DIR="$HOME/.termux_agent"
+PID_FILE="$DIR/daemon.pid"
+LOG_FILE="$DIR/daemon.log"
+TOKEN_FILE="$HOME/.termux_agent_token"
+DAEMON_SCRIPT="$DIR/bridge_daemon.py"
+
+mkdir -p "$DIR"
+
+is_running() {
+    if [ -f "$PID_FILE" ]; then
+        local pid
+        pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_token() {
+    if [ -f "$TOKEN_FILE" ]; then
+        cat "$TOKEN_FILE" 2>/dev/null | tr -d '\r\n'
+    else
+        echo ""
+    fi
+}
+
+cmd_start() {
+    if is_running; then
+        local pid
+        pid=$(cat "$PID_FILE")
+        echo "🟢 AMC Bridge läuft bereits im Hintergrund (PID: $pid)."
+        echo "   Auth-Token: $(get_token)"
+        return 0
+    fi
+
+    echo "🚀 Starte AMC Termux Bridge im Hintergrund..."
+
+    # 1. CPU-Wake-Lock aktivieren
+    if command -v termux-wake-lock &> /dev/null; then
+        termux-wake-lock 2>/dev/null || true
+        echo "🔋 Wake-Lock aktiviert."
+    fi
+
+    # 2. Daemon entkoppelt im Hintergrund starten (nohup + disown)
+    cd "$DIR"
+    nohup python -u "$DAEMON_SCRIPT" > "$LOG_FILE" 2>&1 &
+    local new_pid=$!
+    disown "$new_pid" 2>/dev/null || true
+
+    echo "$new_pid" > "$PID_FILE"
+
+    # 3. Kurz warten und Status prüfen
+    sleep 1.5
+
+    if is_running; then
+        local token
+        token=$(get_token)
+        echo "✅ AMC Bridge erfolgreich im Hintergrund gestartet (PID: $new_pid)!"
+        echo "📡 WebSocket: ws://127.0.0.1:8765"
+        if [ -n "$token" ]; then
+            echo "🔑 Auth-Token: $token"
+            if command -v termux-clipboard-set &> /dev/null; then
+                termux-clipboard-set "$token" 2>/dev/null || true
+                echo "📋 Token automatisch in Android-Zwischenablage kopiert!"
+            fi
+        fi
+        echo "📄 Logs: amc logs"
+    else
+        echo "❌ Fehler beim Starten des Bridge-Daemons. Letzte Zeilen des Logs:"
+        tail -n 15 "$LOG_FILE" 2>/dev/null || true
+        exit 1
+    fi
+}
+
+cmd_start_silent() {
+    if ! is_running; then
+        cmd_start > /dev/null 2>&1 || true
+    fi
+}
+
+cmd_stop() {
+    if ! is_running; then
+        echo "⚪ AMC Bridge ist nicht aktiv."
+        rm -f "$PID_FILE"
+        return 0
+    fi
+
+    local pid
+    pid=$(cat "$PID_FILE")
+    echo "🛑 Stoppe AMC Bridge (PID: $pid)..."
+
+    kill -TERM "$pid" 2>/dev/null || true
+
+    # Warte bis zu 4 Sekunden auf Beendigung
+    for i in {1..8}; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        sleep 0.5
+    done
+
+    # Notfalls hart beenden
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+
+    rm -f "$PID_FILE"
+
+    # Benachrichtigung entfernen
+    if command -v termux-notification-remove &> /dev/null; then
+        termux-notification-remove amc_bridge 2>/dev/null || true
+    fi
+
+    # Wake-Lock freigeben
+    if command -v termux-wake-unlock &> /dev/null; then
+        termux-wake-unlock 2>/dev/null || true
+    fi
+
+    echo "✅ AMC Bridge gestoppt."
+}
+
+cmd_restart() {
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+cmd_status() {
+    echo "=================================================="
+    echo " AMC - AI Mobile Center Service Status"
+    echo "=================================================="
+    if is_running; then
+        local pid
+        pid=$(cat "$PID_FILE")
+        echo "Status:       🟢 AKTIV (Hintergrund)"
+        echo "PID:          $pid"
+        echo "Port:         8765"
+        echo "Auth-Token:   $(get_token)"
+        
+        # Prüfe Socket
+        if python -c "import socket; s = socket.socket(); s.settimeout(1); s.connect(('127.0.0.1', 8765)); s.close()" 2>/dev/null; then
+            echo "Port-Status:  ✅ 127.0.0.1:8765 erreichbar & lauscht"
+        else
+            echo "Port-Status:  ⚠️ Port antwortet noch nicht"
+        fi
+
+        # Akku-Info falls termux-api vorhanden
+        if command -v termux-battery-status &> /dev/null; then
+            local batt
+            batt=$(termux-battery-status 2>/dev/null || echo "")
+            if [ -n "$batt" ]; then
+                local pct
+                pct=$(echo "$batt" | grep -o '"percentage": [0-9]*' | awk '{print $2}' || echo "?")
+                echo "Akku:         ${pct}%"
+            fi
+        fi
+    else
+        echo "Status:       ⚪ INAKTIV"
+        echo "Tipp:         'amc start' zum Starten im Hintergrund eingeben"
+    fi
+    echo "=================================================="
+}
+
+cmd_logs() {
+    if [ ! -f "$LOG_FILE" ]; then
+        echo "Noch keine Log-Datei vorhanden ($LOG_FILE)."
+        exit 0
+    fi
+    echo "📄 Zeige AMC Bridge Logs (Strg+C zum Beenden)..."
+    tail -n 30 -f "$LOG_FILE"
+}
+
+cmd_autostart() {
+    # 1. Termux:Boot Verzeichnis
+    BOOT_DIR="$HOME/.termux/boot"
+    mkdir -p "$BOOT_DIR"
+    cat << 'BOOT_EOF' > "$BOOT_DIR/amc_autostart.sh"
+#!/data/data/com.termux/files/usr/bin/bash
+amc start-silent
+BOOT_EOF
+    chmod +x "$BOOT_DIR/amc_autostart.sh"
+
+    # 2. .bashrc Autostart
+    BASHRC="$HOME/.bashrc"
+    if ! grep -q "amc start-silent" "$BASHRC" 2>/dev/null; then
+        echo "" >> "$BASHRC"
+        echo "# AMC Bridge Auto-Start" >> "$BASHRC"
+        echo "command -v amc >/dev/null && amc start-silent" >> "$BASHRC"
+    fi
+
+    echo "✅ Autostart eingerichtet:"
+    echo "   1. Bei Gerätestart (Termux:Boot): ~/.termux/boot/amc_autostart.sh"
+    echo "   2. Beim Öffnen von Termux:        ~/.bashrc"
+}
+
+case "$1" in
+    start)
+        cmd_start
+        ;;
+    start-silent)
+        cmd_start_silent
+        ;;
+    stop)
+        cmd_stop
+        ;;
+    restart)
+        cmd_restart
+        ;;
+    status)
+        cmd_status
+        ;;
+    logs)
+        cmd_logs
+        ;;
+    autostart)
+        cmd_autostart
+        ;;
+    *)
+        echo "Verwendung: amc {start|stop|restart|status|logs|autostart}"
+        echo ""
+        echo "Befehle:"
+        echo "  amc start       Startet die Bridge im Hintergrund (Wake-Lock + Notification)"
+        echo "  amc stop        Beendet die Bridge"
+        echo "  amc restart     Startet die Bridge neu"
+        echo "  amc status      Zeigt PID, Token und Verbindungsstatus an"
+        echo "  amc logs        Zeigt Live-Logs der Bridge an"
+        echo "  amc autostart   Richtet automatischen Start bei Boot & Shell-Start ein"
+        exit 1
+        ;;
+esac

@@ -32,8 +32,10 @@ except ImportError:
             sys.exit(1)
 
 PORT = int(os.environ.get("BRIDGE_PORT", 8765))
-HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
+HOST = os.environ.get("BRIDGE_HOST", "0.0.0.0")
 TOKEN_FILE = Path.home() / ".termux_agent_token"
+AGENT_DIR = Path.home() / ".termux_agent"
+PID_FILE = AGENT_DIR / "daemon.pid"
 DEFAULT_CWD = os.environ.get("HOME", os.path.expanduser("~"))
 
 current_process = None
@@ -50,6 +52,40 @@ if os.path.exists(TERMUX_BIN):
     current_path = ENV.get("PATH", "")
     if TERMUX_BIN not in current_path:
         ENV["PATH"] = f"{TERMUX_BIN}:{TERMUX_APPLETS}:{current_path}"
+
+def ensure_wake_lock():
+    """Ensure Termux CPU wake lock is held to prevent Android deep sleep."""
+    wake_lock = shutil.which("termux-wake-lock", path=ENV.get("PATH"))
+    if wake_lock:
+        try:
+            subprocess.run([wake_lock], env=ENV, timeout=3, capture_output=True)
+        except Exception:
+            pass
+
+def update_termux_notification(status_text="Bridge aktiv • Port 8765"):
+    """Post or update an ongoing notification via termux-api to prevent background freeze."""
+    termux_notif = shutil.which("termux-notification", path=ENV.get("PATH"))
+    if termux_notif:
+        try:
+            subprocess.run([
+                termux_notif,
+                "--id", "amc_bridge",
+                "--title", "AMC Termux Bridge (Aktiv)",
+                "--content", status_text,
+                "--ongoing",
+                "--priority", "high"
+            ], env=ENV, timeout=3, capture_output=True)
+        except Exception:
+            pass
+
+def remove_termux_notification():
+    """Remove the ongoing Termux notification on shutdown."""
+    termux_notif_rm = shutil.which("termux-notification-remove", path=ENV.get("PATH"))
+    if termux_notif_rm:
+        try:
+            subprocess.run([termux_notif_rm, "amc_bridge"], env=ENV, timeout=3, capture_output=True)
+        except Exception:
+            pass
 
 def load_or_generate_token() -> str:
     """Load existing auth token or create a secure random token."""
@@ -72,6 +108,7 @@ def load_or_generate_token() -> str:
     return token
 
 AUTH_TOKEN = load_or_generate_token()
+
 
 def get_system_info() -> dict:
     """Collect system, memory, storage, and battery status via termux-api or standard Linux tools."""
@@ -361,10 +398,43 @@ async def handle_connection(websocket):
     except Exception as e:
         print(f"[ERROR] WebSocket handler error: {e}", file=sys.stderr)
 
+async def background_watchdog():
+    """Background task running alongside the websocket server to keep Termux alive."""
+    while True:
+        try:
+            ensure_wake_lock()
+            # Update notification with current battery status if available
+            info = get_system_info()
+            batt = info.get("battery", {})
+            pct = batt.get("percentage")
+            status_text = f"Port {PORT} • Akku: {pct}%" if pct is not None else f"Port {PORT} • Hintergrund aktiv"
+            update_termux_notification(status_text)
+        except Exception:
+            pass
+        await asyncio.sleep(45)
+
 async def main():
+    # Ignore SIGHUP so closing the Termux terminal session does not terminate the daemon
+    if hasattr(signal, "SIGHUP"):
+        try:
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        except Exception:
+            pass
+
+    # Ensure agent directory exists and write PID
+    AGENT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        PID_FILE.write_text(str(os.getpid()))
+    except Exception as e:
+        print(f"[WARN] Konnte PID-Datei nicht schreiben: {e}", file=sys.stderr)
+
+    ensure_wake_lock()
+    update_termux_notification("AMC Bridge gestartet • Port " + str(PORT))
+
     print(f"==================================================")
     print(f" AMC - AI Mobile Center Bridge Daemon")
     print(f" Listening on ws://{HOST}:{PORT}")
+    print(f" PID: {os.getpid()}")
     if AUTH_TOKEN:
         print(f" Auth Token: {AUTH_TOKEN}")
         print(f" Token File: {TOKEN_FILE}")
@@ -379,18 +449,42 @@ async def main():
         print(f" Auth Token: DEAKTIVIERT (Offener lokaler Modus)")
     print(f"==================================================")
 
-    async with websockets.serve(
-        handle_connection,
-        HOST,
-        PORT,
-        max_size=10 * 1024 * 1024,
-        ping_interval=20,
-        ping_timeout=20
-    ):
-        await asyncio.Future()  # run forever
+    # Start background keep-alive watchdog
+    watchdog_task = asyncio.create_task(background_watchdog())
+
+    try:
+        async with websockets.serve(
+            handle_connection,
+            HOST,
+            PORT,
+            max_size=10 * 1024 * 1024,
+            ping_interval=10,
+            ping_timeout=10
+        ):
+            await asyncio.Future()  # run forever
+    finally:
+        watchdog_task.cancel()
+        remove_termux_notification()
+        if PID_FILE.exists():
+            try:
+                PID_FILE.unlink()
+            except Exception:
+                pass
+
+def cleanup_and_exit(signum, frame):
+    remove_termux_notification()
+    if PID_FILE.exists():
+        try:
+            PID_FILE.unlink()
+        except Exception:
+            pass
+    sys.exit(0)
 
 if __name__ == "__main__":
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, cleanup_and_exit)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n[INFO] Daemon stopped by user.")
+        cleanup_and_exit(None, None)
+

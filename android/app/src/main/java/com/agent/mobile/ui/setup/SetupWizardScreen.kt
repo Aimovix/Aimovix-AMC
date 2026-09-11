@@ -227,9 +227,60 @@ fun SetupWizardScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Step 3: Auth Token
+            // Step 3: Android Battery Optimization (Critical for background persistence)
             Text(
-                "Schritt 3: Sicherheits-Token (Optional)",
+                "Schritt 3: Wichtig – Termux Akku-Optimierung deaktivieren",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Android pausiert oder friert Hintergrund-Apps beim Wechseln ein, wenn die Akku-Optimierung aktiv ist. Um dauerhafte Verbindung zu sichern:",
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = DarkCard,
+                border = BorderStroke(1.dp, BorderSubtle)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "1. Öffne die Termux App-Info (Button unten)\n2. Tippe auf 'Akku' oder 'Akkunutzung'\n3. Wähle 'Uneingeschränkt' / 'Nicht optimiert'",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextWhite, fontSize = 12.sp, lineHeight = 18.sp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedButton(
+                onClick = {
+                    try {
+                        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.parse("package:com.termux")
+                        }
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Öffne Android-Einstellungen -> Apps -> Termux -> Akku", Toast.LENGTH_LONG).show()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, BorderSubtle),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
+            ) {
+                Icon(Icons.Default.BatteryChargingFull, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentPrimary)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Termux App-Info öffnen (Akku)", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Step 4: Auth Token
+            Text(
+                "Schritt 4: Sicherheits-Token (Optional)",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
             )
             Spacer(modifier = Modifier.height(6.dp))
@@ -288,7 +339,31 @@ fun SetupWizardScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Jetzt verbinden", fontWeight = FontWeight.Bold)
             }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Step 5: Termux Commands Cheatsheet
+            Text(
+                "Termux CLI-Befehle (`amc`)",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = TerminalBg,
+                border = BorderStroke(1.dp, BorderSubtle)
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("amc start    -> Startet Bridge im Hintergrund", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc status   -> Prüft PID, Port 8765 & Akku", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc restart  -> Startet den Dienst neu", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc logs     -> Zeigt Live-Ausgaben des Daemons", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc stop     -> Beendet den Hintergrunddienst", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                }
+            }
         }
     }
 }
+
 

@@ -1,5 +1,6 @@
 package com.agent.mobile.data.network
 
+import android.util.Log
 import com.agent.mobile.data.model.ConnectionStatus
 import com.agent.mobile.data.model.TermuxSystemInfo
 import com.agent.mobile.data.model.ToolResult
@@ -19,9 +20,16 @@ class TermuxBridgeClient(
     private val port: Int = 8765,
     private var token: String = ""
 ) {
+    companion object {
+        private const val TAG = "TermuxBridgeClient"
+        private const val RECONNECT_DELAY_MS = 2500L
+    }
+
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(10, TimeUnit.SECONDS)
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .pingInterval(5, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 
     private var webSocket: WebSocket? = null
@@ -37,29 +45,67 @@ class TermuxBridgeClient(
     private val pendingExecutions = ConcurrentHashMap<String, CompletableDeferred<ToolResult>>()
     private val executionOutputs = ConcurrentHashMap<String, StringBuilder>()
 
+    // Auto-reconnect worker state
+    private var isAutoReconnectEnabled = true
+    private var reconnectJob: Job? = null
+    private var isManualDisconnect = false
+
     fun setToken(newToken: String) {
         this.token = newToken
+        if (_connectionStatus.value !is ConnectionStatus.Connected) {
+            connect(newToken)
+        }
     }
 
     fun connect(authToken: String = token) {
         this.token = authToken
+        this.isManualDisconnect = false
+        this.isAutoReconnectEnabled = true
+
         if (_connectionStatus.value is ConnectionStatus.Connected) {
             return
         }
 
-        // Close any hanging previous socket
+        // Cancel existing reconnect job to avoid racing
+        reconnectJob?.cancel()
+
+        scope.launch {
+            doConnect(authToken)
+        }
+    }
+
+    fun reconnectIfDisconnected(force: Boolean = false) {
+        val current = _connectionStatus.value
+        if (current is ConnectionStatus.Connected) return
+        if (current is ConnectionStatus.Connecting && !force) return
+
+        this.isManualDisconnect = false
+        this.isAutoReconnectEnabled = true
+        reconnectJob?.cancel()
+
+        scope.launch {
+            doConnect(token)
+        }
+    }
+
+    private fun doConnect(authToken: String) {
+        // Clean up previous socket
         try {
             webSocket?.cancel()
         } catch (e: Exception) {
             // ignore
         }
+        webSocket = null
 
         _connectionStatus.value = ConnectionStatus.Connecting
+
+        // Try primary IP (127.0.0.1)
         val url = "ws://$host:$port"
         val request = Request.Builder().url(url).build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
+                Log.d(TAG, "WebSocket Verbindung geöffnet zu $url")
                 // Send auth handshake immediately
                 val authMsg = JSONObject().apply {
                     put("action", "auth")
@@ -73,15 +119,32 @@ class TermuxBridgeClient(
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                Log.w(TAG, "WebSocket geschlossen ($code): $reason")
                 failAllPendingExecutions("Verbindung zu Termux wurde geschlossen ($reason)")
                 _connectionStatus.value = ConnectionStatus.Disconnected
+                scheduleReconnect()
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                Log.w(TAG, "WebSocket Fehler: ${t.message}")
                 failAllPendingExecutions("Verbindungsfehler: ${t.localizedMessage}")
                 _connectionStatus.value = ConnectionStatus.Error(t.localizedMessage ?: "Verbindungsfehler zu Termux")
+                scheduleReconnect()
             }
         })
+    }
+
+    private fun scheduleReconnect() {
+        if (!isAutoReconnectEnabled || isManualDisconnect) return
+
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(RECONNECT_DELAY_MS)
+            if (isAutoReconnectEnabled && !isManualDisconnect && _connectionStatus.value !is ConnectionStatus.Connected) {
+                Log.d(TAG, "Auto-Reconnect Versuch zu Termux...")
+                doConnect(token)
+            }
+        }
     }
 
     private fun failAllPendingExecutions(reason: String) {
@@ -118,10 +181,15 @@ class TermuxBridgeClient(
                         hasLlama = sysJson?.optBoolean("has_llama", false) ?: false
                     )
                     _connectionStatus.value = ConnectionStatus.Connected(info)
+                    // Once connected, cancel any scheduled reconnects
+                    reconnectJob?.cancel()
+                    Log.i(TAG, "✅ Termux Bridge erfolgreich authentifiziert und verbunden.")
                 }
                 "auth_fail" -> {
-                    val error = json.optString("error", "Authentifizierung fehlgeschlagen")
+                    val error = json.optString("error", "Authentifizierung fehlgeschlagen: Token ungültig")
                     _connectionStatus.value = ConnectionStatus.AuthFailed(error)
+                    // Do NOT auto-reconnect continuously on bad auth token until token changes
+                    reconnectJob?.cancel()
                 }
                 "stdout", "stderr" -> {
                     val execId = json.optString("execution_id")
@@ -171,7 +239,7 @@ class TermuxBridgeClient(
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Fehler beim Parsen der WebSocket-Nachricht: ${e.message}", e)
         }
     }
 
@@ -208,7 +276,7 @@ class TermuxBridgeClient(
             return@withContext ToolResult(
                 toolCallId = execId,
                 command = command,
-                stderr = "Keine aktive Verbindung zu Termux (ws://127.0.0.1:8765). Bitte zuerst in Termux starten.",
+                stderr = "Keine aktive Verbindung zu Termux (ws://$host:$port). Bitte 'amc start' in Termux ausführen.",
                 exitCode = -1,
                 isError = true
             )
@@ -257,6 +325,9 @@ class TermuxBridgeClient(
     }
 
     fun disconnect() {
+        isManualDisconnect = true
+        isAutoReconnectEnabled = false
+        reconnectJob?.cancel()
         failAllPendingExecutions("Client getrennt")
         webSocket?.close(1000, "App closed")
         webSocket = null

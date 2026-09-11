@@ -159,8 +159,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        bridgeClient.reconnectIfDisconnected()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Automatically reconnect the moment the user switches back from Termux to AMC
+        bridgeClient.reconnectIfDisconnected()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         bridgeClient.disconnect()
     }
 }
+
