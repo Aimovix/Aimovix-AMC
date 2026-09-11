@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -26,12 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agent.mobile.data.model.ConnectionStatus
 import com.agent.mobile.data.network.TermuxBridgeClient
-import com.agent.mobile.ui.theme.DarkBackground
-import com.agent.mobile.ui.theme.DarkCard
-import com.agent.mobile.ui.theme.GreenPrimary
-import com.agent.mobile.ui.theme.RedEmergency
-import com.agent.mobile.ui.theme.TerminalBg
-import com.agent.mobile.ui.theme.YellowWarning
+import com.agent.mobile.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,19 +42,24 @@ fun SetupWizardScreen(
     var inputToken by remember { mutableStateOf(savedToken) }
     val scrollState = rememberScrollState()
 
-    // Standalone self-extracting one-click bash setup script
-    val oneClickCommand = """
-pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip install websockets && curl -sL https://raw.githubusercontent.com/agent/mobile/main/termux-bridge/bridge_daemon.py -o ~/.termux_bridge.py 2>/dev/null || true; python -c "import urllib.request; urllib.request.urlretrieve('https://raw.githubusercontent.com/agent/mobile/main/termux-bridge/bridge_daemon.py', 'bridge.py')" 2>/dev/null || true; python ~/.termux_bridge.py
-    """.trimIndent()
-
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = DarkBackground,
         topBar = {
-            TopAppBar(
-                title = { Text("Termux Einrichtung", fontSize = 18.sp, fontWeight = FontWeight.Bold) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
-            )
+            Column {
+                TopAppBar(
+                    title = {
+                        Text(
+                            "Termux Einrichtung",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextWhite
+                        )
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
+                )
+                HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
+            }
         }
     ) { paddingValues ->
         Column(
@@ -69,10 +70,11 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                 .padding(16.dp)
         ) {
             // Live Connection Status Card
-            Card(
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = DarkCard),
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(10.dp),
+                color = DarkCard,
+                border = BorderStroke(1.dp, BorderSubtle)
             ) {
                 Row(
                     modifier = Modifier
@@ -82,33 +84,45 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
-                        Text("Verbindungsstatus", style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            "VERBINDUNGSSTATUS",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = TextMuted,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                        )
                         Spacer(modifier = Modifier.height(4.dp))
                         when (val st = connectionStatus) {
                             is ConnectionStatus.Connected -> {
-                                Text("✅ Verbunden (Akku: ${st.info.batteryPercentage ?: "?"}%)", color = GreenPrimary, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Verbunden (Akku: ${st.info.batteryPercentage ?: "?"}%)",
+                                    color = StatusOnline,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
                             }
                             is ConnectionStatus.Connecting -> {
-                                Text("⏳ Verbinde mit Termux...", color = YellowWarning, fontWeight = FontWeight.Bold)
+                                Text("Verbinde mit Termux...", color = YellowWarning, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                             }
                             is ConnectionStatus.AuthFailed -> {
-                                Text("❌ Auth-Token ungültig", color = RedEmergency, fontWeight = FontWeight.Bold)
+                                Text("Auth-Token ungültig", color = RedEmergency, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                             }
                             is ConnectionStatus.Error -> {
-                                Text("⚠️ Fehler: ${st.message}", color = RedEmergency, fontSize = 12.sp)
+                                Text("Fehler: ${st.message}", color = RedEmergency, fontSize = 12.sp)
                             }
                             else -> {
-                                Text("⚪ Getrennt (ws://127.0.0.1:8765)", color = Color.Gray, fontWeight = FontWeight.Bold)
+                                Text("Getrennt (ws://127.0.0.1:8765)", color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                             }
                         }
                     }
 
                     Button(
                         onClick = { bridgeClient.connect(inputToken) },
-                        colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary, contentColor = Color.Black),
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = Color.Black),
                         shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text("Verbinden")
+                        Text("Verbinden", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -116,11 +130,14 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
             Spacer(modifier = Modifier.height(24.dp))
 
             // Step 1: Install Termux & Termux:API
-            Text("Schritt 1: Apps installieren", style = MaterialTheme.typography.titleLarge.copy(fontSize = 16.sp))
-            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "Schritt 1: Apps installieren",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = "Termux muss aus F-Droid installiert werden (die Version aus dem Google Play Store ist veraltet).",
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, color = Color.LightGray)
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
             Row(modifier = Modifier.fillMaxWidth()) {
@@ -130,9 +147,11 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                         context.startActivity(browserIntent)
                     },
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp)
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, BorderSubtle),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
                 ) {
-                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentPrimary)
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("1. Termux", fontSize = 12.sp)
                 }
@@ -145,9 +164,11 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                         context.startActivity(browserIntent)
                     },
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp)
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, BorderSubtle),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
                 ) {
-                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentPrimary)
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("2. Termux:API", fontSize = 12.sp)
                 }
@@ -156,27 +177,30 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
             Spacer(modifier = Modifier.height(24.dp))
 
             // Step 2: 1-Click Setup Command
-            Text("Schritt 2: 1-Klick Setup in Termux ausführen", style = MaterialTheme.typography.titleLarge.copy(fontSize = 16.sp))
-            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "Schritt 2: 1-Klick Setup in Termux ausführen",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = "Kopiere diesen Befehl, öffne Termux und füge ihn ein. Er installiert Python, die Termux:API-Tools und startet den Hintergrund-Bridge-Dienst automatisch:",
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, color = Color.LightGray)
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
 
             // Command Box
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(TerminalBg)
-                    .padding(12.dp)
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = TerminalBg,
+                border = BorderStroke(1.dp, BorderSubtle)
             ) {
                 Text(
                     text = "curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridge/setup.sh | bash",
-                    color = GreenPrimary,
+                    color = TerminalGreen,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(12.dp)
                 )
             }
 
@@ -193,7 +217,7 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                     Toast.makeText(context, "AMC-Befehl kopiert! Jetzt in Termux einfügen.", Toast.LENGTH_LONG).show()
                 },
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary, contentColor = Color.Black),
+                colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = Color.Black),
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -204,11 +228,14 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
             Spacer(modifier = Modifier.height(24.dp))
 
             // Step 3: Auth Token
-            Text("Schritt 3: Sicherheits-Token (Optional)", style = MaterialTheme.typography.titleLarge.copy(fontSize = 16.sp))
-            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "Schritt 3: Sicherheits-Token (Optional)",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = "Beim Start zeigt Termux deinen generierten Auth-Token an. Trage ihn hier ein, falls du die Bridge mit Token abgesichert hast:",
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, color = Color.LightGray)
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -222,6 +249,7 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                 label = { Text("Auth Token") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
+                shape = RoundedCornerShape(8.dp),
                 trailingIcon = {
                     IconButton(onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -232,14 +260,16 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                             Toast.makeText(context, "Token eingefügt!", Toast.LENGTH_SHORT).show()
                         }
                     }) {
-                        Icon(Icons.Default.ContentPaste, contentDescription = "Aus Zwischenablage einfügen", tint = GreenPrimary)
+                        Icon(Icons.Default.ContentPaste, contentDescription = "Aus Zwischenablage einfügen", tint = AccentPrimary)
                     }
                 },
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = GreenPrimary,
-                    unfocusedBorderColor = Color.Gray,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White
+                    focusedBorderColor = AccentPrimary,
+                    unfocusedBorderColor = BorderSubtle,
+                    focusedTextColor = TextWhite,
+                    unfocusedTextColor = TextWhite,
+                    focusedContainerColor = DarkSurface,
+                    unfocusedContainerColor = DarkSurface
                 )
             )
 
@@ -251,7 +281,7 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                     bridgeClient.connect(inputToken)
                 },
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary, contentColor = Color.Black),
+                colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = Color.Black),
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -261,3 +291,4 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
         }
     }
 }
+

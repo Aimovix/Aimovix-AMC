@@ -1,5 +1,6 @@
 package com.agent.mobile.ui.terminal
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -19,14 +20,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.agent.mobile.data.model.ConnectionStatus
 import com.agent.mobile.data.network.TermuxBridgeClient
-import com.agent.mobile.ui.theme.DarkBackground
-import com.agent.mobile.ui.theme.DarkCard
-import com.agent.mobile.ui.theme.GreenPrimary
-import com.agent.mobile.ui.theme.RedEmergency
-import com.agent.mobile.ui.theme.TerminalBg
-import com.agent.mobile.ui.theme.TerminalGreen
+import com.agent.mobile.ui.theme.*
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -35,7 +30,6 @@ fun TerminalScreen(
     bridgeClient: TermuxBridgeClient,
     modifier: Modifier = Modifier
 ) {
-    val connectionStatus by bridgeClient.connectionStatus.collectAsState()
     var terminalHistory by remember { mutableStateOf("Willkommen im AMC Terminal.\nVerbunden mit Termux localhost:8765\n$ ") }
     var inputCmd by remember { mutableStateOf("") }
     var isRunning by remember { mutableStateOf(false) }
@@ -52,26 +46,34 @@ fun TerminalScreen(
         modifier = modifier.fillMaxSize(),
         containerColor = DarkBackground,
         topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Terminal,
-                            contentDescription = null,
-                            tint = GreenPrimary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Termux Console", fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { terminalHistory = "$ " }) {
-                        Icon(Icons.Default.ClearAll, contentDescription = "Clear", tint = Color.Gray)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
-            )
+            Column {
+                TopAppBar(
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Terminal,
+                                contentDescription = null,
+                                tint = AccentPrimary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Termux Console",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TextWhite
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { terminalHistory = "$ " }) {
+                            Icon(Icons.Default.ClearAll, contentDescription = "Clear", tint = TextMuted)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
+                )
+                HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
+            }
         }
     ) { paddingValues ->
         Column(
@@ -107,7 +109,7 @@ fun TerminalScreen(
                     .fillMaxWidth()
                     .background(DarkCard)
                     .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 listOf("TAB", "ESC", "CTRL-C", "|", "/", "-", "_", "~", "$", "clear").forEach { key ->
@@ -123,20 +125,26 @@ fun TerminalScreen(
                                 else -> inputCmd += key
                             }
                         },
-                        shape = RoundedCornerShape(4.dp),
-                        color = if (key == "CTRL-C") RedEmergency.copy(alpha = 0.2f) else Color.DarkGray.copy(alpha = 0.5f)
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (key == "CTRL-C") RedEmergency.copy(alpha = 0.15f) else DarkCardElevated,
+                        border = BorderStroke(
+                            1.dp,
+                            if (key == "CTRL-C") RedEmergency.copy(alpha = 0.4f) else BorderSubtle
+                        )
                     ) {
                         Text(
                             text = key,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            color = if (key == "CTRL-C") RedEmergency else Color.White,
+                            color = if (key == "CTRL-C") RedEmergency else TextSecondary,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
             }
+
+            HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
 
             // Input Bar
             Surface(
@@ -151,7 +159,7 @@ fun TerminalScreen(
                 ) {
                     Text(
                         text = "$ ",
-                        color = GreenPrimary,
+                        color = AccentPrimary,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
@@ -160,7 +168,7 @@ fun TerminalScreen(
                     TextField(
                         value = inputCmd,
                         onValueChange = { inputCmd = it },
-                        placeholder = { Text("Befehl eingeben...", fontSize = 13.sp, color = Color.DarkGray) },
+                        placeholder = { Text("Befehl eingeben...", fontSize = 13.sp, color = TextMuted) },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         colors = TextFieldDefaults.colors(
@@ -168,8 +176,8 @@ fun TerminalScreen(
                             unfocusedContainerColor = Color.Transparent,
                             focusedIndicatorColor = Color.Transparent,
                             unfocusedIndicatorColor = Color.Transparent,
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White
+                            focusedTextColor = TextWhite,
+                            unfocusedTextColor = TextWhite
                         )
                     )
 
@@ -177,7 +185,7 @@ fun TerminalScreen(
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
                             strokeWidth = 2.dp,
-                            color = GreenPrimary
+                            color = AccentPrimary
                         )
                     } else {
                         IconButton(
@@ -207,7 +215,7 @@ fun TerminalScreen(
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardReturn,
                                 contentDescription = "Ausführen",
-                                tint = if (inputCmd.isNotBlank()) GreenPrimary else Color.DarkGray
+                                tint = if (inputCmd.isNotBlank()) AccentPrimary else TextMuted
                             )
                         }
                     }
@@ -216,3 +224,4 @@ fun TerminalScreen(
         }
     }
 }
+

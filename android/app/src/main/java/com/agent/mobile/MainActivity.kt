@@ -3,6 +3,7 @@ package com.agent.mobile
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -23,10 +24,8 @@ import com.agent.mobile.service.AgentForegroundService
 import com.agent.mobile.ui.chat.ChatScreen
 import com.agent.mobile.ui.settings.SettingsScreen
 import com.agent.mobile.ui.setup.SetupWizardScreen
-import com.agent.mobile.ui.theme.AutonomousAgentTheme
-import com.agent.mobile.ui.theme.DarkBackground
-import com.agent.mobile.ui.theme.DarkSurface
-import com.agent.mobile.ui.theme.GreenPrimary
+import com.agent.mobile.ui.theme.*
+
 
 class MainActivity : ComponentActivity() {
 
@@ -62,62 +61,65 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     containerColor = DarkBackground,
                     bottomBar = {
-                        NavigationBar(
-                            containerColor = DarkSurface,
-                            tonalElevation = 8.dp
-                        ) {
-                            NavigationBarItem(
-                                selected = selectedTab == 0,
-                                onClick = { selectedTab = 0 },
-                                icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Chat") },
-                                label = { Text("Chat", fontSize = 11.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = GreenPrimary,
-                                    selectedTextColor = GreenPrimary,
-                                    indicatorColor = GreenPrimary.copy(alpha = 0.15f),
-                                    unselectedIconColor = Color.Gray,
-                                    unselectedTextColor = Color.Gray
+                        Column {
+                            HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
+                            NavigationBar(
+                                containerColor = DarkSurface,
+                                tonalElevation = 0.dp
+                            ) {
+                                NavigationBarItem(
+                                    selected = selectedTab == 0,
+                                    onClick = { selectedTab = 0 },
+                                    icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Chat") },
+                                    label = { Text("Chat", fontSize = 11.sp, fontWeight = if (selectedTab == 0) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = AccentPrimary,
+                                        selectedTextColor = AccentPrimary,
+                                        indicatorColor = AccentPrimary.copy(alpha = 0.12f),
+                                        unselectedIconColor = TextMuted,
+                                        unselectedTextColor = TextMuted
+                                    )
                                 )
-                            )
-                            NavigationBarItem(
-                                selected = selectedTab == 1,
-                                onClick = { selectedTab = 1 },
-                                icon = { Icon(Icons.Default.Terminal, contentDescription = "Terminal") },
-                                label = { Text("Terminal", fontSize = 11.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = GreenPrimary,
-                                    selectedTextColor = GreenPrimary,
-                                    indicatorColor = GreenPrimary.copy(alpha = 0.15f),
-                                    unselectedIconColor = Color.Gray,
-                                    unselectedTextColor = Color.Gray
+                                NavigationBarItem(
+                                    selected = selectedTab == 1,
+                                    onClick = { selectedTab = 1 },
+                                    icon = { Icon(Icons.Default.Terminal, contentDescription = "Terminal") },
+                                    label = { Text("Terminal", fontSize = 11.sp, fontWeight = if (selectedTab == 1) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = AccentPrimary,
+                                        selectedTextColor = AccentPrimary,
+                                        indicatorColor = AccentPrimary.copy(alpha = 0.12f),
+                                        unselectedIconColor = TextMuted,
+                                        unselectedTextColor = TextMuted
+                                    )
                                 )
-                            )
-                            NavigationBarItem(
-                                selected = selectedTab == 2,
-                                onClick = { selectedTab = 2 },
-                                icon = { Icon(Icons.Default.Build, contentDescription = "Setup") },
-                                label = { Text("Setup", fontSize = 11.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = GreenPrimary,
-                                    selectedTextColor = GreenPrimary,
-                                    indicatorColor = GreenPrimary.copy(alpha = 0.15f),
-                                    unselectedIconColor = Color.Gray,
-                                    unselectedTextColor = Color.Gray
+                                NavigationBarItem(
+                                    selected = selectedTab == 2,
+                                    onClick = { selectedTab = 2 },
+                                    icon = { Icon(Icons.Default.Build, contentDescription = "Setup") },
+                                    label = { Text("Setup", fontSize = 11.sp, fontWeight = if (selectedTab == 2) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = AccentPrimary,
+                                        selectedTextColor = AccentPrimary,
+                                        indicatorColor = AccentPrimary.copy(alpha = 0.12f),
+                                        unselectedIconColor = TextMuted,
+                                        unselectedTextColor = TextMuted
+                                    )
                                 )
-                            )
-                            NavigationBarItem(
-                                selected = selectedTab == 3,
-                                onClick = { selectedTab = 3 },
-                                icon = { Icon(Icons.Default.Settings, contentDescription = "Einstellungen") },
-                                label = { Text("Einstellungen", fontSize = 11.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = GreenPrimary,
-                                    selectedTextColor = GreenPrimary,
-                                    indicatorColor = GreenPrimary.copy(alpha = 0.15f),
-                                    unselectedIconColor = Color.Gray,
-                                    unselectedTextColor = Color.Gray
+                                NavigationBarItem(
+                                    selected = selectedTab == 3,
+                                    onClick = { selectedTab = 3 },
+                                    icon = { Icon(Icons.Default.Settings, contentDescription = "Einstellungen") },
+                                    label = { Text("Einstellungen", fontSize = 11.sp, fontWeight = if (selectedTab == 3) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = AccentPrimary,
+                                        selectedTextColor = AccentPrimary,
+                                        indicatorColor = AccentPrimary.copy(alpha = 0.12f),
+                                        unselectedIconColor = TextMuted,
+                                        unselectedTextColor = TextMuted
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 ) { innerPadding ->

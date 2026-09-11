@@ -18,13 +18,84 @@ enum class ExecutionMode {
 }
 
 @Serializable
-enum class ProviderType(val displayName: String, val defaultBaseUrl: String, val defaultModel: String) {
-    LOCAL("Lokaler Server (llama.cpp/Ollama)", "http://127.0.0.1:8080/v1", "default"),
-    GEMINI("Google Gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-1.5-flash"),
-    OPENAI("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
-    CLAUDE("Anthropic Claude", "https://api.anthropic.com/v1", "claude-3-5-sonnet-20241022"),
-    GROQ("Groq (Ultra-Fast)", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
-    OPENROUTER("OpenRouter", "https://openrouter.ai/api/v1", "anthropic/claude-3.5-haiku")
+enum class ProviderType(
+    val displayName: String,
+    val defaultBaseUrl: String,
+    val defaultModel: String,
+    val suggestedModels: List<String> = emptyList()
+) {
+    GEMINI(
+        displayName = "Google Gemini",
+        defaultBaseUrl = "https://generativelanguage.googleapis.com/v1beta",
+        defaultModel = "gemini-2.0-flash",
+        suggestedModels = listOf(
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            "gemini-2.0-flash-lite-preview-02-05",
+            "gemini-2.0-pro-exp-02-05"
+        )
+    ),
+    OPENAI(
+        displayName = "OpenAI",
+        defaultBaseUrl = "https://api.openai.com/v1",
+        defaultModel = "gpt-4o-mini",
+        suggestedModels = listOf(
+            "gpt-4o-mini",
+            "gpt-4o",
+            "o3-mini",
+            "o1",
+            "gpt-4-turbo"
+        )
+    ),
+    CLAUDE(
+        displayName = "Anthropic Claude",
+        defaultBaseUrl = "https://api.anthropic.com/v1",
+        defaultModel = "claude-3-7-sonnet-20250219",
+        suggestedModels = listOf(
+            "claude-3-7-sonnet-20250219",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022",
+            "claude-3-opus-20240229"
+        )
+    ),
+    GROQ(
+        displayName = "Groq (Ultra-Fast)",
+        defaultBaseUrl = "https://api.groq.com/openai/v1",
+        defaultModel = "llama-3.3-70b-versatile",
+        suggestedModels = listOf(
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768",
+            "qwen-2.5-32b",
+            "deepseek-r1-distill-llama-70b"
+        )
+    ),
+    OPENROUTER(
+        displayName = "OpenRouter",
+        defaultBaseUrl = "https://openrouter.ai/api/v1",
+        defaultModel = "anthropic/claude-3.5-sonnet",
+        suggestedModels = listOf(
+            "anthropic/claude-3.5-sonnet",
+            "deepseek/deepseek-r1",
+            "openai/gpt-4o",
+            "google/gemini-2.0-flash-001",
+            "meta-llama/llama-3.3-70b-instruct",
+            "qwen/qwen-2.5-coder-32b-instruct"
+        )
+    ),
+    LOCAL(
+        displayName = "Lokaler Server (llama.cpp/Ollama)",
+        defaultBaseUrl = "http://127.0.0.1:8080/v1",
+        defaultModel = "default",
+        suggestedModels = listOf(
+            "default",
+            "qwen2.5:1.5b",
+            "qwen2.5:3b",
+            "llama3.2:3b",
+            "deepseek-r1:1.5b"
+        )
+    )
 }
 
 @Serializable

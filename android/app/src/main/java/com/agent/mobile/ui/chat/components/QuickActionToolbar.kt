@@ -1,5 +1,6 @@
 package com.agent.mobile.ui.chat.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -10,12 +11,10 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.agent.mobile.ui.theme.DarkCard
-import com.agent.mobile.ui.theme.GreenPrimary
+import com.agent.mobile.ui.theme.*
 
 data class QuickAction(
     val label: String,
@@ -69,26 +68,32 @@ fun QuickActionToolbar(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         actions.forEach { action ->
-            SuggestionChip(
+            Surface(
                 onClick = { onActionSelected(action.prompt) },
-                label = { Text(action.label, fontSize = 11.sp, color = Color.White) },
-                icon = {
+                shape = RoundedCornerShape(8.dp),
+                color = DarkCard,
+                border = BorderStroke(1.dp, BorderSubtle)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
                     Icon(
                         imageVector = action.icon,
                         contentDescription = null,
-                        tint = GreenPrimary,
-                        modifier = Modifier.size(14.dp)
+                        tint = AccentPrimary,
+                        modifier = Modifier.size(13.dp)
                     )
-                },
-                shape = RoundedCornerShape(16.dp),
-                colors = SuggestionChipDefaults.suggestionChipColors(
-                    containerColor = DarkCard
-                ),
-                border = SuggestionChipDefaults.suggestionChipBorder(
-                    enabled = true,
-                    borderColor = GreenPrimary.copy(alpha = 0.3f)
-                )
-            )
+                    Text(
+                        text = action.label,
+                        fontSize = 11.sp,
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
         }
     }
 }
+

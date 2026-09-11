@@ -1,13 +1,19 @@
 package com.agent.mobile.ui.chat.components
 
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Terminal
@@ -17,16 +23,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agent.mobile.data.model.MessageStatus
 import com.agent.mobile.data.model.ToolCall
 import com.agent.mobile.data.model.ToolResult
-import com.agent.mobile.ui.theme.GreenPrimary
-import com.agent.mobile.ui.theme.RedEmergency
-import com.agent.mobile.ui.theme.TerminalBg
-import com.agent.mobile.ui.theme.TerminalGreen
+import com.agent.mobile.ui.theme.*
 
 @Composable
 fun StreamingTerminalCard(
@@ -36,6 +41,7 @@ fun StreamingTerminalCard(
     status: MessageStatus,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var isExpanded by remember { mutableStateOf(true) }
     val command = toolCall.arguments["command"] ?: ""
     val displayText = when {
@@ -46,24 +52,25 @@ fun StreamingTerminalCard(
 
     val scrollState = rememberScrollState()
 
-    // Auto-scroll to bottom as output streams in
     LaunchedEffect(displayText) {
         if (isExpanded && displayText.isNotEmpty()) {
             scrollState.animateScrollTo(scrollState.maxValue)
         }
     }
 
-    Card(
+    Surface(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp)),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        color = TerminalBg,
+        border = BorderStroke(1.dp, BorderSubtle)
     ) {
         Column {
-            // Header bar
+            // macOS-style Header bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .background(TerminalBar)
                     .clickable { isExpanded = !isExpanded }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -73,18 +80,20 @@ fun StreamingTerminalCard(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Terminal,
-                        contentDescription = "Terminal",
-                        tint = GreenPrimary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    // Minimal window dots
+                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFFF5F56)))
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFFFBD2E)))
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF27C93F)))
+                    Spacer(modifier = Modifier.width(10.dp))
+
                     Text(
                         text = "$ $command",
                         style = MaterialTheme.typography.labelSmall.copy(
-                            color = Color.White,
-                            fontFamily = FontFamily.Monospace
+                            color = TextWhite,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Medium
                         ),
                         maxLines = 1
                     )
@@ -93,32 +102,50 @@ fun StreamingTerminalCard(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (status == MessageStatus.EXECUTING_TOOL) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = GreenPrimary
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp,
+                            color = AccentPrimary
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                     } else if (toolResult != null) {
                         Surface(
                             shape = RoundedCornerShape(4.dp),
-                            color = if (toolResult.exitCode == 0) GreenPrimary.copy(alpha = 0.2f) else RedEmergency.copy(alpha = 0.2f)
+                            color = if (toolResult.exitCode == 0) AccentPrimary.copy(alpha = 0.15f) else RedEmergency.copy(alpha = 0.15f)
                         ) {
                             Text(
-                                text = if (toolResult.exitCode == 0) "Exit 0" else "Exit ${toolResult.exitCode}",
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                text = if (toolResult.exitCode == 0) "0" else "${toolResult.exitCode}",
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
                                 fontSize = 10.sp,
-                                color = if (toolResult.exitCode == 0) GreenPrimary else RedEmergency,
-                                fontFamily = FontFamily.Monospace
+                                color = if (toolResult.exitCode == 0) AccentPrimary else RedEmergency,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
                             )
                         }
                         Spacer(modifier = Modifier.width(6.dp))
                     }
 
+                    // Copy output button
+                    IconButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Terminal Output", displayText))
+                            Toast.makeText(context, "Terminal-Ausgabe kopiert", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "Kopieren",
+                            tint = TextMuted,
+                            modifier = Modifier.size(13.dp)
+                        )
+                    }
+
                     Icon(
                         imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                         contentDescription = "Expand/Collapse",
-                        tint = Color.Gray,
-                        modifier = Modifier.size(20.dp)
+                        tint = TextMuted,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
@@ -128,15 +155,14 @@ fun StreamingTerminalCard(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 60.dp, max = 220.dp)
-                        .background(TerminalBg)
-                        .padding(8.dp)
+                        .heightIn(min = 40.dp, max = 240.dp)
+                        .padding(10.dp)
                 ) {
                     Text(
                         text = displayText,
-                        color = TerminalGreen,
+                        color = TerminalText,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
+                        fontSize = 11.5.sp,
                         lineHeight = 16.sp,
                         modifier = Modifier
                             .fillMaxWidth()

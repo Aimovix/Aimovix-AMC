@@ -1,5 +1,6 @@
 package com.agent.mobile.ui.chat.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,10 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agent.mobile.data.model.ToolCall
-import com.agent.mobile.ui.theme.GreenPrimary
-import com.agent.mobile.ui.theme.RedEmergency
-import com.agent.mobile.ui.theme.TerminalBg
-import com.agent.mobile.ui.theme.YellowWarning
+import com.agent.mobile.ui.theme.*
 
 @Composable
 fun ApprovalPromptCard(
@@ -31,18 +29,16 @@ fun ApprovalPromptCard(
     modifier: Modifier = Modifier
 ) {
     val command = toolCall.arguments["command"] ?: ""
+    val isHighRisk = toolCall.riskLevel == "HIGH"
+    val badgeColor = if (isHighRisk) RedEmergency else YellowWarning
 
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp)),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = DarkCardElevated,
+        border = BorderStroke(1.dp, if (isHighRisk) RedEmergency.copy(alpha = 0.5f) else BorderSubtle)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            val isHighRisk = toolCall.riskLevel == "HIGH"
-            val badgeColor = if (isHighRisk) RedEmergency else YellowWarning
-
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -53,27 +49,27 @@ fun ApprovalPromptCard(
                         imageVector = Icons.Default.Shield,
                         contentDescription = "Sicherheit",
                         tint = badgeColor,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (isHighRisk) "Sicherheits-Alarm" else "Freigabe erforderlich",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontSize = 16.sp,
+                        text = if (isHighRisk) "Sicherheits-Freigabe" else "Aktion bestätigen",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
-                            color = badgeColor
+                            color = TextWhite
                         )
                     )
                 }
 
                 Surface(
                     shape = RoundedCornerShape(4.dp),
-                    color = badgeColor.copy(alpha = 0.2f)
+                    color = badgeColor.copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = if (isHighRisk) "Kritisch" else "Stufe: ${toolCall.riskLevel}",
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                        fontSize = 11.sp,
+                        text = if (isHighRisk) "Kritisch" else "Prüfung nötig",
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = badgeColor
                     )
@@ -83,62 +79,63 @@ fun ApprovalPromptCard(
             if (toolCall.riskReason.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "⚠️ ${toolCall.riskReason}",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (isHighRisk) RedEmergency else YellowWarning
+                    text = toolCall.riskReason,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = badgeColor,
+                        fontWeight = FontWeight.Medium
                     )
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Der Agent möchte folgenden Befehl in Termux ausführen:",
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, color = Color.LightGray)
-            )
+            Spacer(modifier = Modifier.height(10.dp))
 
-            Spacer(modifier = Modifier.height(8.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(TerminalBg)
-                    .padding(10.dp)
+            // Command snippet box
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(6.dp),
+                color = TerminalBg,
+                border = BorderStroke(1.dp, BorderSubtle)
             ) {
                 Text(
                     text = command,
-                    color = GreenPrimary,
+                    color = TextWhite,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(10.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedButton(
                     onClick = onReject,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = RedEmergency),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                    border = BorderStroke(1.dp, BorderSubtle),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Icon(imageVector = Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Ablehnen")
+                    Icon(imageVector = Icons.Default.Close, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Ablehnen", fontSize = 12.sp)
                 }
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Button(
                     onClick = onApprove,
-                    colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary, contentColor = Color.Black),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isHighRisk) RedEmergency else AccentPrimary,
+                        contentColor = if (isHighRisk) Color.White else Color.Black
+                    ),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Ausführen", fontWeight = FontWeight.Bold)
+                    Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Ausführen", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
         }

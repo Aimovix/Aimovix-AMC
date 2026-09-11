@@ -30,17 +30,22 @@ Das Skript richtet die Umgebung automatisch ein:
 
 ---
 
-## 🧠 Unterstützte KI-Modelle
+## 🧠 Unterstützte KI-Modelle & Dynamische Modellauswahl
 
-Im Tab **Einstellungen** der AMC-App:
+Die App bietet im Tab **Einstellungen** sowie direkt in der Chat-Leiste eine dynamische Modellauswahl:
+- **Empfohlene Modelle:** Schnellwahl per Klick über horizontale Chips für jeden Provider.
+- **Freie Texteingabe:** Beliebige benutzerdefinierte Modellnamen können manuell eingetippt und gespeichert werden (z. B. Fine-tunes, Vorschau-Versionen oder OpenRouter-Slugs).
+- **Direkter Modell-Wechsel im Chat:** Über die Modell-Pille in der oberen App-Leiste kann das Modell oder der Provider jederzeit im laufenden Betrieb ohne Tab-Wechsel angepasst werden.
 
-| Provider | Modell-Beispiele | Beschreibung |
+| Provider | Modell-Beispiele (Vorschläge & Freitext) | Beschreibung |
 |---|---|---|
-| **Google Gemini** | `gemini-1.5-flash`, `gemini-1.5-pro` | Natives Function Calling, hohe Geschwindigkeit |
-| **OpenAI** | `gpt-4o`, `gpt-4o-mini` | Standard-Tools & Function Calling |
-| **Anthropic Claude** | `claude-3-5-sonnet-20241022` | ReAct-basierte Werkzeugaufrufe |
-| **Groq / OpenRouter** | Llama 3.3, Qwen 2.5, DeepSeek | Extrem schnelle Inferenz bzw. freie Modellauswahl |
-| **Lokaler llama-server** | Qwen 2.5 1.5B/3B GGUF | 100% offline auf dem Smartphone via `local_model_manager.sh` |
+| **Google Gemini** | `gemini-2.0-flash`, `gemini-1.5-flash`, `gemini-1.5-pro` | Natives Function Calling, hohe Geschwindigkeit |
+| **OpenAI** | `gpt-4o`, `gpt-4o-mini`, `o3-mini`, `o1` | Standard-Tools & Function Calling |
+| **Anthropic Claude** | `claude-3-7-sonnet`, `claude-3-5-sonnet-20241022`, `claude-3-5-haiku` | ReAct-basierte Werkzeugaufrufe |
+| **Groq** | `llama-3.3-70b-versatile`, `deepseek-r1-distill-llama-70b` | Extrem schnelle Inferenz |
+| **OpenRouter** | `anthropic/claude-3.5-sonnet`, `deepseek/deepseek-r1` | Zugriff auf Hunderte offene & proprietäre Modelle |
+| **Lokaler llama-server** | `qwen2.5-3b-instruct`, `llama-3.2-3b-instruct` | 100% offline auf dem Smartphone via `local_model_manager.sh` |
+
 
 ---
 
