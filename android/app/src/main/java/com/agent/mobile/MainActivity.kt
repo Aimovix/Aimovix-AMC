@@ -79,7 +79,16 @@ class MainActivity : ComponentActivity() {
                                     selected = selectedTab == 0,
                                     onClick = { selectedTab = 0 },
                                     icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Chat") },
-                                    label = { Text("Chat", fontSize = 11.sp, fontWeight = if (selectedTab == 0) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal) },
+                                    label = {
+                                        Text(
+                                            text = "Chat",
+                                            fontSize = 10.5.sp,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                            fontWeight = if (selectedTab == 0) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
+                                        )
+                                    },
                                     colors = NavigationBarItemDefaults.colors(
                                         selectedIconColor = AccentPrimary,
                                         selectedTextColor = AccentPrimary,
@@ -92,7 +101,16 @@ class MainActivity : ComponentActivity() {
                                     selected = selectedTab == 1,
                                     onClick = { selectedTab = 1 },
                                     icon = { Icon(Icons.Default.Terminal, contentDescription = "Terminal") },
-                                    label = { Text("Terminal", fontSize = 11.sp, fontWeight = if (selectedTab == 1) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal) },
+                                    label = {
+                                        Text(
+                                            text = "Terminal",
+                                            fontSize = 10.5.sp,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                            fontWeight = if (selectedTab == 1) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
+                                        )
+                                    },
                                     colors = NavigationBarItemDefaults.colors(
                                         selectedIconColor = AccentPrimary,
                                         selectedTextColor = AccentPrimary,
@@ -105,7 +123,16 @@ class MainActivity : ComponentActivity() {
                                     selected = selectedTab == 2,
                                     onClick = { selectedTab = 2 },
                                     icon = { Icon(Icons.Default.Build, contentDescription = "Setup") },
-                                    label = { Text("Setup", fontSize = 11.sp, fontWeight = if (selectedTab == 2) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal) },
+                                    label = {
+                                        Text(
+                                            text = "Setup",
+                                            fontSize = 10.5.sp,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                            fontWeight = if (selectedTab == 2) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
+                                        )
+                                    },
                                     colors = NavigationBarItemDefaults.colors(
                                         selectedIconColor = AccentPrimary,
                                         selectedTextColor = AccentPrimary,
@@ -117,8 +144,17 @@ class MainActivity : ComponentActivity() {
                                 NavigationBarItem(
                                     selected = selectedTab == 3,
                                     onClick = { selectedTab = 3 },
-                                    icon = { Icon(Icons.Default.Settings, contentDescription = "Einstellungen") },
-                                    label = { Text("Einstellungen", fontSize = 11.sp, fontWeight = if (selectedTab == 3) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal) },
+                                    icon = { Icon(Icons.Default.Settings, contentDescription = "Optionen") },
+                                    label = {
+                                        Text(
+                                            text = "Optionen",
+                                            fontSize = 10.sp,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                            fontWeight = if (selectedTab == 3) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
+                                        )
+                                    },
                                     colors = NavigationBarItemDefaults.colors(
                                         selectedIconColor = AccentPrimary,
                                         selectedTextColor = AccentPrimary,

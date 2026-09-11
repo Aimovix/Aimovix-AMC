@@ -50,7 +50,9 @@ fun SessionDrawerContent(
     ModalDrawerSheet(
         drawerContainerColor = DarkBackground,
         drawerContentColor = TextWhite,
-        modifier = Modifier.width(320.dp)
+        modifier = Modifier
+            .fillMaxWidth(0.82f)
+            .widthIn(max = 340.dp)
     ) {
         Column(
             modifier = Modifier
@@ -65,9 +67,10 @@ fun SessionDrawerContent(
             ) {
                 Text(
                     text = "Chat-Sitzungen",
-                    style = MaterialTheme.typography.titleLarge.copy(
+                    style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.Bold,
-                        color = TextWhite
+                        color = TextWhite,
+                        fontSize = 16.sp
                     )
                 )
                 IconButton(onClick = onCloseDrawer) {
@@ -266,14 +269,18 @@ fun SessionDrawerContent(
         val session = sessionToExport!!
         AlertDialog(
             onDismissRequest = { showExportDialog = false },
-            title = { Text("Chat exportieren", color = TextWhite) },
+            title = { Text("Chat exportieren", color = TextWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Wähle das Export-Format für '${session.title}':", color = TextSecondary, fontSize = 13.sp)
-                }
-            },
-            confirmButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Wähle das Export-Format für '${session.title}':",
+                        color = TextSecondary,
+                        fontSize = 12.5.sp
+                    )
+
                     Button(
                         onClick = {
                             coroutineScope.launch {
@@ -284,9 +291,11 @@ fun SessionDrawerContent(
                                 showExportDialog = false
                             }
                         },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = DarkBackground)
                     ) {
-                        Text("Markdown (.md)")
+                        Text("Markdown (.md)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
 
                     Button(
@@ -299,15 +308,18 @@ fun SessionDrawerContent(
                                 showExportDialog = false
                             }
                         },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = DarkCardElevated, contentColor = TextWhite)
                     ) {
-                        Text("JSON (.json)")
+                        Text("JSON (.json)", fontSize = 12.sp)
                     }
                 }
             },
+            confirmButton = {},
             dismissButton = {
                 TextButton(onClick = { showExportDialog = false }) {
-                    Text("Abbrechen", color = TextMuted)
+                    Text("Abbrechen", color = TextMuted, fontSize = 12.sp)
                 }
             },
             containerColor = DarkCard

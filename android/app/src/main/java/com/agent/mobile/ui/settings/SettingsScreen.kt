@@ -78,7 +78,7 @@ fun SettingsScreen(
                 title = {
                     Text(
                         text = "Einstellungen & Cockpit",
-                        fontSize = 18.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = TextWhite
                     )
@@ -376,6 +376,7 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
                             )
                         }
+                        Spacer(modifier = Modifier.width(8.dp))
                         Switch(
                             checked = showFallbackSection,
                             onCheckedChange = {
@@ -501,8 +502,9 @@ fun SettingsScreen(
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp),
+                    .heightIn(min = 48.dp),
                 shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = AccentPrimary,
                     contentColor = Color.Black
@@ -512,7 +514,7 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "Alle Einstellungen speichern",
-                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
                 )
             }
         }

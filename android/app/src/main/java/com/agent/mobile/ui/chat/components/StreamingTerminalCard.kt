@@ -93,9 +93,12 @@ fun StreamingTerminalCard(
                         style = MaterialTheme.typography.labelSmall.copy(
                             color = TextWhite,
                             fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 10.5.sp
                         ),
-                        maxLines = 1
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                 }
 
@@ -162,8 +165,8 @@ fun StreamingTerminalCard(
                         text = displayText,
                         color = TerminalText,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 11.5.sp,
-                        lineHeight = 16.sp,
+                        fontSize = 11.sp,
+                        lineHeight = 15.5.sp,
                         modifier = Modifier
                             .fillMaxWidth()
                             .verticalScroll(scrollState)

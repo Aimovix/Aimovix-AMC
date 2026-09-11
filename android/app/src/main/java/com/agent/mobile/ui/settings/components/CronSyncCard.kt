@@ -53,14 +53,22 @@ fun CronSyncCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Schedule, contentDescription = null, tint = AccentPrimary)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Schedule, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Hybrid-Scheduler & Cron-Sync",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
+                        text = "Scheduler & Cron",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite, fontSize = 14.sp),
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Button(
                     onClick = {
@@ -223,9 +231,17 @@ fun CronSyncCard(
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = DarkBackground)
                     ) {
-                        Text("Periodisch planen", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "Periodisch planen",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            softWrap = true,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
                     }
 
                     Button(
@@ -241,9 +257,16 @@ fun CronSyncCard(
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = DarkCardElevated, contentColor = TextWhite)
                     ) {
-                        Text("Sofort einreihen", fontSize = 11.sp)
+                        Text(
+                            text = "Sofort einreihen",
+                            fontSize = 11.sp,
+                            maxLines = 2,
+                            softWrap = true,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
                     }
                 }
             }

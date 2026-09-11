@@ -44,23 +44,31 @@ fun ApprovalPromptCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
                     Icon(
                         imageVector = Icons.Default.Shield,
                         contentDescription = "Sicherheit",
                         tint = badgeColor,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = if (isHighRisk) "Sicherheits-Freigabe" else "Aktion bestätigen",
                         style = MaterialTheme.typography.titleMedium.copy(
-                            fontSize = 14.sp,
+                            fontSize = 13.5.sp,
                             fontWeight = FontWeight.Bold,
                             color = TextWhite
-                        )
+                        ),
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Surface(
                     shape = RoundedCornerShape(4.dp),
@@ -69,7 +77,7 @@ fun ApprovalPromptCard(
                     Text(
                         text = if (isHighRisk) "Kritisch" else "Prüfung nötig",
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        fontSize = 10.sp,
+                        fontSize = 9.5.sp,
                         fontWeight = FontWeight.Bold,
                         color = badgeColor
                     )
@@ -116,11 +124,12 @@ fun ApprovalPromptCard(
                     onClick = onReject,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
                     border = BorderStroke(1.dp, BorderSubtle),
-                    shape = RoundedCornerShape(8.dp)
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                 ) {
-                    Icon(imageVector = Icons.Default.Close, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Icon(imageVector = Icons.Default.Close, contentDescription = null, modifier = Modifier.size(13.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Ablehnen", fontSize = 12.sp)
+                    Text("Ablehnen", fontSize = 11.5.sp)
                 }
 
                 Spacer(modifier = Modifier.width(8.dp))
@@ -131,11 +140,12 @@ fun ApprovalPromptCard(
                         containerColor = if (isHighRisk) RedEmergency else AccentPrimary,
                         contentColor = if (isHighRisk) Color.White else Color.Black
                     ),
-                    shape = RoundedCornerShape(8.dp)
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
-                    Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(13.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Ausführen", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text("Ausführen", fontWeight = FontWeight.Bold, fontSize = 11.5.sp)
                 }
             }
         }

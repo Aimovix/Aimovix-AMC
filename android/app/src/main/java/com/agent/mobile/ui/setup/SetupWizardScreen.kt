@@ -93,48 +93,53 @@ fun SetupWizardScreen(
                 color = DarkCard,
                 border = BorderStroke(1.dp, BorderSubtle)
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Column {
+                    Column(modifier = Modifier.fillMaxWidth()) {
                         Text(
                             "VERBINDUNGSSTATUS",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = TextMuted,
                                 fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.sp
+                                fontSize = 9.5.sp,
+                                letterSpacing = 0.8.sp
                             )
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(3.dp))
                         when (val st = connectionStatus) {
                             is ConnectionStatus.Connected -> {
                                 Text(
                                     "Verbunden (Akku: ${st.info.batteryPercentage ?: "?"}%)",
                                     color = StatusOnline,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
+                                    fontSize = 13.sp,
+                                    maxLines = 2,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                 )
                             }
                             is ConnectionStatus.Connecting -> {
-                                Text("Verbinde mit Termux...", color = YellowWarning, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text("Verbinde mit Termux...", color = YellowWarning, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                             }
                             is ConnectionStatus.AuthFailed -> {
-                                Text("Auth-Token ungültig", color = RedEmergency, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text("Auth-Token ungültig", color = RedEmergency, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                             }
                             is ConnectionStatus.Error -> {
-                                Text("Fehler: ${st.message}", color = RedEmergency, fontSize = 12.sp)
+                                Text("Fehler: ${st.message}", color = RedEmergency, fontSize = 11.5.sp, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                             }
                             else -> {
-                                Text("Getrennt (ws://127.0.0.1:8765)", color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text("Getrennt (ws://127.0.0.1:8765)", color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.5.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                             }
                         }
                     }
 
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         OutlinedButton(
                             onClick = {
                                 val launchIntent = context.packageManager.getLaunchIntentForPackage("com.termux")
@@ -142,19 +147,27 @@ fun SetupWizardScreen(
                                     context.startActivity(launchIntent)
                                 }
                             },
+                            modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                             border = BorderStroke(1.dp, BorderSubtle),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
                         ) {
-                            Text("Termux", fontSize = 13.sp)
+                            Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentPrimary)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Termux öffnen", fontSize = 11.5.sp, maxLines = 1)
                         }
 
                         Button(
                             onClick = { bridgeClient.connect(inputToken) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = Color.Black),
                             shape = RoundedCornerShape(8.dp)
                         ) {
-                            Text("Verbinden", fontWeight = FontWeight.Bold)
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Neu verbinden", fontWeight = FontWeight.Bold, fontSize = 11.5.sp, maxLines = 1)
                         }
                     }
                 }
@@ -173,7 +186,7 @@ fun SetupWizardScreen(
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
-            Row(modifier = Modifier.fillMaxWidth()) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = {
                         val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://f-droid.org/packages/com.termux/"))
@@ -181,15 +194,14 @@ fun SetupWizardScreen(
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                     border = BorderStroke(1.dp, BorderSubtle),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
                 ) {
-                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentPrimary)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("1. Termux", fontSize = 12.sp)
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(15.dp), tint = AccentPrimary)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("1. Termux", fontSize = 11.5.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
-
-                Spacer(modifier = Modifier.width(12.dp))
 
                 OutlinedButton(
                     onClick = {
@@ -198,12 +210,13 @@ fun SetupWizardScreen(
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                     border = BorderStroke(1.dp, BorderSubtle),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
                 ) {
-                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentPrimary)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("2. Termux:API", fontSize = 12.sp)
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(15.dp), tint = AccentPrimary)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("2. Termux:API", fontSize = 11.5.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
             }
 
@@ -374,11 +387,19 @@ fun SetupWizardScreen(
                 },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = Color.Black)
             ) {
-                Icon(Icons.Default.BatteryChargingFull, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Termux App-Info (Akku: Uneingeschränkt)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Icon(Icons.Default.BatteryChargingFull, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Akku-Optimierung für Termux deaktivieren",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    maxLines = 2,
+                    softWrap = true,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -398,12 +419,13 @@ fun SetupWizardScreen(
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
                     border = BorderStroke(1.dp, BorderSubtle),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
                 ) {
                     Icon(Icons.Default.Notifications, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Benachrichtigungen", fontSize = 11.sp)
+                    Text("Mitteilungen", fontSize = 11.sp, maxLines = 1)
                 }
 
                 OutlinedButton(
@@ -416,12 +438,13 @@ fun SetupWizardScreen(
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
                     border = BorderStroke(1.dp, BorderSubtle),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
                 ) {
                     Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Entwickleroptionen", fontSize = 11.sp)
+                    Text("Entwickler-Tools", fontSize = 11.sp, maxLines = 1)
                 }
             }
 

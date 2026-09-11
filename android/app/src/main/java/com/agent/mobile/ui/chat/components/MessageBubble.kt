@@ -40,12 +40,14 @@ fun MessageBubble(
                 horizontalArrangement = Arrangement.End
             ) {
                 Surface(
-                    modifier = Modifier.widthIn(max = 320.dp),
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .widthIn(min = 40.dp, max = 340.dp),
                     shape = RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
                     color = DarkCardElevated,
                     border = BorderStroke(1.dp, BorderSubtle)
                 ) {
-                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
                         if (message.imageBase64 != null) {
                             val bitmap = remember(message.imageBase64) {
                                 try {
@@ -64,7 +66,7 @@ fun MessageBubble(
                                         .heightIn(max = 200.dp)
                                         .clip(RoundedCornerShape(8.dp))
                                         .padding(bottom = 6.dp)
-                                )
+                                 )
                             }
                         }
                         if (message.text.isNotEmpty()) {
@@ -72,7 +74,8 @@ fun MessageBubble(
                                 text = message.text,
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     color = TextWhite,
-                                    lineHeight = 20.sp
+                                    fontSize = 13.5.sp,
+                                    lineHeight = 19.sp
                                 )
                             )
                         }
@@ -87,12 +90,14 @@ fun MessageBubble(
                 horizontalArrangement = Arrangement.Start
             ) {
                 Surface(
-                    modifier = Modifier.fillMaxWidth(0.95f),
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .widthIn(min = 48.dp, max = 560.dp),
                     shape = RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
                     color = DarkCard,
                     border = BorderStroke(1.dp, BorderSubtle)
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
+                    Column(modifier = Modifier.padding(12.dp)) {
                         // Subtle Agent header
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -102,14 +107,14 @@ fun MessageBubble(
                                 imageVector = Icons.Default.SmartToy,
                                 contentDescription = null,
                                 tint = AccentPrimary,
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier.size(13.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = "AMC Agent",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = TextMuted,
-                                    fontSize = 11.sp,
+                                    fontSize = 10.5.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
                             )
@@ -120,7 +125,8 @@ fun MessageBubble(
                                 text = message.text,
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     color = TextWhite,
-                                    lineHeight = 21.sp
+                                    fontSize = 13.5.sp,
+                                    lineHeight = 19.5.sp
                                 )
                             )
                         }
@@ -164,7 +170,7 @@ fun MessageBubble(
                     Text(
                         text = message.text,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp)
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.5.sp, lineHeight = 14.5.sp)
                     )
                 }
             }

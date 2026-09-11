@@ -10,6 +10,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -140,12 +141,13 @@ fun ChatScreen(
                                     Text(
                                         text = currentSession?.title?.take(18) ?: "AMC",
                                         style = MaterialTheme.typography.titleMedium.copy(
-                                            fontSize = 16.sp,
+                                            fontSize = 15.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = TextWhite
                                         ),
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
 
@@ -154,7 +156,8 @@ fun ChatScreen(
                                         onClick = { showModelPickerDialog = true },
                                         shape = RoundedCornerShape(6.dp),
                                         color = DarkCard,
-                                        border = BorderStroke(1.dp, BorderSubtle)
+                                        border = BorderStroke(1.dp, BorderSubtle),
+                                        modifier = Modifier.widthIn(max = 120.dp)
                                     ) {
                                         Row(
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -165,8 +168,11 @@ fun ChatScreen(
                                                 style = MaterialTheme.typography.labelSmall.copy(
                                                     color = TextSecondary,
                                                     fontFamily = FontFamily.Monospace,
-                                                    fontSize = 10.sp
-                                                )
+                                                    fontSize = 9.5.sp
+                                                ),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false)
                                             )
                                             Icon(
                                                 imageVector = Icons.Default.ArrowDropDown,
@@ -196,22 +202,18 @@ fun ChatScreen(
                                             .background(dotColor)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
+                                    val costSuffix = if (metrics.estimatedCostUsd > 0.0) {
+                                        " • \$${String.format(Locale.US, "%.4f", metrics.estimatedCostUsd)}"
+                                    } else ""
                                     Text(
-                                        text = "Termux • $statusLabel",
+                                        text = "Termux • $statusLabel$costSuffix",
                                         style = MaterialTheme.typography.labelSmall.copy(
-                                            fontSize = 10.sp,
+                                            fontSize = 9.5.sp,
                                             color = TextMuted
-                                        )
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
-                                    if (metrics.estimatedCostUsd > 0.0) {
-                                        Text(
-                                            text = " • \$${String.format(Locale.US, "%.4f", metrics.estimatedCostUsd)}",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 10.sp,
-                                                color = AccentPrimary
-                                            )
-                                        )
-                                    }
                                 }
                             }
                         },
@@ -324,12 +326,14 @@ fun ChatScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
                                     text = bannerText,
-                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = TextSecondary),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp, color = TextSecondary),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
                                 )
                             }
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                 if (connectionStatus is ConnectionStatus.Connecting) {
                                     CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = AccentPrimary)
                                 } else {
@@ -351,15 +355,15 @@ fun ChatScreen(
                                                 }
                                             }
                                         },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)
                                     ) {
-                                        Text("Boost", color = TerminalGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        Text("Boost", color = TerminalGreen, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                                     }
                                     TextButton(
                                         onClick = { bridgeClient.reconnectIfDisconnected(force = true) },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)
                                     ) {
-                                        Text("Verbinden", color = AccentPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        Text("Verbinden", color = AccentPrimary, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -559,10 +563,13 @@ fun ChatScreen(
                                 placeholder = {
                                     Text(
                                         if (pendingImageBitmap != null) "Frage zum Bild stellen..." else "Befehl oder Aufgabe eingeben...",
-                                        fontSize = 13.sp,
-                                        color = TextMuted
+                                        fontSize = 12.5.sp,
+                                        color = TextMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 },
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, color = TextWhite),
                                 modifier = Modifier.weight(1f),
                                 colors = TextFieldDefaults.colors(
                                     focusedContainerColor = Color.Transparent,
@@ -613,6 +620,7 @@ fun ChatScreen(
 
                             // Speech-to-Text Microphone
                             VoiceInputButton(
+                                modifier = Modifier.size(36.dp),
                                 onSpeechResult = { spokenText ->
                                     inputText = spokenText
                                 }
@@ -739,6 +747,7 @@ private fun QuickModelPickerDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
@@ -752,8 +761,12 @@ private fun QuickModelPickerDialog(
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = TextWhite
-                        )
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
                     IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
                         Icon(Icons.Default.Close, contentDescription = "Schließen", tint = TextMuted)
                     }

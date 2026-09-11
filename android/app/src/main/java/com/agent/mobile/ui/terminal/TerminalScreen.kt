@@ -59,9 +59,11 @@ fun TerminalScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 "Termux Console",
-                                fontSize = 16.sp,
+                                fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = TextWhite
+                                color = TextWhite,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                             )
                         }
                     },
@@ -95,8 +97,8 @@ fun TerminalScreen(
                     text = terminalHistory,
                     color = TerminalGreen,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                    lineHeight = 16.sp,
+                    fontSize = 11.5.sp,
+                    lineHeight = 15.5.sp,
                     modifier = Modifier
                         .fillMaxSize()
                         .verticalScroll(scrollState)
@@ -161,14 +163,15 @@ fun TerminalScreen(
                         text = "$ ",
                         color = AccentPrimary,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
 
                     TextField(
                         value = inputCmd,
                         onValueChange = { inputCmd = it },
-                        placeholder = { Text("Befehl eingeben...", fontSize = 13.sp, color = TextMuted) },
+                        placeholder = { Text("Befehl eingeben...", fontSize = 12.5.sp, color = TextMuted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.5.sp, color = TextWhite),
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         colors = TextFieldDefaults.colors(

@@ -50,22 +50,30 @@ fun SecurityCockpitCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Security, contentDescription = null, tint = AccentPrimary)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Security, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Sicherheits-Cockpit & Guardrails",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
+                        text = "Sicherheits-Cockpit",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite, fontSize = 14.sp),
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 TextButton(
                     onClick = { showAuditLogDialog = true },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                 ) {
-                    Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentPrimary)
+                    Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(15.dp), tint = AccentPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Audit-Log", color = AccentPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("Audit-Log", color = AccentPrimary, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -85,6 +93,7 @@ fun SecurityCockpitCard(
                         style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
                     )
                 }
+                Spacer(modifier = Modifier.width(8.dp))
                 Switch(
                     checked = isStrictMode,
                     onCheckedChange = {

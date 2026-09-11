@@ -92,9 +92,12 @@ fun ArtifactViewerDialog(
                             text = artifact.filename,
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = TextWhite
+                                color = TextWhite,
+                                fontSize = 14.sp
                             ),
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                     }
 
@@ -122,8 +125,10 @@ fun ArtifactViewerDialog(
                     style = MaterialTheme.typography.labelSmall.copy(
                         color = TextMuted,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp
+                        fontSize = 10.sp
                     ),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     modifier = Modifier.padding(vertical = 4.dp)
                 )
 
@@ -225,11 +230,11 @@ fun ArtifactViewerDialog(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = DarkBackground),
                             shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
                         ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("In Termux ausführen", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("In Termux ausführen", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                     }
@@ -239,9 +244,9 @@ fun ArtifactViewerDialog(
                         shape = RoundedCornerShape(8.dp),
                         border = BorderStroke(1.dp, BorderSubtle),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
                     ) {
-                        Text("Schließen", fontSize = 12.sp)
+                        Text("Schließen", fontSize = 11.5.sp)
                     }
                 }
             }
