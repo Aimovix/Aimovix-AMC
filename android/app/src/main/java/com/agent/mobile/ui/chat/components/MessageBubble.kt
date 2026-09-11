@@ -60,7 +60,7 @@ fun MessageBubble(
                             if (bitmap != null) {
                                 androidx.compose.foundation.Image(
                                     bitmap = bitmap,
-                                    contentDescription = "Angehängtes Bild",
+                                    contentDescription = "Attached image",
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .heightIn(max = 200.dp)

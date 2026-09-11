@@ -57,7 +57,7 @@ fun SecurityCockpitCard(
                     Icon(Icons.Default.Security, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Sicherheits-Cockpit",
+                        text = "Security controls",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite, fontSize = 14.sp),
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -85,11 +85,11 @@ fun SecurityCockpitCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Strikter Sicherheitsmodus",
+                        text = "Strict security mode",
                         style = MaterialTheme.typography.bodyMedium.copy(color = TextWhite, fontWeight = FontWeight.SemiBold)
                     )
                     Text(
-                        text = "Verlangt Bestätigung auch für Befehle mittleren Risikos (Dateimodifikation, Netzwerk)",
+                        text = "Require approval for every command, including diagnostics and allowlisted operations",
                         style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
                     )
                 }
@@ -113,7 +113,7 @@ fun SecurityCockpitCard(
             // Whitelist Section
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Benutzerdefinierte Whitelist (Automatisch freigegeben)",
+                    text = "Custom allowlist (recognized operations only)",
                     style = MaterialTheme.typography.labelSmall.copy(color = AccentPrimary, fontWeight = FontWeight.Bold)
                 )
 
@@ -121,7 +121,7 @@ fun SecurityCockpitCard(
                     OutlinedTextField(
                         value = newWhitelistPattern,
                         onValueChange = { newWhitelistPattern = it },
-                        placeholder = { Text("Regex z. B. ^ls\\b, ^echo\\b", fontSize = 12.sp, color = TextMuted) },
+                        placeholder = { Text("Full-match regex, e.g. ^curl https://example[.]com$", fontSize = 12.sp, color = TextMuted) },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         shape = RoundedCornerShape(8.dp),
@@ -164,7 +164,7 @@ fun SecurityCockpitCard(
                             trailingIcon = {
                                 Icon(
                                     Icons.Default.Close,
-                                    contentDescription = "Entfernen",
+                                    contentDescription = "Remove",
                                     modifier = Modifier
                                         .size(14.dp)
                                         .clickable {
@@ -189,7 +189,7 @@ fun SecurityCockpitCard(
             // Blacklist Section
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Benutzerdefinierte Blacklist (Hart blockiert)",
+                    text = "Custom blocklist (always blocked)",
                     style = MaterialTheme.typography.labelSmall.copy(color = RedEmergency, fontWeight = FontWeight.Bold)
                 )
 
@@ -197,7 +197,7 @@ fun SecurityCockpitCard(
                     OutlinedTextField(
                         value = newBlacklistPattern,
                         onValueChange = { newBlacklistPattern = it },
-                        placeholder = { Text("Regex z. B. ^ssh\\b, dropdb", fontSize = 12.sp, color = TextMuted) },
+                        placeholder = { Text("Regex, e.g. ^ssh\\b, dropdb", fontSize = 12.sp, color = TextMuted) },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         shape = RoundedCornerShape(8.dp),
@@ -240,7 +240,7 @@ fun SecurityCockpitCard(
                             trailingIcon = {
                                 Icon(
                                     Icons.Default.Close,
-                                    contentDescription = "Entfernen",
+                                    contentDescription = "Remove",
                                     modifier = Modifier
                                         .size(14.dp)
                                         .clickable {

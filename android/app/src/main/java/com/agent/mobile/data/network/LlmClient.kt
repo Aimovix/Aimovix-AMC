@@ -86,7 +86,7 @@ class LlmClient(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Exception during SSE streaming: ${e.message}", e)
-            emit(LlmStreamEvent.Error(e.localizedMessage ?: "Verbindungsfehler beim SSE-Streaming", 0, true))
+            emit(LlmStreamEvent.Error(e.localizedMessage ?: "Connection error during SSE streaming", 0, true))
         }
     }.flowOn(Dispatchers.IO)
 
@@ -143,7 +143,7 @@ class LlmClient(
 
             LlmResponse.Message(fallbackText)
         } catch (e: Exception) {
-            LlmResponse.Error(e.localizedMessage ?: "Fehler bei der Kommunikation mit dem LLM")
+            LlmResponse.Error(e.localizedMessage ?: "Communication with the LLM failed")
         }
     }
 
@@ -252,7 +252,7 @@ class LlmClient(
             if (!response.isSuccessful) {
                 val errBody = response.body?.string() ?: ""
                 val isRetryable = response.code == 429 || response.code >= 500
-                emit(LlmStreamEvent.Error("OpenAI API Fehler (${response.code}): $errBody", response.code, isRetryable))
+                emit(LlmStreamEvent.Error("OpenAI API error (${response.code}): $errBody", response.code, isRetryable))
                 return
             }
 
@@ -414,13 +414,13 @@ class LlmClient(
         val funcDecls = JSONArray().apply {
             put(JSONObject().apply {
                 put("name", "execute_command")
-                put("description", "Führt einen Bash-Befehl oder ein Termux:API Kommando auf dem Smartphone aus.")
+                put("description", "Runs a Bash command or Termux:API command on the phone.")
                 put("parameters", JSONObject().apply {
                     put("type", "OBJECT")
                     put("properties", JSONObject().apply {
                         put("command", JSONObject().apply {
                             put("type", "STRING")
-                            put("description", "Der auszuführende Shell-Befehl")
+                            put("description", "The shell command to execute")
                         })
                     })
                     put("required", JSONArray().put("command"))
@@ -439,7 +439,7 @@ class LlmClient(
             if (!response.isSuccessful) {
                 val errBody = response.body?.string() ?: ""
                 val isRetryable = response.code == 429 || response.code >= 500
-                emit(LlmStreamEvent.Error("Gemini API Fehler (${response.code}): $errBody", response.code, isRetryable))
+                emit(LlmStreamEvent.Error("Gemini API error (${response.code}): $errBody", response.code, isRetryable))
                 return
             }
 
@@ -575,7 +575,7 @@ class LlmClient(
             if (!response.isSuccessful) {
                 val errBody = response.body?.string() ?: ""
                 val isRetryable = response.code == 429 || response.code >= 500
-                emit(LlmStreamEvent.Error("Claude API Fehler (${response.code}): $errBody", response.code, isRetryable))
+                emit(LlmStreamEvent.Error("Claude API error (${response.code}): $errBody", response.code, isRetryable))
                 return
             }
 
@@ -710,13 +710,13 @@ class LlmClient(
                 put("type", "function")
                 put("function", JSONObject().apply {
                     put("name", "execute_command")
-                    put("description", "Führt einen Shell- oder Termux:API-Befehl direkt auf dem Smartphone aus und streamt das Terminal-Ergebnis.")
+                    put("description", "Executes a shell or Termux:API command on the phone and streams terminal output.")
                     put("parameters", JSONObject().apply {
                         put("type", "object")
                         put("properties", JSONObject().apply {
                             put("command", JSONObject().apply {
                                 put("type", "string")
-                                put("description", "Der genaue auszuführende Bash-Befehl (z. B. 'termux-battery-status', 'ls -la', 'python script.py', 'termux-camera-photo photo.jpg')")
+                                put("description", "The exact Bash command to execute (e.g. 'termux-battery-status', 'ls -la', 'python script.py', 'termux-camera-photo photo.jpg')")
                             })
                         })
                         put("required", JSONArray().put("command"))

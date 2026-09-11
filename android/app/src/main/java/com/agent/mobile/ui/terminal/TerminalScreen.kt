@@ -30,7 +30,7 @@ fun TerminalScreen(
     bridgeClient: TermuxBridgeClient,
     modifier: Modifier = Modifier
 ) {
-    var terminalHistory by remember { mutableStateOf("Willkommen im AMC Terminal.\nVerbunden mit Termux localhost:8765\n$ ") }
+    var terminalHistory by remember { mutableStateOf("Welcome to the AMC terminal.\nTarget: Termux localhost:8765 (pair in Setup first)\n$ ") }
     var inputCmd by remember { mutableStateOf("") }
     var isRunning by remember { mutableStateOf(false) }
 
@@ -170,7 +170,7 @@ fun TerminalScreen(
                     TextField(
                         value = inputCmd,
                         onValueChange = { inputCmd = it },
-                        placeholder = { Text("Befehl eingeben...", fontSize = 12.5.sp, color = TextMuted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+                        placeholder = { Text("Enter a command...", fontSize = 12.5.sp, color = TextMuted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
                         textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.5.sp, color = TextWhite),
                         modifier = Modifier.weight(1f),
                         singleLine = true,
@@ -217,7 +217,7 @@ fun TerminalScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardReturn,
-                                contentDescription = "Ausführen",
+                                contentDescription = "Run",
                                 tint = if (inputCmd.isNotBlank()) AccentPrimary else TextMuted
                             )
                         }

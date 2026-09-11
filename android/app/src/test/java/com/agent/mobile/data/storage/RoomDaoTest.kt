@@ -92,14 +92,14 @@ class RoomDaoTest {
             id = "m1",
             sessionId = "sess-search",
             role = MessageRole.USER.name,
-            text = "Kompiliere das Rust-Projekt mit cargo build",
+            text = "Compile the Rust project with cargo build",
             status = MessageStatus.COMPLETED.name
         )
         val msg2 = ChatMessageEntity(
             id = "m2",
             sessionId = "sess-search",
             role = MessageRole.ASSISTANT.name,
-            text = "Führe Befehl aus",
+            text = "Run command",
             streamingTerminalOutput = "Compiling aimovix-core v1.0.0 finished in 2.3s",
             status = MessageStatus.COMPLETED.name
         )
@@ -176,7 +176,7 @@ class RoomDaoTest {
     @Test
     fun testChatRepositoryTitleGenerationAndExport() = runBlocking {
         // Title generation
-        val generatedTitle = repository.generateConciseTitle("Kannst du mir bitte ein Skript schreiben, um Termux Backups zu automatisieren?")
+        val generatedTitle = repository.generateConciseTitle("Can you write a script to automate Termux backups?")
         assertFalse(generatedTitle.isBlank())
         assertTrue(generatedTitle.length <= 45)
 
@@ -193,7 +193,7 @@ class RoomDaoTest {
         // Export Markdown
         val md = repository.exportToMarkdown(session, domainMessages)
         assertTrue(md.contains("# Export Test Session"))
-        assertTrue(md.contains("Nutzer"))
+        assertTrue(md.contains("User"))
         assertTrue(md.contains("Hello Agent!"))
 
         // Export JSON

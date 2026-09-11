@@ -26,3 +26,11 @@ venv/
 *.aab
 .kotlin/
 android/.kotlin/
+
+# Private signing identities and local secrets
+*.jks
+*.keystore
+keystore.properties
+.env
+.env.*
+__pycache__/

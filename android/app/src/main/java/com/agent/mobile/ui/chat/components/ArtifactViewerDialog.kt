@@ -66,7 +66,7 @@ fun ArtifactViewerDialog(
                         modifier = Modifier.weight(1f)
                     ) {
                         val (badgeColor, badgeText) = when (artifact.type) {
-                            ArtifactType.IMAGE -> Pair(AccentPrimary, "BILD")
+                            ArtifactType.IMAGE -> Pair(AccentPrimary, "IMAGE")
                             ArtifactType.HTML -> Pair(YellowWarning, "HTML")
                             ArtifactType.MARKDOWN -> Pair(AccentPrimary, "MARKDOWN")
                             ArtifactType.CODE -> Pair(AccentPrimary, "CODE")
@@ -107,15 +107,15 @@ fun ArtifactViewerDialog(
                                 onClick = {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                     clipboard.setPrimaryClip(ClipData.newPlainText("Artifact Content", artifact.content))
-                                    Toast.makeText(context, "Inhalt kopiert", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Content copied", Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier.size(32.dp)
                             ) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = "Kopieren", tint = TextMuted, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = TextMuted, modifier = Modifier.size(18.dp))
                             }
                         }
                         IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Schließen", tint = TextMuted, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -168,13 +168,13 @@ fun ArtifactViewerDialog(
                                 }
                             } else {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Bild konnte nicht gerendert werden.", color = TextMuted)
+                                    Text("Could not render the image.", color = TextMuted)
                                 }
                             }
                         }
 
                         ArtifactType.HTML -> {
-                            val html = artifact.content ?: "<html><body style='color:#ccc;background:#111;'>Kein Inhalt</body></html>"
+                            val html = artifact.content ?: "<html><body style='color:#ccc;background:#111;'>No content</body></html>"
                             AndroidView(
                                 factory = { ctx ->
                                     WebView(ctx).apply {
@@ -189,7 +189,7 @@ fun ArtifactViewerDialog(
                         }
 
                         ArtifactType.CODE, ArtifactType.MARKDOWN, ArtifactType.TEXT -> {
-                            val content = artifact.content ?: "Dateiinhalt nicht geladen."
+                            val content = artifact.content ?: "File content not loaded."
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -234,7 +234,7 @@ fun ArtifactViewerDialog(
                         ) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("In Termux ausführen", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                            Text("Run in Termux", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                     }
@@ -246,7 +246,7 @@ fun ArtifactViewerDialog(
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
                     ) {
-                        Text("Schließen", fontSize = 11.5.sp)
+                        Text("Close", fontSize = 11.5.sp)
                     }
                 }
             }

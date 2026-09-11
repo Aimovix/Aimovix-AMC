@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.PowerManager
 import android.util.Log
 import com.agent.mobile.data.model.ConnectionStatus
+import com.agent.mobile.security.CommandSecurityFilter
 import com.agent.mobile.data.model.TermuxSystemInfo
 import com.agent.mobile.data.model.ToolResult
 import kotlinx.coroutines.*
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import okhttp3.*
 import org.json.JSONObject
 import java.util.UUID
@@ -192,7 +194,7 @@ class TermuxBridgeClient(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
-                Log.d(TAG, "WebSocket Verbindung geöffnet zu $url")
+                Log.d(TAG, "WebSocket connection opened to $url")
                 // Send auth handshake immediately
                 val authMsg = JSONObject().apply {
                     put("action", "auth")
@@ -206,17 +208,21 @@ class TermuxBridgeClient(
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                Log.w(TAG, "WebSocket geschlossen ($code): $reason")
-                failAllPendingExecutions("Verbindung zu Termux wurde geschlossen ($reason)")
-                _connectionStatus.value = ConnectionStatus.Disconnected
-                scheduleReconnect()
+                Log.w(TAG, "WebSocket closed ($code): $reason")
+                failAllPendingExecutions("Connection to Termux closed ($reason)")
+                if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
+                    _connectionStatus.value = ConnectionStatus.Disconnected
+                    scheduleReconnect()
+                }
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                Log.w(TAG, "WebSocket Fehler: ${t.message}")
-                failAllPendingExecutions("Verbindungsfehler: ${t.localizedMessage}")
-                _connectionStatus.value = ConnectionStatus.Error(t.localizedMessage ?: "Verbindungsfehler zu Termux")
-                scheduleReconnect()
+                Log.w(TAG, "WebSocket error: ${t.message}")
+                failAllPendingExecutions("Connection error: ${t.localizedMessage}")
+                if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
+                    _connectionStatus.value = ConnectionStatus.Error(t.localizedMessage ?: "Connection to Termux failed")
+                    scheduleReconnect()
+                }
             }
         })
     }
@@ -228,7 +234,7 @@ class TermuxBridgeClient(
         reconnectJob = scope.launch {
             delay(RECONNECT_DELAY_MS)
             if (isAutoReconnectEnabled && !isManualDisconnect && _connectionStatus.value !is ConnectionStatus.Connected) {
-                Log.d(TAG, "Auto-Reconnect Versuch zu Termux...")
+                Log.d(TAG, "Attempting to reconnect to Termux...")
                 doConnect(token)
             }
         }
@@ -248,6 +254,8 @@ class TermuxBridgeClient(
         }
         pendingExecutions.clear()
         executionOutputs.clear()
+        pendingFileReads.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
+        pendingFileReads.clear()
     }
 
     private fun handleIncomingMessage(text: String) {
@@ -270,11 +278,13 @@ class TermuxBridgeClient(
                     _connectionStatus.value = ConnectionStatus.Connected(info)
                     // Once connected, cancel any scheduled reconnects
                     reconnectJob?.cancel()
-                    Log.i(TAG, "✅ Termux Bridge erfolgreich authentifiziert und verbunden.")
+                    Log.i(TAG, "✅ Termux bridge authenticated and connected.")
                 }
                 "auth_fail" -> {
-                    val error = json.optString("error", "Authentifizierung fehlgeschlagen: Token ungültig")
+                    val error = json.optString("error", "Authentication failed: invalid token")
+                    isAutoReconnectEnabled = false
                     _connectionStatus.value = ConnectionStatus.AuthFailed(error)
+                    failAllPendingExecutions(error)
                     // Do NOT auto-reconnect continuously on bad auth token until token changes
                     reconnectJob?.cancel()
                 }
@@ -342,7 +352,7 @@ class TermuxBridgeClient(
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Fehler beim Parsen der WebSocket-Nachricht: ${e.message}", e)
+            Log.e(TAG, "Failed to parse WebSocket message: ${e.message}", e)
         }
     }
 
@@ -351,6 +361,13 @@ class TermuxBridgeClient(
         timeoutMs: Long = 90_000L,
         onChunk: ((String) -> Unit)? = null
     ): ToolResult = withContext(Dispatchers.IO) {
+        val assessment = CommandSecurityFilter.analyze(command)
+        if (assessment.isBlocked) {
+            return@withContext ToolResult(
+                toolCallId = UUID.randomUUID().toString(), command = command,
+                stderr = assessment.reason, exitCode = -1, isError = true
+            )
+        }
         val execId = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<ToolResult>()
         pendingExecutions[execId] = deferred
@@ -360,6 +377,7 @@ class TermuxBridgeClient(
             put("action", "execute")
             put("command", command)
             put("execution_id", execId)
+            put("timeout_ms", timeoutMs.coerceIn(1L, 3_600_000L))
         }
 
         val listenerJob = onChunk?.let { callback ->
@@ -379,7 +397,7 @@ class TermuxBridgeClient(
             return@withContext ToolResult(
                 toolCallId = execId,
                 command = command,
-                stderr = "Keine aktive Verbindung zu Termux (ws://$host:$port). Bitte 'amc start' in Termux ausführen.",
+                stderr = "No active connection to Termux (ws://$host:$port). Run 'amc start' in Termux.",
                 exitCode = -1,
                 isError = true
             )
@@ -392,7 +410,7 @@ class TermuxBridgeClient(
             return@withContext ToolResult(
                 toolCallId = execId,
                 command = command,
-                stderr = "Befehl konnte nicht gesendet werden (Socket geschlossen).",
+                stderr = "Could not send command (socket closed).",
                 exitCode = -1,
                 isError = true
             )
@@ -403,14 +421,17 @@ class TermuxBridgeClient(
                 deferred.await()
             }
         } catch (e: TimeoutCancellationException) {
-            interruptCurrent()
+            interruptCurrent(execId)
             ToolResult(
                 toolCallId = execId,
                 command = command,
-                stderr = "Zeitüberschreitung: Befehl hat nach ${timeoutMs / 1000}s nicht geantwortet.",
+                stderr = "Timeout: command did not respond within ${timeoutMs / 1000}s.",
                 exitCode = 124,
                 isError = true
             )
+        } catch (e: CancellationException) {
+            interruptCurrent(execId)
+            throw e
         } finally {
             listenerJob?.cancel()
             pendingExecutions.remove(execId)
@@ -420,9 +441,10 @@ class TermuxBridgeClient(
         result.copy(command = command)
     }
 
-    fun interruptCurrent() {
+    fun interruptCurrent(executionId: String? = null) {
         val msg = JSONObject().apply {
             put("action", "interrupt")
+            executionId?.let { put("execution_id", it) }
         }
         webSocket?.send(msg.toString())
     }
@@ -437,7 +459,7 @@ class TermuxBridgeClient(
         val ws = webSocket
         if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
             pendingFileReads.remove(path)
-            throw IllegalStateException("Keine Verbindung zu Termux")
+            throw IllegalStateException("No connection to Termux")
         }
         ws.send(msg.toString())
         try {
@@ -457,7 +479,7 @@ class TermuxBridgeClient(
         val ws = webSocket
         if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
             pendingFileReads.remove(path)
-            throw IllegalStateException("Keine Verbindung zu Termux")
+            throw IllegalStateException("No connection to Termux")
         }
         ws.send(msg.toString())
         try {
@@ -465,6 +487,13 @@ class TermuxBridgeClient(
         } finally {
             pendingFileReads.remove(path)
         }
+    }
+
+    suspend fun awaitConnected(timeoutMs: Long = 10_000L) {
+        val status = withTimeout(timeoutMs) {
+            connectionStatus.first { it is ConnectionStatus.Connected || it is ConnectionStatus.AuthFailed }
+        }
+        check(status is ConnectionStatus.Connected) { "Bridge authentication failed. Update the token in Setup." }
     }
 
     suspend fun getCrontab(): String {
@@ -481,7 +510,7 @@ class TermuxBridgeClient(
         isManualDisconnect = true
         isAutoReconnectEnabled = false
         reconnectJob?.cancel()
-        failAllPendingExecutions("Client getrennt")
+        failAllPendingExecutions("Client disconnected")
         webSocket?.close(1000, "App closed")
         webSocket = null
         _connectionStatus.value = ConnectionStatus.Disconnected

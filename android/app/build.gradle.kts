@@ -20,27 +20,34 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Supply a new private signing identity outside the repository.
+    val releaseStore = providers.environmentVariable("AMC_KEYSTORE_FILE").orNull
+    val releaseStorePassword = providers.environmentVariable("AMC_KEYSTORE_PASSWORD").orNull
+    val releaseAlias = providers.environmentVariable("AMC_KEY_ALIAS").orNull
+    val releaseKeyPassword = providers.environmentVariable("AMC_KEY_PASSWORD").orNull
+    val hasReleaseSigning = listOf(releaseStore, releaseStorePassword, releaseAlias, releaseKeyPassword)
+        .all { !it.isNullOrBlank() }
     signingConfigs {
-        create("release") {
-            storeFile = file("aimovix-release.jks")
-            storePassword = "aimovix123"
-            keyAlias = "aimovix"
-            keyPassword = "aimovix123"
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStore!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
         }
-        debug {
-            signingConfig = signingConfigs.getByName("release")
-        }
+        // Debug builds use the standard local debug key.
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

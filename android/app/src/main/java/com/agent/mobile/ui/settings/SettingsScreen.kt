@@ -77,7 +77,7 @@ fun SettingsScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = "Einstellungen & Cockpit",
+                        text = "Settings & controls",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = TextWhite
@@ -98,7 +98,7 @@ fun SettingsScreen(
             // Section 1: Primary Provider Picker
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "PRIMÄRER KI-PROVIDER",
+                    text = "PRIMARY AI PROVIDER",
                     style = MaterialTheme.typography.labelMedium.copy(
                         color = TextMuted,
                         fontWeight = FontWeight.Bold,
@@ -146,7 +146,7 @@ fun SettingsScreen(
                                                 shape = RoundedCornerShape(4.dp)
                                             ) {
                                                 Text(
-                                                    text = "AKTIV",
+                                                    text = "ACTIVE",
                                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                                     style = MaterialTheme.typography.labelSmall.copy(
                                                         color = AccentPrimary,
@@ -158,7 +158,7 @@ fun SettingsScreen(
                                         }
                                     }
                                     Text(
-                                        text = "Standard: ${provider.defaultModel}",
+                                        text = "Default: ${provider.defaultModel}",
                                         style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 11.sp)
                                     )
                                 }
@@ -193,7 +193,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Text(
-                        text = "Konfiguration • ${selectedProvider.displayName}",
+                        text = "Configuration • ${selectedProvider.displayName}",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.SemiBold,
                             color = TextWhite
@@ -203,7 +203,7 @@ fun SettingsScreen(
                     // Suggested Model Quick-Select Chips
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "Modell-Vorschläge:",
+                            text = "Suggested models:",
                             style = MaterialTheme.typography.labelSmall.copy(color = TextMuted)
                         )
                         Row(
@@ -248,7 +248,7 @@ fun SettingsScreen(
                     OutlinedTextField(
                         value = modelName,
                         onValueChange = { modelName = it },
-                        label = { Text("Modellname") },
+                        label = { Text("Model name") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         shape = RoundedCornerShape(8.dp),
@@ -269,7 +269,7 @@ fun SettingsScreen(
                             value = apiKey,
                             onValueChange = { apiKey = it },
                             label = { Text("API Key") },
-                            placeholder = { Text("Deinen API-Schlüssel einfügen...") },
+                            placeholder = { Text("Paste your API key...") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             shape = RoundedCornerShape(8.dp),
@@ -280,7 +280,7 @@ fun SettingsScreen(
                                     IconButton(onClick = { isApiKeyVisible = !isApiKeyVisible }) {
                                         Icon(
                                             imageVector = if (isApiKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                            contentDescription = "Anzeigen",
+                                            contentDescription = "Show",
                                             tint = TextMuted
                                         )
                                     }
@@ -289,10 +289,10 @@ fun SettingsScreen(
                                         val clip = clipboard.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
                                         if (clip.isNotEmpty()) {
                                             apiKey = clip
-                                            Toast.makeText(context, "API Key eingefügt", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "API key pasted", Toast.LENGTH_SHORT).show()
                                         }
                                     }) {
-                                        Icon(Icons.Default.ContentPaste, contentDescription = "Einfügen", tint = AccentPrimary)
+                                        Icon(Icons.Default.ContentPaste, contentDescription = "Paste", tint = AccentPrimary)
                                     }
                                 }
                             },
@@ -325,7 +325,7 @@ fun SettingsScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.Tune, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Erweiterte Endpunkt-Einstellungen", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary))
+                                Text("Advanced endpoint settings", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary))
                             }
                             Icon(if (showAdvanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null, tint = TextMuted)
                         }
@@ -368,11 +368,11 @@ fun SettingsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Sekundärer Fallback-Provider",
+                                text = "Secondary fallback provider",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold, color = TextWhite)
                             )
                             Text(
-                                text = "Automatischer Wechsel bei 429 Rate Limit, Timeout oder API-Ausfall",
+                                text = "Switch automatically on rate limits (429), timeouts, or API failures",
                                 style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
                             )
                         }
@@ -394,7 +394,7 @@ fun SettingsScreen(
 
                     AnimatedVisibility(visible = showFallbackSection && fallbackProvider != null) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("Fallback-Provider auswählen:", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
+                            Text("Select fallback provider:", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
                             Row(
                                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -421,7 +421,7 @@ fun SettingsScreen(
                             OutlinedTextField(
                                 value = fallbackModelName,
                                 onValueChange = { fallbackModelName = it },
-                                label = { Text("Fallback-Modell") },
+                                label = { Text("Fallback model") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                                 shape = RoundedCornerShape(8.dp),
@@ -498,7 +498,7 @@ fun SettingsScreen(
                     agentEngine.setModelConfig(newConfig)
                     preferenceManager.saveModelConfig(newConfig)
                     focusManager.clearFocus()
-                    Toast.makeText(context, "✅ Gespeichert: ${selectedProvider.displayName} (${finalModel})", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "✅ Saved: ${selectedProvider.displayName} (${finalModel})", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -513,7 +513,7 @@ fun SettingsScreen(
                 Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Alle Einstellungen speichern",
+                    text = "Save all settings",
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
                 )
             }

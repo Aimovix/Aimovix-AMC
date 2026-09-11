@@ -67,7 +67,7 @@ fun SetupWizardScreen(
                 TopAppBar(
                     title = {
                         Text(
-                            "Termux Einrichtung",
+                            "Termux setup",
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
                             color = TextWhite
@@ -101,7 +101,7 @@ fun SetupWizardScreen(
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Text(
-                            "VERBINDUNGSSTATUS",
+                            "CONNECTION STATUS",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = TextMuted,
                                 fontWeight = FontWeight.Bold,
@@ -113,7 +113,7 @@ fun SetupWizardScreen(
                         when (val st = connectionStatus) {
                             is ConnectionStatus.Connected -> {
                                 Text(
-                                    "Verbunden (Akku: ${st.info.batteryPercentage ?: "?"}%)",
+                                    "Connected (battery: ${st.info.batteryPercentage ?: "?"}%)",
                                     color = StatusOnline,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp,
@@ -122,16 +122,16 @@ fun SetupWizardScreen(
                                 )
                             }
                             is ConnectionStatus.Connecting -> {
-                                Text("Verbinde mit Termux...", color = YellowWarning, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text("Connecting to Termux...", color = YellowWarning, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                             }
                             is ConnectionStatus.AuthFailed -> {
-                                Text("Auth-Token ungültig", color = RedEmergency, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text("Invalid authentication token", color = RedEmergency, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                             }
                             is ConnectionStatus.Error -> {
-                                Text("Fehler: ${st.message}", color = RedEmergency, fontSize = 11.5.sp, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text("Error: ${st.message}", color = RedEmergency, fontSize = 11.5.sp, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                             }
                             else -> {
-                                Text("Getrennt (ws://127.0.0.1:8765)", color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.5.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text("Disconnected (ws://127.0.0.1:8765)", color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.5.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                             }
                         }
                     }
@@ -155,7 +155,7 @@ fun SetupWizardScreen(
                         ) {
                             Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentPrimary)
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Termux öffnen", fontSize = 11.5.sp, maxLines = 1)
+                            Text("Open Termux", fontSize = 11.5.sp, maxLines = 1)
                         }
 
                         Button(
@@ -167,7 +167,7 @@ fun SetupWizardScreen(
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Neu verbinden", fontWeight = FontWeight.Bold, fontSize = 11.5.sp, maxLines = 1)
+                            Text("Reconnect", fontWeight = FontWeight.Bold, fontSize = 11.5.sp, maxLines = 1)
                         }
                     }
                 }
@@ -177,12 +177,12 @@ fun SetupWizardScreen(
 
             // Step 1: Install Termux & Termux:API
             Text(
-                "Schritt 1: Apps installieren",
+                "Step 1: Install the apps",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Termux muss aus F-Droid installiert werden (die Version aus dem Google Play Store ist veraltet).",
+                text = "Install Termux and Termux:API from F-Droid for this setup. Use the same source for both apps.",
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
@@ -224,12 +224,12 @@ fun SetupWizardScreen(
 
             // Step 2: 1-Click Setup Command
             Text(
-                "Schritt 2: 1-Klick Setup in Termux ausführen",
+                "Step 2: Run setup in Termux",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Kopiere diesen Befehl, öffne Termux und füge ihn ein. Er installiert Python, die Termux:API-Tools und startet den Hintergrund-Bridge-Dienst automatisch:",
+                text = "Copy this command, open Termux, and paste it. It installs Python and the Termux:API tools, then starts the bridge service:",
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
@@ -260,7 +260,7 @@ fun SetupWizardScreen(
                         "curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridge/setup.sh | bash"
                     )
                     clipboard.setPrimaryClip(clip)
-                    Toast.makeText(context, "AMC-Befehl kopiert! Jetzt in Termux einfügen.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "Setup command copied. Paste it in Termux.", Toast.LENGTH_LONG).show()
                 },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = Color.Black),
@@ -268,7 +268,7 @@ fun SetupWizardScreen(
             ) {
                 Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Setup-Befehl kopieren", fontWeight = FontWeight.Bold)
+                Text("Copy setup command", fontWeight = FontWeight.Bold)
             }
 
             // Warning Box: Keep Termux in background, do not exit
@@ -286,7 +286,7 @@ fun SetupWizardScreen(
                     Icon(Icons.Default.Warning, contentDescription = null, tint = YellowWarning, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "Wichtig: Nach dem Setup Termux NICHT mit 'exit' beenden und NICHT aus den Recent Apps wischen. Termux muss im Hintergrund minimiert bleiben (Home-Taste).",
+                        text = "After setup, leave Termux running in the background using the Home button. Avoid exiting or force-stopping it.",
                         color = TextWhite,
                         fontSize = 12.sp,
                         lineHeight = 16.sp
@@ -298,12 +298,12 @@ fun SetupWizardScreen(
 
             // Step 3: Android Battery Optimization (Critical for background persistence)
             Text(
-                "Schritt 3: Wichtig – Termux Akku-Optimierung deaktivieren",
+                "Step 3: Disable battery optimization for Termux",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Android pausiert oder friert Hintergrund-Apps beim Wechseln ein, wenn die Akku-Optimierung aktiv ist. Um dauerhafte Verbindung zu sichern:",
+                text = "Android may suspend background apps. Adjust these settings to improve connection reliability:",
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
@@ -324,14 +324,14 @@ fun SetupWizardScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                text = "Hintergrundbetrieb gesichert",
+                                text = "Battery optimization disabled",
                                 color = StatusOnline,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "Akku-Optimierung für Termux ist deaktiviert (Uneingeschränkt). Termux wird von Android nicht eingefroren.",
+                                text = "Battery optimization for Termux is disabled. Android or device-specific limits may still stop background processes.",
                                 color = TextWhite,
                                 fontSize = 12.sp,
                                 lineHeight = 16.sp
@@ -354,14 +354,14 @@ fun SetupWizardScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                text = "Akku-Optimierung für Termux ist AKTIV!",
+                                text = "Battery optimization for Termux is enabled",
                                 color = RedEmergency,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "Android trennt oder friert Termux im Hintergrund sofort ein, sobald du zur AMC-App wechselst. Bitte 'Uneingeschränkt' bzw. 'Nicht optimiert' einstellen.",
+                                text = "Android may suspend Termux in the background. Select 'Unrestricted' or 'Not optimized' in its battery settings.",
                                 color = TextWhite,
                                 fontSize = 12.sp,
                                 lineHeight = 16.sp
@@ -381,7 +381,7 @@ fun SetupWizardScreen(
                         try {
                             context.startActivity(TermuxBridgeClient.getIgnoreBatteryOptimizationListIntent())
                         } catch (e2: Exception) {
-                            Toast.makeText(context, "Öffne Android-Einstellungen -> Apps -> Termux -> Akku (Uneingeschränkt)", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "Open Android Settings -> Apps -> Termux -> Battery -> Unrestricted", Toast.LENGTH_LONG).show()
                         }
                     }
                 },
@@ -393,7 +393,7 @@ fun SetupWizardScreen(
                 Icon(Icons.Default.BatteryChargingFull, contentDescription = null, modifier = Modifier.size(17.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "Akku-Optimierung für Termux deaktivieren",
+                    text = "Disable battery optimization for Termux",
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
                     maxLines = 2,
@@ -413,7 +413,7 @@ fun SetupWizardScreen(
                             try {
                                 context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
                             } catch (e2: Exception) {
-                                Toast.makeText(context, "Öffne Einstellungen -> Apps -> Termux -> Benachrichtigungen", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "Open Settings -> Apps -> Termux -> Notifications", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -425,7 +425,7 @@ fun SetupWizardScreen(
                 ) {
                     Icon(Icons.Default.Notifications, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Mitteilungen", fontSize = 11.sp, maxLines = 1)
+                    Text("Notifications", fontSize = 11.sp, maxLines = 1)
                 }
 
                 OutlinedButton(
@@ -433,7 +433,7 @@ fun SetupWizardScreen(
                         try {
                             context.startActivity(TermuxBridgeClient.getDeveloperOptionsIntent())
                         } catch (e: Exception) {
-                            Toast.makeText(context, "Entwickleroptionen in Android-Einstellungen öffnen", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "Open Developer options in Android Settings", Toast.LENGTH_LONG).show()
                         }
                     },
                     modifier = Modifier.weight(1f),
@@ -444,7 +444,7 @@ fun SetupWizardScreen(
                 ) {
                     Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Entwickler-Tools", fontSize = 11.sp, maxLines = 1)
+                    Text("Developer tools", fontSize = 11.sp, maxLines = 1)
                 }
             }
 
@@ -452,12 +452,12 @@ fun SetupWizardScreen(
 
             // Step 4: Auth Token
             Text(
-                "Schritt 4: Sicherheits-Token (Optional)",
+                "Step 4: Pair with the required security token",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Beim Start zeigt Termux deinen generierten Auth-Token an. Trage ihn hier ein, falls du die Bridge mit Token abgesichert hast:",
+                text = "Run 'amc token' in Termux to display your pairing token. Enter it here. Every connection requires this token.",
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
@@ -480,10 +480,10 @@ fun SetupWizardScreen(
                         if (clip.isNotEmpty()) {
                             inputToken = clip
                             onTokenChanged(clip)
-                            Toast.makeText(context, "Token eingefügt!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Token pasted!", Toast.LENGTH_SHORT).show()
                         }
                     }) {
-                        Icon(Icons.Default.ContentPaste, contentDescription = "Aus Zwischenablage einfügen", tint = AccentPrimary)
+                        Icon(Icons.Default.ContentPaste, contentDescription = "Paste from clipboard", tint = AccentPrimary)
                     }
                 },
                 colors = OutlinedTextFieldDefaults.colors(
@@ -509,14 +509,14 @@ fun SetupWizardScreen(
             ) {
                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Jetzt verbinden", fontWeight = FontWeight.Bold)
+                Text("Connect now", fontWeight = FontWeight.Bold)
             }
 
             Spacer(modifier = Modifier.height(24.dp))
 
             // Step 5: Termux Commands Cheatsheet
             Text(
-                "Termux CLI-Befehle (`amc`)",
+                "Termux CLI commands (`amc`)",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
             )
             Spacer(modifier = Modifier.height(6.dp))
@@ -527,12 +527,12 @@ fun SetupWizardScreen(
                 border = BorderStroke(1.dp, BorderSubtle)
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("amc boost    -> Hintergrund-Boost & Akku-Ausnahme reaktivieren", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                    Text("amc start    -> Startet Bridge im Hintergrund (Wake-Lock)", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                    Text("amc status   -> Prüft PID, Port 8765, Akku & Token", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                    Text("amc restart  -> Startet den Dienst neu", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                    Text("amc logs     -> Zeigt Live-Ausgaben des Daemons", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                    Text("amc stop     -> Beendet den Hintergrunddienst", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc boost    -> Restore wake lock and battery exemption", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc start    -> Start the bridge in the background (wake lock)", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc status   -> Show service status and authentication requirement", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc restart  -> Restart the service", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc logs     -> Show live daemon output", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc stop     -> Stop the background service", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
                 }
             }
         }

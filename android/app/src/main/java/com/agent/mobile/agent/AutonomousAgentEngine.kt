@@ -90,7 +90,7 @@ class AutonomousAgentEngine(
             loadSession(sessionToLoad)
         } else {
             val newSession = repo.createNewSession(
-                title = "Neuer Chat",
+                title = "New chat",
                 provider = _modelConfig.value.provider.name,
                 model = _modelConfig.value.modelName
             )
@@ -124,12 +124,12 @@ class AutonomousAgentEngine(
             val repo = chatRepository
             val config = _modelConfig.value
             val session = repo?.createNewSession(
-                title = "Neuer Chat",
+                title = "New chat",
                 provider = config.provider.name,
                 model = config.modelName
             ) ?: ChatSession(
                 id = UUID.randomUUID().toString(),
-                title = "Neuer Chat",
+                title = "New chat",
                 modelProvider = config.provider.name,
                 modelName = config.modelName
             )
@@ -210,7 +210,7 @@ class AutonomousAgentEngine(
             try {
                 // Auto-generate title on first message in session
                 val session = _currentSession.value
-                if (session != null && (session.title == "Neuer Chat" || session.title.isBlank())) {
+                if (session != null && (session.title == "New chat" || session.title.isBlank())) {
                     val generatedTitle = chatRepository?.generateConciseTitle(userPrompt) ?: "Chat"
                     _currentSession.value = session.copy(title = generatedTitle)
                     chatRepository?.updateSessionTitle(session.id, generatedTitle)
@@ -223,10 +223,10 @@ class AutonomousAgentEngine(
 
                 runAgentLoop()
             } catch (e: CancellationException) {
-                appendSystemMessage("🛑 Ausführung durch Nutzer abgebrochen.")
+                appendSystemMessage("🛑 Execution canceled by the user.")
             } catch (e: Exception) {
-                Log.e(TAG, "Fehler im Agenten-Loop: ${e.message}", e)
-                appendSystemMessage("⚠️ Fehler im Agenten-Loop: ${e.localizedMessage}")
+                Log.e(TAG, "Agent loop error: ${e.message}", e)
+                appendSystemMessage("⚠️ Agent loop error: ${e.localizedMessage}")
             } finally {
                 _isBusy.value = false
                 _pendingApproval.value = null
@@ -294,7 +294,7 @@ class AutonomousAgentEngine(
                         }
                     }
                 } catch (e: Exception) {
-                    errorEvent = LlmClient.LlmStreamEvent.Error(e.localizedMessage ?: "Netzwerkfehler", 0, true)
+                    errorEvent = LlmClient.LlmStreamEvent.Error(e.localizedMessage ?: "Network error", 0, true)
                 }
 
                 // If error occurred and fallback provider is configured, failover seamlessly!
@@ -310,7 +310,7 @@ class AutonomousAgentEngine(
                             apiKey = primaryConfig.fallbackApiKey,
                             baseUrl = fallbackUrl
                         )
-                        appendSystemMessage("⚠️ Primär-Provider ${primaryConfig.provider.displayName} fehlgeschlagen (${errorEvent.message}). Wechsle zu Fallback: ${fallback.displayName} ($fallbackModel)...")
+                        appendSystemMessage("⚠️ Primary provider ${primaryConfig.provider.displayName} failed (${errorEvent.message}). Switching to fallback: ${fallback.displayName} ($fallbackModel)...")
                         textBuilder.clear()
                         errorEvent = null
                         continue
@@ -321,7 +321,7 @@ class AutonomousAgentEngine(
 
             if (!streamCompleted && errorEvent != null) {
                 updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
-                appendSystemMessage("⚠️ KI-Schnittstelle Fehler: ${errorEvent.message}")
+                appendSystemMessage("⚠️ AI API error: ${errorEvent.message}")
                 break
             }
 
@@ -338,7 +338,7 @@ class AutonomousAgentEngine(
 
                 // 1. RUNAWAY & LOOP DETECTION GUARDRAILS
                 if (isRunawayOrLoopDetected(cmd, commandHistory, consecutiveErrors)) {
-                    val runawayMsg = "🛑 Runaway/Loop-Schutz aktiv: Wiederholte Befehlsausführung oder persistente Fehler für `$cmd` erkannt. Ausführung gestoppt."
+                    val runawayMsg = "🛑 Loop protection: repeated execution or persistent failures detected for `$cmd` . Execution stopped."
                     appendSystemMessage(runawayMsg)
                     updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
                     break
@@ -353,16 +353,16 @@ class AutonomousAgentEngine(
 
                 // 2. Blacklist Check
                 if (assessment.isBlocked) {
-                    val blockedMsg = "🛡️ Sicherheits-Sperre: Befehl `$cmd` wurde blockiert.\nGrund: ${assessment.reason}"
+                    val blockedMsg = "🛡️ Security block: command `$cmd` was blocked.\nReason: ${assessment.reason}"
                     updateMessageText(assistantMsgId, "${action.thought}\n\n$blockedMsg", MessageStatus.ERROR)
 
                     val toolRejectedMsg = ChatMessage(
                         role = MessageRole.TOOL,
-                        text = "Ausführung blockiert: ${assessment.reason}",
+                        text = "Execution blocked: ${assessment.reason}",
                         toolResult = ToolResult(
                             toolCallId = securedToolCall.id,
                             command = cmd,
-                            stderr = "Sicherheits-Blockade aktiv: ${assessment.reason}",
+                            stderr = "Security block active: ${assessment.reason}",
                             isError = true
                         )
                     )
@@ -377,7 +377,7 @@ class AutonomousAgentEngine(
                             riskLevel = RiskLevel.BLOCKED.name,
                             riskReason = assessment.reason,
                             exitCode = -1,
-                            stderr = "Sicherheits-Blockade aktiv",
+                            stderr = "Security block active",
                             wasApproved = false
                         )
                     )
@@ -402,11 +402,11 @@ class AutonomousAgentEngine(
                         updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
                         val rejectedMsg = ChatMessage(
                             role = MessageRole.TOOL,
-                            text = "Befehl wurde vom Nutzer verweigert.",
+                            text = "Command rejected by the user.",
                             toolResult = ToolResult(
                                 toolCallId = securedToolCall.id,
                                 command = cmd,
-                                stderr = "Ausführung vom Nutzer verweigert.",
+                                stderr = "Execution rejected by the user.",
                                 isError = true
                             )
                         )
@@ -418,9 +418,9 @@ class AutonomousAgentEngine(
                                 sessionId = _currentSession.value?.id,
                                 command = cmd,
                                 riskLevel = assessment.level.name,
-                                riskReason = "Vom Nutzer verweigert",
+                                riskReason = "Rejected by the user",
                                 exitCode = -1,
-                                stderr = "Verweigert",
+                                stderr = "Rejected",
                                 wasApproved = false
                             )
                         )
@@ -467,7 +467,7 @@ class AutonomousAgentEngine(
                             if (base64Img.isNotEmpty()) {
                                 visionObservation = ChatMessage(
                                     role = MessageRole.USER,
-                                    text = "📸 Aufgenommenes Foto aus Termux (`$photoPath`):",
+                                    text = "📸 Photo captured in Termux (`$photoPath`):",
                                     imageBase64 = base64Img,
                                     imageMimeType = "image/jpeg",
                                     status = MessageStatus.COMPLETED
@@ -482,7 +482,7 @@ class AutonomousAgentEngine(
                                 )
                             }
                         } catch (e: Exception) {
-                            Log.w(TAG, "Termux-Vision: Foto konnte nicht gelesen werden: ${e.message}")
+                            Log.w(TAG, "Termux vision: could not read photo: ${e.message}")
                         }
                     }
                 }
@@ -516,7 +516,7 @@ class AutonomousAgentEngine(
         }
 
         if (iterations >= MAX_LOOP_ITERATIONS) {
-            appendSystemMessage("ℹ️ Schrittlimit von $MAX_LOOP_ITERATIONS Schritten erreicht. Ausführung abgeschlossen.")
+            appendSystemMessage("ℹ️ Step limit of $MAX_LOOP_ITERATIONS reached. Execution ended.")
         }
     }
 
@@ -621,7 +621,7 @@ class AutonomousAgentEngine(
         bridgeClient.interruptCurrent()
         _isBusy.value = false
         _pendingApproval.value = null
-        appendSystemMessage("🛑 Not-Aus aktiviert: Befehlsausführung gestoppt.")
+        appendSystemMessage("🛑 Emergency stop requested. Waiting for the bridge to stop execution.")
     }
 
     private fun updateMessageText(messageId: String, text: String, status: MessageStatus) {

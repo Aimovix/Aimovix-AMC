@@ -24,8 +24,7 @@ class PreferenceManager(context: Context) {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
     } catch (e: Exception) {
-        Log.w("PreferenceManager", "EncryptedSharedPreferences initialization failed, falling back to private SharedPreferences: ${e.message}")
-        context.getSharedPreferences("amc_secure_prefs", Context.MODE_PRIVATE)
+        throw IllegalStateException("Secure storage is unavailable. Unlock the device and try again. Credentials were not saved.", e)
     }
 
     companion object {
@@ -55,12 +54,16 @@ class PreferenceManager(context: Context) {
             if (oldPrefs.all.isNotEmpty() && prefs !== oldPrefs) {
                 val editor = prefs.edit()
                 oldPrefs.all.forEach { (key, value) ->
-                    if (value is String) {
-                        editor.putString(key, value)
+                    when (value) {
+                        is String -> editor.putString(key, value)
+                        is Boolean -> editor.putBoolean(key, value)
+                        is Int -> editor.putInt(key, value)
+                        is Long -> editor.putLong(key, value)
+                        is Float -> editor.putFloat(key, value)
                     }
                 }
-                editor.apply()
-                oldPrefs.edit().clear().apply()
+                check(editor.commit()) { "Could not migrate credentials to encrypted storage." }
+                oldPrefs.edit().clear().commit()
             }
         } catch (e: Exception) {
             Log.w("PreferenceManager", "Migration from legacy preferences failed: ${e.message}")
@@ -117,11 +120,11 @@ class PreferenceManager(context: Context) {
     }
 
     fun loadExecutionMode(): ExecutionMode {
-        val modeName = prefs.getString(KEY_EXEC_MODE, ExecutionMode.AUTOPILOT.name)
+        val modeName = prefs.getString(KEY_EXEC_MODE, ExecutionMode.STEP_BY_STEP.name)
         return try {
             ExecutionMode.valueOf(modeName ?: ExecutionMode.AUTOPILOT.name)
         } catch (e: Exception) {
-            ExecutionMode.AUTOPILOT
+            ExecutionMode.STEP_BY_STEP
         }
     }
 

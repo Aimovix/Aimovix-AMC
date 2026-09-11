@@ -14,33 +14,23 @@ import subprocess
 import shutil
 import shlex
 import time
+import secrets
+import hmac
+import base64
+import codecs
+from contextlib import suppress
 from pathlib import Path
 
-# Try importing websockets; auto-install if missing
-try:
-    import websockets
-except ImportError:
-    print("[INFO] 'websockets' Paket wird nachinstalliert...", file=sys.stderr)
-    try:
-        subprocess.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "websockets"], check=True)
-        import websockets
-    except Exception:
-        try:
-            subprocess.run([sys.executable, "-m", "pip", "install", "websockets"], check=True)
-            import websockets
-        except Exception as e:
-            print(f"[ERROR] 'websockets' konnte nicht geladen werden: {e}", file=sys.stderr)
-            sys.exit(1)
+# Install dependencies with setup.sh before starting the daemon.
+import websockets
 
 PORT = int(os.environ.get("BRIDGE_PORT", 8765))
-HOST = os.environ.get("BRIDGE_HOST", "0.0.0.0")
+HOST = "127.0.0.1"  # Device-local only; authentication is still mandatory.
 TOKEN_FILE = Path.home() / ".termux_agent_token"
 AGENT_DIR = Path.home() / ".termux_agent"
 PID_FILE = AGENT_DIR / "daemon.pid"
 DEFAULT_CWD = os.environ.get("HOME", os.path.expanduser("~"))
 
-current_process = None
-current_cwd = DEFAULT_CWD
 
 # Ensure full Termux binary paths are present in PATH
 TERMUX_PREFIX = "/data/data/com.termux/files/usr"
@@ -63,7 +53,7 @@ def ensure_wake_lock():
         except Exception:
             pass
 
-def update_termux_notification(status_text="Bridge aktiv • Port 8765"):
+def update_termux_notification(status_text="Bridge active • Port 8765"):
     """Post or update an ongoing notification via termux-api to prevent background freeze."""
     termux_notif = shutil.which("termux-notification", path=ENV.get("PATH"))
     if termux_notif:
@@ -71,7 +61,7 @@ def update_termux_notification(status_text="Bridge aktiv • Port 8765"):
             subprocess.run([
                 termux_notif,
                 "--id", "amc_bridge",
-                "--title", "AMC Termux Bridge (Aktiv)",
+                "--title", "AMC Termux Bridge (Active)",
                 "--content", status_text,
                 "--ongoing",
                 "--priority", "high"
@@ -90,22 +80,16 @@ def remove_termux_notification():
 
 def load_or_generate_token() -> str:
     """Load existing auth token or create a secure random token."""
-    if os.environ.get("BRIDGE_NO_AUTH", "0") == "1" or "--no-auth" in sys.argv:
-        return ""
     if TOKEN_FILE.exists():
-        try:
-            t = TOKEN_FILE.read_text().strip()
-            if t:
-                return t
-        except Exception:
-            pass
-    import secrets
-    token = secrets.token_hex(16)
-    try:
-        TOKEN_FILE.write_text(token)
         TOKEN_FILE.chmod(0o600)
-    except Exception as e:
-        print(f"[WARN] Could not write token file: {e}", file=sys.stderr)
+        token = TOKEN_FILE.read_text().strip()
+        if token:
+            return token
+    token = secrets.token_hex(32)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as token_file:
+        token_file.write(token)
+    TOKEN_FILE.chmod(0o600)
     return token
 
 AUTH_TOKEN = load_or_generate_token()
@@ -132,12 +116,12 @@ def get_battery_info_fast() -> dict | None:
         pass
     return None
 
-def get_system_info() -> dict:
+def get_system_info(cwd: str = DEFAULT_CWD) -> dict:
     """Collect system, memory, storage, and battery status via fast sysfs or termux-api."""
     global _cached_battery, _last_battery_check, _termux_api_available
     info = {
         "os": sys.platform,
-        "cwd": current_cwd,
+        "cwd": cwd,
         "python_version": sys.version.split()[0],
         "has_termux_api": shutil.which("termux-battery-status", path=ENV.get("PATH")) is not None,
         "has_llama": shutil.which("llama-server", path=ENV.get("PATH")) is not None,
@@ -170,7 +154,7 @@ def get_system_info() -> dict:
 
     # Disk usage in HOME
     try:
-        total, used, free = shutil.disk_usage(current_cwd)
+        total, used, free = shutil.disk_usage(cwd)
         info["disk"] = {
             "total_mb": total // (1024 * 1024),
             "free_mb": free // (1024 * 1024),
@@ -181,298 +165,223 @@ def get_system_info() -> dict:
 
     return info
 
-def is_client_loopback(websocket) -> bool:
-    """Check if client connects via localhost/loopback (on the same Android device)."""
-    try:
-        remote = getattr(websocket, "remote_address", None)
-        if not remote:
-            return True
-        ip = str(remote[0]).strip().lower()
-        return (
-            ip in ("127.0.0.1", "::1", "localhost", "testclient")
-            or ip.startswith("127.")
-            or ip.startswith("fe80:")
-        )
-    except Exception:
-        return True
+class BridgeSession:
+    """Own execution state per authenticated connection."""
 
-def handle_cd_command(cmd: str, target_cwd: str) -> tuple[bool, str, str]:
-    """
-    Checks if cmd is a pure cd command and updates current_cwd.
-    Returns: (is_cd, new_or_curr_cwd, error_message)
-    """
-    trimmed = cmd.strip()
-    if trimmed == "cd" or trimmed == "cd ~":
-        return True, DEFAULT_CWD, ""
+    def __init__(self, websocket):
+        self.websocket = websocket
+        self.cwd = DEFAULT_CWD
+        self.task = None
+        self.process = None
+        self.execution_id = None
 
-    if trimmed.startswith("cd ") and "&&" not in trimmed and ";" not in trimmed and "|" not in trimmed:
-        raw_target = trimmed[3:].strip().strip("\"'")
-        expanded = os.path.expanduser(raw_target)
-        full_path = os.path.normpath(os.path.join(target_cwd, expanded))
-        if os.path.isdir(full_path):
-            return True, full_path, ""
-        else:
-            return True, target_cwd, f"Verzeichnis nicht gefunden: {raw_target}\n"
+    async def send(self, kind, **payload):
+        await self.websocket.send(json.dumps({"type": kind, **payload}))
 
-    return False, target_cwd, ""
-
-async def run_command_streaming(websocket, cmd: str, execution_id: str, cwd: str | None = None):
-    """Executes a command and streams stdout/stderr chunks in real-time over WebSocket."""
-    global current_process, current_cwd
-    target_cwd = cwd or current_cwd
-
-    # 1. Handle pure cd commands directly
-    is_cd, new_cwd, cd_err = handle_cd_command(cmd, target_cwd)
-    if is_cd:
-        if cd_err:
-            await websocket.send(json.dumps({
-                "type": "stderr",
-                "execution_id": execution_id,
-                "data": cd_err
-            }))
-            await websocket.send(json.dumps({
-                "type": "completed",
-                "execution_id": execution_id,
-                "exit_code": 1,
-                "cwd": current_cwd
-            }))
-        else:
-            current_cwd = new_cwd
-            await websocket.send(json.dumps({
-                "type": "stdout",
-                "execution_id": execution_id,
-                "data": f"Verzeichnis gewechselt zu: {current_cwd}\n"
-            }))
-            await websocket.send(json.dumps({
-                "type": "completed",
-                "execution_id": execution_id,
-                "exit_code": 0,
-                "cwd": current_cwd
-            }))
-        return
-
-    # Use bash shell if available, otherwise default system shell
-    shell_bin = "/data/data/com.termux/files/usr/bin/bash"
-    if not os.path.exists(shell_bin):
-        shell_bin = shutil.which("bash", path=ENV.get("PATH")) or shutil.which("sh") or "sh"
-
-    try:
-        current_process = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=target_cwd,
-            executable=shell_bin if sys.platform != "win32" else None,
-            env=ENV,
-            preexec_fn=os.setsid if sys.platform != "win32" else None
-        )
-
-        async def read_stream(stream, msg_type: str):
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-                decoded = line.decode("utf-8", errors="replace")
-                try:
-                    await websocket.send(json.dumps({
-                        "type": msg_type,
-                        "execution_id": execution_id,
-                        "data": decoded
-                    }))
-                except Exception:
-                    break
-
-        # Stream stdout and stderr concurrently
-        await asyncio.gather(
-            read_stream(current_process.stdout, "stdout"),
-            read_stream(current_process.stderr, "stderr")
-        )
-
-        exit_code = await current_process.wait()
-        await websocket.send(json.dumps({
-            "type": "completed",
-            "execution_id": execution_id,
-            "exit_code": exit_code,
-            "cwd": current_cwd
-        }))
-
-    except asyncio.CancelledError:
-        if current_process:
+    async def terminate_process(self):
+        process = self.process
+        if process is None:
+            return
+        # Signal the entire group, even if its shell has already exited.
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
             try:
                 if sys.platform != "win32":
-                    os.killpg(os.getpgid(current_process.pid), signal.SIGTERM)
+                    os.killpg(process.pid, sig)
+                elif process.returncode is None:
+                    process.kill()
                 else:
-                    current_process.terminate()
-            except Exception:
-                pass
-        raise
-    except Exception as e:
-        await websocket.send(json.dumps({
-            "type": "error",
-            "execution_id": execution_id,
-            "error": str(e)
-        }))
-    finally:
-        current_process = None
+                    break
+            except ProcessLookupError:
+                break
+            if sig != signal.SIGKILL:
+                await asyncio.sleep(0.25)
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout=2)
+
+    async def stop(self):
+        task = self.task
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self.task = None
+
+    async def run(self, command, execution_id, cwd, timeout_seconds):
+        readers = []
+        try:
+            tokens = shlex.split(command)
+            # Only intercept a plain cd; let the shell handle compound commands.
+            if tokens and tokens[0] == "cd" and len(tokens) <= 2 and not any(
+                char in command for char in ";&|<>$\n\x60"
+            ):
+                target = os.path.expanduser(tokens[1] if len(tokens) == 2 else DEFAULT_CWD)
+                target = os.path.abspath(os.path.join(cwd, target))
+                if not os.path.isdir(target):
+                    raise ValueError(f"Directory not found: {target}")
+                self.cwd = target
+                await self.send("stdout", execution_id=execution_id, data=f"Directory changed to: {target}\n")
+                await self.send("completed", execution_id=execution_id, exit_code=0, cwd=self.cwd)
+                return
+
+            shell = shutil.which("bash", path=ENV.get("PATH")) or shutil.which("sh") or "sh"
+            # Shield spawn so cancellation cannot orphan a process created concurrently.
+            spawning = asyncio.create_task(asyncio.create_subprocess_shell(
+                command, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                cwd=cwd, executable=shell if sys.platform != "win32" else None,
+                env=ENV, start_new_session=sys.platform != "win32"
+            ))
+            try:
+                self.process = await asyncio.shield(spawning)
+            except asyncio.CancelledError:
+                self.process = await spawning
+                raise
+
+            async def stream(reader, kind):
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                while True:
+                    chunk = await reader.read(4096)
+                    if not chunk:
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            await self.send(kind, execution_id=execution_id, data=tail)
+                        break
+                    await self.send(kind, execution_id=execution_id, data=decoder.decode(chunk))
+
+            readers = [
+                asyncio.create_task(stream(self.process.stdout, "stdout")),
+                asyncio.create_task(stream(self.process.stderr, "stderr"))
+            ]
+            try:
+                await asyncio.wait_for(asyncio.gather(*readers, self.process.wait()), timeout_seconds)
+            except asyncio.TimeoutError:
+                await self.terminate_process()
+                await self.send("error", execution_id=execution_id, error="Command timed out and was stopped.")
+                return
+            await self.send("completed", execution_id=execution_id,
+                            exit_code=self.process.returncode, cwd=self.cwd)
+        except asyncio.CancelledError:
+            await self.terminate_process()
+            raise
+        except Exception as error:
+            await self.terminate_process()
+            with suppress(websockets.exceptions.ConnectionClosed):
+                await self.send("error", execution_id=execution_id, error=str(error))
+        finally:
+            for reader in readers:
+                if not reader.done():
+                    reader.cancel()
+            if readers:
+                await asyncio.gather(*readers, return_exceptions=True)
+            self.process = None
+            self.execution_id = None
+
+    async def transfer_file(self, action, msg):
+        path = os.path.abspath(os.path.join(self.cwd, os.path.expanduser(msg.get("path", ""))))
+        # Return the original requested path as the client correlates responses by it.
+        request_path = msg.get("path", "")
+        try:
+            if action == "write_file":
+                content = msg.get("content", "")
+                if not isinstance(content, str):
+                    raise ValueError("File content must be a string.")
+                def write():
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    Path(path).write_text(content, encoding="utf-8")
+                await asyncio.to_thread(write)
+                await self.send("file_written", path=request_path, success=True)
+            else:
+                def read():
+                    with open(path, "rb") as source:
+                        data = source.read(5 * 1024 * 1024 + 1)
+                    if len(data) > 5 * 1024 * 1024:
+                        raise ValueError("File exceeds the 5 MiB transfer limit.")
+                    return data
+                data = await asyncio.to_thread(read)
+                if action == "read_file_base64":
+                    await self.send("file_base64", path=request_path, data=base64.b64encode(data).decode("ascii"))
+                else:
+                    await self.send("file_content", path=request_path, content=data.decode("utf-8", errors="replace"))
+        except Exception as error:
+            await self.send("error", path=request_path, error=str(error))
+
 
 async def handle_connection(websocket):
-    """Handle incoming WebSocket client connection with authentication."""
-    global current_process, current_cwd
-    is_local = is_client_loopback(websocket)
-    authenticated = is_local
-
+    """Require a token for every client; receive controls while commands run."""
+    session = BridgeSession(websocket)
+    authenticated = False
     try:
         async for message in websocket:
             try:
                 msg = json.loads(message)
-            except json.JSONDecodeError:
-                await websocket.send(json.dumps({"type": "error", "error": "Ungültiges JSON-Format"}))
+                if not isinstance(msg, dict):
+                    raise ValueError("Expected a JSON object.")
+            except (ValueError, TypeError):
+                await session.send("error", error="Invalid JSON object.")
                 continue
-
             action = msg.get("action")
-
-            # 1. Authentication handshake
             if action == "auth":
-                provided_token = msg.get("token", "")
-                if is_local or not AUTH_TOKEN or (provided_token and provided_token == AUTH_TOKEN):
+                token = msg.get("token")
+                if isinstance(token, str) and AUTH_TOKEN and hmac.compare_digest(
+                    token.encode("utf-8"), AUTH_TOKEN.encode("utf-8")
+                ):
                     authenticated = True
-                    await websocket.send(json.dumps({
-                        "type": "auth_ok",
-                        "system": get_system_info(),
-                        "cwd": current_cwd
-                    }))
+                    info = await asyncio.to_thread(get_system_info, session.cwd)
+                    await session.send("auth_ok", system=info, cwd=session.cwd)
                 else:
-                    await websocket.send(json.dumps({
-                        "type": "auth_fail",
-                        "error": "Authentifizierung fehlgeschlagen: Token ungültig."
-                    }))
+                    await session.send("auth_fail", error="Authentication failed: invalid token.")
+                    await websocket.close(code=1008, reason="Authentication required")
+                    return
                 continue
-
             if not authenticated:
-                await websocket.send(json.dumps({
-                    "type": "error",
-                    "error": "Nicht authentifiziert. Zuerst {'action': 'auth', 'token': '...'} senden."
-                }))
+                await session.send("error", error="Authentication required.",
+                                   execution_id=msg.get("execution_id", ""))
                 continue
-
-            # 2. Ping / Keepalive
             if action == "ping":
-                await websocket.send(json.dumps({
-                    "type": "pong",
-                    "timestamp": msg.get("timestamp", 0)
-                }))
-
-            # 3. System info
+                await session.send("pong", timestamp=msg.get("timestamp", 0))
             elif action == "sys_info":
-                await websocket.send(json.dumps({
-                    "type": "sys_info",
-                    "data": get_system_info()
-                }))
-
-            # 4. Execute shell command
+                await session.send("sys_info", data=await asyncio.to_thread(get_system_info, session.cwd))
             elif action == "execute":
-                cmd = msg.get("command", "").strip()
+                command = msg.get("command")
                 execution_id = msg.get("execution_id", "default")
-                cwd = msg.get("cwd", current_cwd)
-                if not cmd:
-                    await websocket.send(json.dumps({
-                        "type": "error",
-                        "execution_id": execution_id,
-                        "error": "Leerer Befehl übergeben"
-                    }))
+                if not isinstance(command, str) or not command.strip():
+                    await session.send("error", execution_id=execution_id, error="Command must be a nonempty string.")
                     continue
-                await run_command_streaming(websocket, cmd, execution_id, cwd)
-
-            # 5. Interrupt running command
+                if session.task is not None and not session.task.done():
+                    await session.send("error", execution_id=execution_id, error="A command is already running on this connection.")
+                    continue
+                cwd = msg.get("cwd", session.cwd)
+                if not isinstance(cwd, str):
+                    await session.send("error", execution_id=execution_id, error="Invalid working directory.")
+                    continue
+                timeout_ms = msg.get("timeout_ms", 90000)
+                if not isinstance(timeout_ms, (int, float)) or not 1 <= timeout_ms <= 3600000:
+                    await session.send("error", execution_id=execution_id, error="Invalid command timeout.")
+                    continue
+                session.execution_id = execution_id
+                session.task = asyncio.create_task(session.run(command.strip(), execution_id, cwd, timeout_ms / 1000))
             elif action == "interrupt":
-                if current_process and current_process.returncode is None:
-                    try:
-                        if sys.platform != "win32":
-                            os.killpg(os.getpgid(current_process.pid), signal.SIGINT)
-                        else:
-                            current_process.terminate()
-                        await websocket.send(json.dumps({
-                            "type": "interrupted",
-                            "execution_id": msg.get("execution_id", "")
-                        }))
-                    except Exception as e:
-                        await websocket.send(json.dumps({
-                            "type": "error",
-                            "error": f"Abbruch fehlgeschlagen: {e}"
-                        }))
-                else:
-                    await websocket.send(json.dumps({
-                        "type": "info",
-                        "message": "Kein aktiver Prozess zum Abbrechen"
-                    }))
-
-            # 6. Read file
-            elif action == "read_file":
-                path = os.path.expanduser(msg.get("path", ""))
-                if not os.path.isabs(path):
-                    path = os.path.join(current_cwd, path)
-                try:
-                    with open(path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
-                    await websocket.send(json.dumps({
-                        "type": "file_content",
-                        "path": path,
-                        "content": content
-                    }))
-                except Exception as e:
-                    await websocket.send(json.dumps({
-                        "type": "error",
-                        "path": path,
-                        "error": str(e)
-                    }))
-
-            # 6b. Read file base64 (multimodal vision & binary transfer)
-            elif action == "read_file_base64":
-                path = os.path.expanduser(msg.get("path", ""))
-                if not os.path.isabs(path):
-                    path = os.path.join(current_cwd, path)
-                try:
-                    import base64
-                    with open(path, "rb") as f:
-                        b64_content = base64.b64encode(f.read()).decode("ascii")
-                    await websocket.send(json.dumps({
-                        "type": "file_base64",
-                        "path": path,
-                        "data": b64_content
-                    }))
-                except Exception as e:
-                    await websocket.send(json.dumps({
-                        "type": "error",
-                        "path": path,
-                        "error": str(e)
-                    }))
-
-            # 7. Write file
-            elif action == "write_file":
-                path = os.path.expanduser(msg.get("path", ""))
-                content = msg.get("content", "")
-                if not os.path.isabs(path):
-                    path = os.path.join(current_cwd, path)
-                try:
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    await websocket.send(json.dumps({
-                        "type": "file_written",
-                        "path": path,
-                        "success": True
-                    }))
-                except Exception as e:
-                    await websocket.send(json.dumps({
-                        "type": "error",
-                        "path": path,
-                        "error": str(e)
-                    }))
-
+                execution_id = session.execution_id
+                requested = msg.get("execution_id")
+                if requested and requested != execution_id:
+                    await session.send("error", execution_id=requested, error="Execution is no longer active.")
+                    continue
+                await session.stop()
+                await session.send("interrupted", execution_id=execution_id or "")
+                if execution_id:
+                    await session.send("completed", execution_id=execution_id, exit_code=130, cwd=session.cwd)
+            elif action in ("read_file", "read_file_base64", "write_file"):
+                if not isinstance(msg.get("path"), str) or not msg["path"]:
+                    await session.send("error", error="A file path is required.")
+                    continue
+                await session.transfer_file(action, msg)
+            else:
+                await session.send("error", error="Unknown action.")
     except websockets.exceptions.ConnectionClosed:
         pass
-    except Exception as e:
-        print(f"[ERROR] WebSocket handler error: {e}", file=sys.stderr)
+    finally:
+        await session.stop()
+
 
 def _watchdog_sync_cycle():
     """Run wake-lock and notification update in background thread so event loop is never blocked."""
@@ -481,7 +390,7 @@ def _watchdog_sync_cycle():
         info = get_system_info()
         batt = info.get("battery", {})
         pct = batt.get("percentage")
-        status_text = f"Port {PORT} • Akku: {pct}%" if pct is not None else f"Port {PORT} • Hintergrund aktiv"
+        status_text = f"Port {PORT} • Battery: {pct}%" if pct is not None else f"Port {PORT} • Background active"
         update_termux_notification(status_text)
     except Exception:
         pass
@@ -500,19 +409,6 @@ async def background_watchdog():
         await asyncio.sleep(45)
 
 async def main():
-    # Ensure process runs in its own session to survive terminal closure
-    if sys.platform != "win32":
-        try:
-            if os.getpgrp() == os.getpid():
-                # Process is group leader (e.g. from shell background job).
-                # Fork so the child is not a process group leader and setsid succeeds.
-                pid = os.fork()
-                if pid > 0:
-                    sys.exit(0)
-            os.setsid()
-        except OSError:
-            pass
-
     # Ignore SIGHUP and SIGPIPE so closing terminal or broken pipes do not terminate the daemon
     if hasattr(signal, "SIGHUP"):
         try:
@@ -530,7 +426,7 @@ async def main():
     try:
         PID_FILE.write_text(str(os.getpid()))
     except Exception as e:
-        print(f"[WARN] Konnte PID-Datei nicht schreiben: {e}", file=sys.stderr)
+        print(f"[WARN] Could not write PID file: {e}", file=sys.stderr)
 
     ensure_wake_lock()
     update_termux_notification("AMC Bridge gestartet • Port " + str(PORT))
@@ -539,23 +435,17 @@ async def main():
     print(f" AMC - AI Mobile Center Bridge Daemon")
     print(f" Listening on ws://{HOST}:{PORT}")
     print(f" PID: {os.getpid()}")
-    if AUTH_TOKEN:
-        print(f" Auth Token: {AUTH_TOKEN}")
-        print(f" Token File: {TOKEN_FILE}")
-        clip_cmd = shutil.which("termux-clipboard-set", path=ENV.get("PATH"))
-        if clip_cmd:
-            try:
-                subprocess.run([clip_cmd, AUTH_TOKEN], env=ENV, timeout=2)
-                print(f" [INFO] 📋 Token wurde in die Android-Zwischenablage kopiert!")
-            except Exception:
-                pass
-    else:
-        print(f" Auth Token: DEAKTIVIERT (Offener lokaler Modus)")
-    print(f"==================================================")
+    print(f" Authentication required. Token file: {TOKEN_FILE}")
+    print(" Use 'amc token' to display the pairing token in Termux.")
+    print("==================================================")
 
     # Start background keep-alive watchdog
     watchdog_task = asyncio.create_task(background_watchdog())
 
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for stop_signal in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(stop_signal, stop_event.set)
     try:
         # On loopback/localhost, disable server-side ping timeouts so mobile background scheduling doesn't drop connections
         async with websockets.serve(
@@ -563,12 +453,15 @@ async def main():
             HOST,
             PORT,
             max_size=10 * 1024 * 1024,
+            origins=[None],
             ping_interval=None,
             ping_timeout=None
         ):
-            await asyncio.Future()  # run forever
+            await stop_event.wait()
     finally:
         watchdog_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await watchdog_task
         remove_termux_notification()
         if PID_FILE.exists():
             try:
@@ -586,8 +479,6 @@ def cleanup_and_exit(signum, frame):
     sys.exit(0)
 
 if __name__ == "__main__":
-    if hasattr(signal, "SIGTERM"):
-        signal.signal(signal.SIGTERM, cleanup_and_exit)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

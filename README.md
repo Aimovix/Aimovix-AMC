@@ -1,210 +1,182 @@
-# 🤖 AMC – AI Mobile Center (by Aimovix)
+# AMC — AI Mobile Center by Aimovix
 
-**AMC (AI Mobile Center)** ist eine native Android-Anwendung (Kotlin + Jetpack Compose), die dein Smartphone in einen autonomen mobilen KI-Agenten verwandelt. Der Agent steuert eine lokale Termux-Linux-Umgebung und erhält über `termux-api` sowie Shell-Befehle tiefgreifenden System- und Hardware-Zugriff (SMS, Kamera, GPS, Benachrichtigungen, Sensoren, Dateisystem, Python-Skripte).
+AMC is a native Android app that connects an AI assistant to a local Termux environment. Ask it to inspect the device, work with files, run scripts, or use supported Termux:API features. The interface, built-in prompts, logs, examples, and documentation are in English.
 
----
+**Status: experimental.** AMC can execute commands with Termux's permissions. Its command filter reduces accidental execution; it is not a sandbox or a guarantee against prompt injection. Review commands before granting access to private data or device features.
 
-## 🚀 Schnellstart
+> **Signing migration:** earlier repository revisions included a release keystore and its passwords. That identity must be treated as compromised. This revision removes it and uses external signing configuration. See [SECURITY.md](SECURITY.md) before distributing an APK or upgrading an existing installation.
 
-### 1. App auf dem Smartphone installieren
-- **Download:** Lade die aktuelle Version direkt über **[GitHub Releases](https://github.com/Aimovix/Aimovix-AMC/releases)** herunter (APK unter *Assets*).
-- **Selbst bauen:** Alternativ lokal mit `./gradlew assembleRelease` kompilieren.
+## Quick start
 
-### 2. Termux & Termux:API installieren
-Installiere beide Apps über **F-Droid** (die Version aus dem Google Play Store ist veraltet und inkompatibel):
-1. **[Termux auf F-Droid](https://f-droid.org/packages/com.termux/)**
-2. **[Termux:API auf F-Droid](https://f-droid.org/packages/com.termux.api/)**
+### 1. Build or obtain an APK
 
-### 3. Ein-Klick-Setup in Termux
-Öffne Termux auf deinem Smartphone und führe folgenden Befehl aus (oder nutze den Kopieren-Button im Setup-Tab der AMC-App):
-
-```bash
-curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridge/setup.sh | bash
-```
-
-Das Skript richtet die Umgebung automatisch als echten, robusten Hintergrunddienst ein:
-- **CLI-Tool `amc`:** Installiert den Service-Manager direkt nach `$PREFIX/bin/amc`.
-- **Hintergrund-Daemon (`setsid` + `disown` + `nohup`):** Der Prozess läuft vollständig entkoppelt in einer eigenen Session und ignoriert `SIGHUP` (läuft weiter, wenn Termux minimiert wird).
-- **Vordergrund-Benachrichtigung:** Startet eine dauerhafte Android-Benachrichtigung (`termux-notification --ongoing`), die Android signalisiert, dass der Prozess aktiv ist.
-- **CPU-Wake-Lock:** Aktiviert `termux-wake-lock`, um Tiefschlaf des Prozessors zu unterbinden.
-- **Automatische Akku-Ausnahme:** Fordert Android beim Setup direkt auf, Termux von der Akku-Optimierung auszunehmen.
-- **Auto-Start:** Richtet automatischen Start für Termux:Boot (`~/.termux/boot/`) und die Shell (`~/.bashrc`) ein.
-- **Auto-Reconnect in AMC:** Die Android-App verbindet sich beim Öffnen (`onResume`) und im Hintergrund automatisch wieder.
-
-#### 🛑 Wichtige Regeln für dauerhafte Hintergrund-Verbindung:
-1. **Termux geöffnet lassen:**
-   Termux nach dem Setup **NICHT** mit `exit` beenden und **NICHT** aus der App-Übersicht (Recent Apps) wischen! Einfach mit der **Home-Taste** minimieren und zur AMC-App wechseln.
-2. **Akku-Optimierung auf „Uneingeschränkt“ stellen:**
-   Falls der automatische Dialog nicht erschien: **Android-Einstellungen -> Apps -> Termux -> Akku -> „Uneingeschränkt“ / „Nicht optimiert“**.
-3. **Android 12/13/14+ Kindprozess-Beschränkungen (Phantom Process Killer):**
-   Falls Android Hintergrundprozesse nach einiger Zeit beendet: In den **Android-Entwickleroptionen** die Option **„Kindprozess-Beschränkungen deaktivieren“** (*Disable child process restrictions*) aktivieren.
-
-#### Termux Service-Befehle:
-```bash
-amc boost      # Reaktiviert Wake-Lock, fordert Akku-Ausnahme an & startet Bridge neu
-amc status     # Prüft Status, PID, Port 8765, Akku & Token
-amc logs       # Zeigt Live-Logs der Bridge
-amc restart    # Startet den Hintergrunddienst neu
-amc stop       # Beendet den Dienst
-```
-
-
----
-
-## 🧠 Unterstützte KI-Modelle & Dynamische Modellauswahl
-
-Die App bietet im Tab **Einstellungen** sowie direkt in der Chat-Leiste eine dynamische Modellauswahl:
-- **Empfohlene Modelle:** Schnellwahl per Klick über horizontale Chips für jeden Provider.
-- **Freie Texteingabe:** Beliebige benutzerdefinierte Modellnamen können manuell eingetippt und gespeichert werden (z. B. Fine-tunes, Vorschau-Versionen oder OpenRouter-Slugs).
-- **Direkter Modell-Wechsel im Chat:** Über die Modell-Pille in der oberen App-Leiste kann das Modell oder der Provider jederzeit im laufenden Betrieb ohne Tab-Wechsel angepasst werden.
-
-| Provider | Modell-Beispiele (Vorschläge & Freitext) | Beschreibung |
-|---|---|---|
-| **Google Gemini** | `gemini-2.0-flash`, `gemini-1.5-flash`, `gemini-1.5-pro` | Natives Function Calling, hohe Geschwindigkeit |
-| **OpenAI** | `gpt-4o`, `gpt-4o-mini`, `o3-mini`, `o1` | Standard-Tools & Function Calling |
-| **Anthropic Claude** | `claude-3-7-sonnet`, `claude-3-5-sonnet-20241022`, `claude-3-5-haiku` | ReAct-basierte Werkzeugaufrufe |
-| **Groq** | `llama-3.3-70b-versatile`, `deepseek-r1-distill-llama-70b` | Extrem schnelle Inferenz |
-| **OpenRouter** | `anthropic/claude-3.5-sonnet`, `deepseek/deepseek-r1` | Zugriff auf Hunderte offene & proprietäre Modelle |
-| **Lokaler llama-server** | `qwen2.5-3b-instruct`, `llama-3.2-3b-instruct` | 100% offline auf dem Smartphone via `local_model_manager.sh` |
-
-
----
-
-## 🛡️ Sicherheitsarchitektur
-
-AMC verfügt über ein mehrstufiges Sicherheitskonzept zum Schutz des Smartphones und der privaten Daten:
-
-### 1. 3-Tier Command Security Filter (`CommandSecurityFilter.kt`)
-Alle vom Modell generierten Befehle durchlaufen eine statische Analyse inklusive Normalisierung (Schutz gegen Token-Splitting und Quotes wie `r'm'`):
-
-- 🛑 **BLOCKED (Ausnahmslos blockiert):**
-  Destruktive Systembefehle wie `rm -rf /`, `rm -rf ~`, `mkfs`, `dd if=/dev/zero`, Fork-Bombs und unkontrollierte Download-Pipes (`curl ... | bash`). Können weder im Autopilot noch manuell freigegeben werden.
-- 🔴 **HIGH (Bestätigungspflichtig):**
-  Aktionen mit Hardware- oder Privatsphärezugriff (SMS senden, Anrufe starten, Fotos aufnehmen, Kontakte auslesen, System-Reboot, Dateilöschungen) sowie potenzielle Verschleierungsmethoden (Base64-Decoding in Pipes, `eval`, `exec`, Inline-Interpreter wie `python -c`, `node -e`). **Erfordert immer die Freigabe durch den Nutzer, auch im Autopilot-Modus.**
-- 🟡 **MEDIUM:**
-  Dateisystem-Änderungen (`mkdir`, `touch`, `cp`), reguläre Skriptdateien (`python script.py`), Downloads und Paketinstallationen.
-- 🟢 **LOW:**
-  Reine Lese- und Diagnosebefehle (`termux-battery-status`, `ls`, `pwd`, `whoami`).
-
-### 2. Schutz vor Indirect Prompt Injection
-- **System-Guardrails:** Fremddaten (z. B. empfangene SMS, Webseiteninhalte via `curl`, Logs) dürfen laut System-Prompt niemals Systemanweisungen oder Verhaltensregeln überschreiben.
-- **Datenkapselung:** Befehlsausgaben werden vor der Übergabe an das LLM strikt in Begrenzungsmarkern (`[UNTRUSTED_OUTPUT_START] ... [UNTRUSTED_OUTPUT_END]`) isoliert.
-
-### 3. Netzwerk-Restriktion (`network_security_config.xml`)
-Klartext-Verbindungen (HTTP/WS) sind app-weit ausschließlich für die lokalen Loopback-Schnittstellen (`127.0.0.1`, `localhost`, `10.0.2.2`) freigegeben. Sämtliche Kommunikation mit externen Cloud-APIs erzwingt verschlüsseltes HTTPS.
-
-### 4. Hardware-gestützte Keystore-Verschlüsselung (`PreferenceManager.kt`)
-API-Keys und Bridge-Tokens werden mit `EncryptedSharedPreferences` über den Android Keystore (`AES256_GCM`) verschlüsselt abgelegt.
-
----
-
-## ⚡ Bedienung & Autonomie
-
-- **Autopilot-Modus:** Der Agent führt Schritte eigenständig aus, wertet Ausgaben und Fehlermeldungen aus und korrigiert sich selbst (HIGH-Risk-Aktionen pausieren dennoch für eine Bestätigung).
-- **Schritt-für-Schritt-Freigabe:** Jeder Befehl muss vor der Ausführung bestätigt werden (`Ausführen` oder `Ablehnen`).
-- **Live-Terminal-Streaming:** stdout/stderr-Ausgaben werden in Echtzeit in einer aufklappbaren Terminal-Box direkt im Chat gestreamt.
-- **Quick-Action-Toolbar:** Vordefinierte Aktionen für Akku-Status, WLAN-Informationen, Kamera-Foto, Zwischenablage, Systembenachrichtigungen und Text-to-Speech (TTS).
-- **Not-Aus-Button:** Ein schwebender roter Not-Aus-Button bricht die Ausführung und laufende Termux-Hintergrundprozesse via `SIGINT`/`SIGTERM` sofort ab.
-
----
-
-## 🌟 Enterprise Mega-Upgrade & Architektur
-
-AMC wurde auf Enterprise-Niveau gehoben und verfügt über eine modulare, resiliente und vollständig abgesicherte Architektur:
-
-### 1. Multi-Session-Persistenz & Chat-Verwaltung (Room Database)
-- **Room SQLite Engine (`AppDatabase.kt`):** Vollständige persistente Speicherung aller Chats, Nachrichten und Terminal-Ausgaben (`ChatSession`, `ChatMessageEntity`, `CommandAuditEntity`) mit Fremdschlüsselkaskadierung (`CASCADE`).
-- **Multi-Session-Drawer:** Schnelles Umschalten zwischen parallelen Chat-Sessions, Erstellen neuer Sessions und Löschen alter Historien.
-- **Automatische Titelgenerierung:** KI-basierte und heuristische Generierung prägnanter Titel aus der ersten Nutzeranweisung.
-- **Volltextsuche:** Durchsucht alle historischen Chat-Nachrichten sowie ausgeführte Terminal-Ausgaben in Echtzeit.
-- **Export (Markdown & JSON):** 1-Klick-Export vollständiger Sessions inklusive aller Tool-Calls, Token-Metriken und Terminal-Logs in den Gerätespeicher (`Documents/`).
-
-### 2. Multimodale Vision- & Artefakt-Pipeline
-- **Multi-Provider Vision (`LlmClient.kt`):** Unterstützt Bild-Inputs über alle führenden Vision-APIs:
-  - Google Gemini: Natives `inlineData` Base64-Streaming
-  - OpenAI / OpenRouter: Dynamische `image_url` data-URIs
-  - Anthropic Claude: Base64 Source Objects (`image/jpeg`, `image/png`, `image/webp`)
-- **Chat-Integration:** Fotos können direkt über die Kamera aufgenommen oder aus der Galerie an jede Chat-Nachricht angehängt werden.
-- **Autonome Termux-Vision-Loop:** Wenn der Agent `termux-camera-photo` aufruft, liest der Daemon das Bild automatisch im Base64-Format aus dem Termux-Dateisystem (`read_file_base64`) und injiziert es als visuelle Beobachtung in den Chat.
-- **In-App Artefakt-Viewer (`ArtifactViewerDialog.kt`):** Rendert erzeugte Dateien, Skripte, Code-Dateien und HTML-Reports in einem interaktiven Modal mit Syntax-Highlighting, Copy-Action und 1-Klick-Ausführung in Termux.
-
-### 3. SSE Token-Streaming & Provider-Resilienz
-- **Server-Sent Events (SSE):** Flüssiges Word-by-Word Streaming über Kotlin Coroutines Flow für OpenAI, Groq, OpenRouter, Claude (`/messages?stream=true`) und Gemini (`streamGenerateContent?alt=sse`).
-- **Automatisches Sekundär-Provider-Fallback:** Bei Rate-Limits (HTTP 429), Timeouts oder Serverfehlern (HTTP 5xx) schaltet die Engine nahtlos und unterbrechungsfrei auf den konfigurierten Fallback-Provider um (z. B. Primär Gemini Flash -> Fallback Groq Llama 3.3).
-- **Token- & Kosten-Tracking:** Protokolliert akkumulierte Prompt- und Completion-Tokens sowie geschätzte USD-Kosten pro Nachricht und Sitzung.
-
-### 4. Hybrid-Scheduler & Hintergrund-Automation
-- **Android WorkManager Integration (`AgentWorkflowWorker.kt`, `SchedulerManager.kt`):** Periodische und einmalige Hintergrund-Automationen mit Hardware-Constraints (z. B. nur bei WLAN, Akku nicht schwach, Ladezustand).
-- **Termux Crontab-Sync:** Synchronisiert geplante Aufgaben direkt mit dem Linux-Cron (`crontab -l`, `crontab -`) in Termux über den Bridge-Daemon.
-- **Interaktive Service-Benachrichtigungen:** Der Vordergrunddienst (`AgentForegroundService.kt`) aktualisiert Benachrichtigungen mit Live-Status und Stopp-Action.
-
-### 5. Security-Cockpit & Guardrails
-- **Sicherheits-Cockpit (`SecurityCockpitCard.kt`):**
-  - **Benutzerdefinierte Whitelist-Regex:** Freigabe spezifischer Befehle ohne Bestätigungsabfrage.
-  - **Benutzerdefinierte Blacklist-Regex:** Sofortige Blockierung individueller Befehlsmuster.
-  - **Strikter Modus (Strict Mode):** Erzwingt auch im Autopilot-Modus Bestätigungen für mittlere Risiken.
-- **Runaway & Cyclic Loop Detection:** Verhindert Endlosschleifen durch automatischen Abbruch bei:
-  - Wiederholter Ausführung desselben Befehls (>= 3 Mal identisch)
-  - Ping-Pong-Zyklen (Befehl A -> B -> A -> B)
-  - Persistenten Fehlern (>= 3 aufeinanderfolgende Fehler)
-- **Vollständiges Audit-Log:** Jeder ausgeführte oder abgelehnte Befehl wird mit Zeitstempel, Risiko-Level, Ausführungsdauer, Exit-Code und Ausgaben in der Room-Datenbank auditiert.
-
----
-
-## 🛠️ Entwicklung & Build
-
-### Voraussetzungen
-- Android Studio Ladybug (oder neuer)
-- JDK 21 (z. B. Eclipse Temurin 21)
-- Android SDK Platform 35
-
-### Befehle
+The CI workflow builds a debug APK for testing. Download `aimovix-debug-apk` from a successful [Actions run](https://github.com/Aimovix/Aimovix-AMC/actions), or build locally:
 
 ```bash
 cd android
-
-# Alle Unit-Tests (Room DAOs, Engine, Security Filter, MockWebServer) ausführen
-./gradlew testDebugUnitTest --no-daemon
-
-# Debug-Build erstellen
-./gradlew assembleDebug --no-daemon
-
-# Signierten Release-Build erstellen
-./gradlew assembleRelease --no-daemon
+./gradlew assembleDebug
 ```
 
-### CI/CD Pipeline
-Die GitHub Actions Pipeline (`.github/workflows/android-ci.yml`) führt bei jedem Push und Pull Request automatisch:
-- JDK 21 Setup mit Gradle Dependency Caching
-- Ausführung aller Unit- & Integrationstests
-- Kompilierung und Upload des Debug-APKs als Artefakt
+Debug builds use the standard local debug signing key. They are development artifacts, not production releases. Older [release assets](https://github.com/Aimovix/Aimovix-AMC/releases) do not automatically include the changes on the current branch.
 
----
+### 2. Install Termux and Termux:API
 
-## 🏗️ Projekt-Struktur
+Install [Termux](https://f-droid.org/packages/com.termux/) and [Termux:API](https://f-droid.org/packages/com.termux.api/) from F-Droid. Use the same installation source for both. Grant only the Android permissions needed for your tasks.
 
+### 3. Install the bridge
+
+Run this in Termux after reviewing the setup script:
+
+```bash
+curl --fail --show-error --location \
+  https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridge/setup.sh \
+  -o setup-amc.sh
+less setup-amc.sh
+bash setup-amc.sh
 ```
-Aimovix-AMC/
-├── .github/workflows/
-│   └── android-ci.yml         # CI/CD Workflow für Tests & APK-Build
-├── android/                   # Native Android App (Kotlin & Jetpack Compose)
-│   ├── app/src/main/
-│   │   ├── java/com/agent/mobile/
-│   │   │   ├── agent/         # ReAct-Engine, Prompting & Loop-Detection Guardrails
-│   │   │   ├── data/
-│   │   │   │   ├── model/     # Datenmodelle (Tokens, Provider, Artefakte, Tools)
-│   │   │   │   ├── network/   # SSE-Streaming LLM-Client, WebSocket Termux Bridge
-│   │   │   │   ├── repository/# ChatRepository mit Room & Metriken
-│   │   │   │   └── storage/   # EncryptedSharedPreferences & Room DB (DAOs, Entities)
-│   │   │   ├── scheduler/     # WorkManager Background Worker & Scheduler
-│   │   │   ├── security/      # 3-Tier Security Filter, Custom Regex & Strict Mode
-│   │   │   ├── service/       # Android Foreground Service mit Live-Notification
-│   │   │   └── ui/            # Modernes Zinc Dark UI (Chat, Drawer, Artifacts, Settings)
-│   │   └── res/xml/           # network_security_config.xml
-│   └── app/src/test/          # Unit- & Integrationstests (Room DAOs, MockWebServer, Engine)
-├── termux-bridge/             # Termux Python Bridge Daemon & Setup Scripts
-│   ├── bridge_daemon.py       # WebSocket Server (Befehle, Streaming, Base64-Dateitransfer, Cron)
-│   ├── setup.sh               # 1-Klick Setup-Skript für Termux
-│   └── local_model_manager.sh # llama.cpp & GGUF Modell-Manager
-└── README.md
+
+The installer downloads from `main`. To test a development branch consistently, clone that branch and run its local installer:
+
+```bash
+git clone --branch <branch-name> https://github.com/Aimovix/Aimovix-AMC.git
+bash Aimovix-AMC/termux-bridge/setup.sh
+```
+
+Setup installs Python, Git, curl, jq, Termux:API tools, the pinned Python dependency, and the `amc` service manager. The bridge listens only on `127.0.0.1:8765`.
+
+### 4. Pair the app
+
+```bash
+amc token
+```
+
+Enter that token in **AMC → Setup → Step 4**, then select **Connect now**. Authentication is mandatory for every connection, including other apps on the same phone. Keep the token private. It is not printed in daemon logs or ordinary status output.
+
+### 5. Configure an AI provider
+
+In **Settings**, choose a provider, enter a model ID and API key, then save. You can switch models from the chat toolbar. For local inference, configure an OpenAI-compatible server at `http://127.0.0.1:8080/v1`.
+
+Model suggestions are editable examples, not a live availability catalog. Check your provider account for supported models and pricing. A model must support the features used by your task, such as images or tool calls.
+
+## Using AMC
+
+- **Chat:** submit a task, attach an image, or use a quick action.
+- **Step-by-step mode:** the default for new installations; every agent command needs approval.
+- **Autopilot:** recognized diagnostic commands can run automatically. File changes, network operations, scripts, and unknown commands normally require approval.
+- **Strict mode:** requires approval for every agent command, even operations covered by a custom allowlist.
+- **Emergency stop:** requests cancellation through the active bridge connection. The bridge handles controls while commands run and terminates the command's process group. The UI reports a request rather than claiming immediate completion.
+- **Terminal:** manually enter commands and use `CTRL-C` to interrupt them. Commands entered here are direct user actions; the catastrophic blocklist still applies.
+- **Sessions:** create, search, switch, and export chats as Markdown or JSON. User-authored history and existing generated content are preserved as entered.
+- **Artifacts:** view supported images, text, code, Markdown, and HTML. Script execution returns to the agent flow for review.
+- **Voice input:** uses English speech recognition when the device's recognition service supports it.
+
+## Providers and local inference
+
+| Provider | Connection | Notes |
+| --- | --- | --- |
+| Google Gemini | Gemini API | Streaming and function calls |
+| OpenAI | Chat Completions API | Streaming, tool calls, and compatible image models |
+| Anthropic Claude | Messages API | Streaming and supported image inputs |
+| Groq | OpenAI-compatible API | Model capabilities vary |
+| OpenRouter | OpenAI-compatible API | Model and provider capabilities vary |
+| Local server | OpenAI-compatible HTTP endpoint on loopback | Requires a separately running inference server |
+
+An optional secondary provider can handle retryable failures such as rate limits and server errors. Token counts and cost estimates are informational; provider billing is authoritative.
+
+To install and run a local model from Termux:
+
+```bash
+bash ~/.termux_agent/local_model_manager.sh
+```
+
+The model manager downloads a GGUF model and starts `llama-server` on loopback port 8080. Downloads require internet access and storage; inference can run locally after installation. Memory and performance depend on the device and model.
+
+## Background operation
+
+Set **Android Settings → Apps → Termux → Battery** to **Unrestricted** or **Not optimized**, and allow notifications. Leave Termux running in the background rather than exiting or force-stopping it.
+
+The service uses a wake lock, a notification, and startup hooks. These improve reliability but cannot guarantee that Android or manufacturer-specific limits will keep a process alive. Termux:Boot must be installed separately if you want startup after a device reboot.
+
+```bash
+amc start       # Start the bridge
+amc stop        # Stop the service and active connection tasks
+amc restart     # Restart the bridge
+amc status      # Show service status without revealing the token
+amc token       # Display the private pairing token explicitly
+amc logs        # Follow daemon logs
+amc boost       # Open background settings and restart the service
+amc autostart   # Configure shell and Termux:Boot hooks
+amc run         # Run in the foreground
+```
+
+### Scheduled work
+
+**WorkManager** supports one-time and recurring command jobs with network and charging constraints. Before execution, a worker loads the stored security rules, checks whether approval is required, waits for authenticated connection, and releases the connection when finished. Jobs needing approval are rejected with a notification; they cannot silently approve themselves.
+
+**Termux crontab** is a separate, manually managed scheduler. Synchronizing a crontab installs the user's supplied schedule. Cron commands subsequently run outside AMC's interactive approval flow and are not stopped by the chat's emergency-stop control. Inspect every entry before syncing, and remove entries explicitly when no longer needed.
+
+## Security boundaries
+
+- The bridge is device-local, requires a token, and rejects browser origins.
+- Each connection has its own working directory, execution task, and process reference.
+- Commands have a server-side timeout. Disconnecting the client cancels that connection's active task.
+- Known catastrophic command patterns are blocked. The filter conservatively classifies unknown commands and shell composition as high risk.
+- Custom allowlist patterns must match the entire recognized command. They cannot bypass high-risk or catastrophic classification, strict mode, or step-by-step mode.
+- API keys and tokens use `EncryptedSharedPreferences`. If encrypted storage cannot initialize, the app shows a recovery screen instead of writing plaintext credentials.
+- Legacy plaintext preference values are cleared only after a successful encrypted migration.
+- Android backup is disabled for the app.
+- External provider connections use HTTPS; cleartext connections are limited by the Android network configuration to approved local endpoints.
+- Untrusted tool output is marked for the model. These markers and prompt instructions are precautions, not an isolation mechanism.
+
+Once a command is approved, it runs with Termux's permissions. Programs may start detached jobs or change their own process groups. Review arbitrary scripts carefully; process cancellation cannot undo an SMS, file change, network request, or other completed effect. See [SECURITY.md](SECURITY.md) for signing and credential recovery.
+
+## Development
+
+Requirements: Android SDK Platform 35, a compatible Android Studio installation, and JDK 21 for the repository's CI configuration. The Gradle wrapper is included. The app targets Android 8.0 (API 26) and later.
+
+```bash
+cd android
+./gradlew testDebugUnitTest assembleDebug --no-daemon
+```
+
+Bridge integration tests run on Linux with Python 3.10 or later:
+
+```bash
+python -m pip install -r termux-bridge/requirements.txt
+python -m unittest discover -s termux-bridge -p 'test_*.py' -v
+bash -n termux-bridge/setup.sh termux-bridge/amc termux-bridge/local_model_manager.sh
+```
+
+The GitHub Actions workflow runs Android unit tests, builds the debug APK, runs bridge integration tests, and checks shell syntax. Bridge tests cover authentication, browser-origin rejection, controls during execution, timeouts, disconnect cleanup, connection isolation, and large streamed output.
+
+### Release signing
+
+Create and protect a **new** signing identity outside the repository. Supply:
+
+```text
+AMC_KEYSTORE_FILE       Absolute path to your private keystore
+AMC_KEYSTORE_PASSWORD   Keystore password
+AMC_KEY_ALIAS          Signing key alias
+AMC_KEY_PASSWORD       Signing key password
+```
+
+Then run `./gradlew assembleRelease` from `android/`. Without all four values, the release build is unsigned. Never distribute an unsigned build as an installable release, commit credentials, or reuse the exposed historical key. Debug builds always use the standard debug identity.
+
+Changing a signing identity affects upgrades. Follow the migration guidance in [SECURITY.md](SECURITY.md) before replacing an installed app or publishing a release.
+
+## Project layout
+
+```text
+.github/workflows/             Android and bridge CI
+android/app/src/main/
+  java/com/agent/mobile/
+    agent/                     Agent loop and system prompt
+    data/                      Models, networking, repositories, storage
+    security/                  Command assessment and approval policy
+    service/                   Foreground service and WorkManager
+    ui/                        Chat, terminal, setup, settings, components
+  res/                         Android resources and network policy
+android/app/src/test/          Kotlin unit and integration tests
+termux-bridge/                 Python bridge, integration tests, CLI, setup
+SECURITY.md                    Boundaries, signing migration, recovery
 ```

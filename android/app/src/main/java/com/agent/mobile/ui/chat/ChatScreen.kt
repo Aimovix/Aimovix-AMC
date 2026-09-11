@@ -132,7 +132,7 @@ fun ChatScreen(
                     TopAppBar(
                         navigationIcon = {
                             IconButton(onClick = { coroutineScope.launch { drawerState.open() } }) {
-                                Icon(Icons.Default.Menu, contentDescription = "Menü & Chats", tint = TextWhite)
+                                Icon(Icons.Default.Menu, contentDescription = "Menu and chats", tint = TextWhite)
                             }
                         },
                         title = {
@@ -176,7 +176,7 @@ fun ChatScreen(
                                             )
                                             Icon(
                                                 imageVector = Icons.Default.ArrowDropDown,
-                                                contentDescription = "Modell wechseln",
+                                                contentDescription = "Switch model",
                                                 tint = TextMuted,
                                                 modifier = Modifier.size(12.dp)
                                             )
@@ -190,10 +190,10 @@ fun ChatScreen(
                                     modifier = Modifier.padding(top = 2.dp)
                                 ) {
                                     val (dotColor, statusLabel) = when (connectionStatus) {
-                                        is ConnectionStatus.Connected -> Pair(StatusOnline, "Verbunden")
-                                        is ConnectionStatus.Connecting -> Pair(YellowWarning, "Verbindet...")
-                                        is ConnectionStatus.AuthFailed -> Pair(RedEmergency, "Auth-Fehler")
-                                        else -> Pair(TextMuted, "Getrennt")
+                                        is ConnectionStatus.Connected -> Pair(StatusOnline, "Connected")
+                                        is ConnectionStatus.Connecting -> Pair(YellowWarning, "Connecting...")
+                                        is ConnectionStatus.AuthFailed -> Pair(RedEmergency, "Authentication error")
+                                        else -> Pair(TextMuted, "Disconnected")
                                     }
                                     Box(
                                         modifier = Modifier
@@ -244,7 +244,7 @@ fun ChatScreen(
                                         modifier = Modifier.size(12.dp)
                                     )
                                     Text(
-                                        text = if (executionMode == ExecutionMode.AUTOPILOT) "Autopilot" else "Freigabe",
+                                        text = if (executionMode == ExecutionMode.AUTOPILOT) "Autopilot" else "Approval",
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary else TextSecondary
@@ -256,7 +256,7 @@ fun ChatScreen(
                             IconButton(onClick = { agentEngine.createNewSession() }) {
                                 Icon(
                                     imageVector = Icons.Default.AddComment,
-                                    contentDescription = "Neuer Chat",
+                                    contentDescription = "New chat",
                                     tint = TextSecondary
                                 )
                             }
@@ -273,8 +273,8 @@ fun ChatScreen(
                         containerColor = RedEmergency,
                         contentColor = Color.White,
                         shape = RoundedCornerShape(12.dp),
-                        icon = { Icon(Icons.Default.Stop, contentDescription = "Not-Aus") },
-                        text = { Text("NOT-AUS", fontWeight = FontWeight.Bold) }
+                        icon = { Icon(Icons.Default.Stop, contentDescription = "Emergency stop") },
+                        text = { Text("STOP", fontWeight = FontWeight.Bold) }
                     )
                 }
             }
@@ -292,10 +292,10 @@ fun ChatScreen(
                         else -> YellowWarning
                     }
                     val bannerText = when (connectionStatus) {
-                        is ConnectionStatus.Connecting -> "Verbinde mit Termux (ws://127.0.0.1:8765)..."
-                        is ConnectionStatus.AuthFailed -> "Auth-Fehler: Token stimmt nicht überein"
-                        is ConnectionStatus.Error -> "Termux nicht erreichbar ('amc start' in Termux nötig)"
-                        else -> "Termux Bridge nicht aktiv"
+                        is ConnectionStatus.Connecting -> "Connecting to Termux (ws://127.0.0.1:8765)..."
+                        is ConnectionStatus.AuthFailed -> "Authentication error: token does not match"
+                        is ConnectionStatus.Error -> "Termux unavailable (run 'amc start' in Termux)"
+                        else -> "Termux bridge is not running"
                     }
 
                     Surface(
@@ -343,7 +343,7 @@ fun ChatScreen(
                                                 bridgeClient.forceReconnect()
                                                 if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) {
                                                     bridgeClient.triggerBoost()
-                                                    android.widget.Toast.makeText(context, "🚀 Termux Boost & Wake-Lock ausgeführt!", android.widget.Toast.LENGTH_SHORT).show()
+                                                    android.widget.Toast.makeText(context, "🚀 Termux boost requested.", android.widget.Toast.LENGTH_SHORT).show()
                                                 } else {
                                                     if (!TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")) {
                                                         try {
@@ -363,7 +363,7 @@ fun ChatScreen(
                                         onClick = { bridgeClient.reconnectIfDisconnected(force = true) },
                                         contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)
                                     ) {
-                                        Text("Verbinden", color = AccentPrimary, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                        Text("Connect", color = AccentPrimary, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -381,7 +381,7 @@ fun ChatScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Artefakte:", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
+                        Text("Artifacts:", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
                         artifacts.forEach { item ->
                             val icon = when (item.type) {
                                 ArtifactType.IMAGE -> Icons.Default.Image
@@ -440,7 +440,7 @@ fun ChatScreen(
                                         )
                                     )
                                     Text(
-                                        text = "Multimodaler KI-Agent mit direkter Termux-Shell-Bridge\nund automatischer Fallback-Resilienz.",
+                                        text = "Multimodal AI agent with a direct Termux shell bridge\nand automatic provider fallback.",
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             color = TextMuted,
                                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -489,14 +489,14 @@ fun ChatScreen(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Image(
                                         bitmap = pendingImageBitmap!!.asImageBitmap(),
-                                        contentDescription = "Vorschau",
+                                        contentDescription = "Preview",
                                         modifier = Modifier
                                             .size(40.dp)
                                             .clip(RoundedCornerShape(6.dp))
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "Bild angehängt (Vision bereit)",
+                                        text = "Image attached (vision ready)",
                                         style = MaterialTheme.typography.labelSmall.copy(color = AccentPrimary, fontWeight = FontWeight.Bold)
                                     )
                                 }
@@ -508,7 +508,7 @@ fun ChatScreen(
                                     },
                                     modifier = Modifier.size(24.dp)
                                 ) {
-                                    Icon(Icons.Default.Close, contentDescription = "Entfernen", tint = TextMuted, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Default.Close, contentDescription = "Remove", tint = TextMuted, modifier = Modifier.size(16.dp))
                                 }
                             }
                         }
@@ -527,7 +527,7 @@ fun ChatScreen(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.AddPhotoAlternate,
-                                        contentDescription = "Bild anhängen",
+                                        contentDescription = "Attach image",
                                         tint = if (pendingImageBitmap != null) AccentPrimary else TextMuted,
                                         modifier = Modifier.size(20.dp)
                                     )
@@ -539,7 +539,7 @@ fun ChatScreen(
                                     modifier = Modifier.background(DarkCard)
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("Kamera-Schnappschuss", color = TextWhite) },
+                                        text = { Text("Take a photo", color = TextWhite) },
                                         leadingIcon = { Icon(Icons.Default.PhotoCamera, contentDescription = null, tint = AccentPrimary) },
                                         onClick = {
                                             showAttachMenu = false
@@ -547,7 +547,7 @@ fun ChatScreen(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Aus Galerie wählen", color = TextWhite) },
+                                        text = { Text("Choose from gallery", color = TextWhite) },
                                         leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = AccentPrimary) },
                                         onClick = {
                                             showAttachMenu = false
@@ -562,7 +562,7 @@ fun ChatScreen(
                                 onValueChange = { inputText = it },
                                 placeholder = {
                                     Text(
-                                        if (pendingImageBitmap != null) "Frage zum Bild stellen..." else "Befehl oder Aufgabe eingeben...",
+                                        if (pendingImageBitmap != null) "Ask about the image..." else "Enter a command or task...",
                                         fontSize = 12.5.sp,
                                         color = TextMuted,
                                         maxLines = 1,
@@ -584,7 +584,7 @@ fun ChatScreen(
                                 keyboardActions = KeyboardActions(
                                     onSend = {
                                         if ((inputText.isNotBlank() || pendingImageBase64 != null) && !isBusy) {
-                                            val prompt = inputText.trim().ifEmpty { "Analysiere das angehängte Bild." }
+                                            val prompt = inputText.trim().ifEmpty { "Analyze the attached image." }
                                             val imgB64 = pendingImageBase64
                                             val mime = pendingImageMimeType
                                             inputText = ""
@@ -598,9 +598,9 @@ fun ChatScreen(
                                                     val isIgnoringBattery = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")
                                                     if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) {
                                                         bridgeClient.triggerBoost()
-                                                        android.widget.Toast.makeText(context, "🚀 Termux Hintergrund-Boost & Wake-Lock ausgeführt!", android.widget.Toast.LENGTH_SHORT).show()
+                                                        android.widget.Toast.makeText(context, "🚀 Termux background boost requested.", android.widget.Toast.LENGTH_SHORT).show()
                                                     } else {
-                                                        android.widget.Toast.makeText(context, "Verbinde mit Termux... Bitte Termux geöffnet im Hintergrund lassen!", android.widget.Toast.LENGTH_LONG).show()
+                                                        android.widget.Toast.makeText(context, "Connecting to Termux... Leave Termux running in the background.", android.widget.Toast.LENGTH_LONG).show()
                                                         if (!isIgnoringBattery) {
                                                             try {
                                                                 context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
@@ -631,7 +631,7 @@ fun ChatScreen(
                             Surface(
                                 onClick = {
                                     if (canSend) {
-                                        val prompt = inputText.trim().ifEmpty { "Analysiere das angehängte Bild." }
+                                        val prompt = inputText.trim().ifEmpty { "Analyze the attached image." }
                                         val imgB64 = pendingImageBase64
                                         val mime = pendingImageMimeType
                                         inputText = ""
@@ -645,9 +645,9 @@ fun ChatScreen(
                                                 val isIgnoringBattery = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")
                                                 if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) {
                                                     bridgeClient.triggerBoost()
-                                                    android.widget.Toast.makeText(context, "🚀 Termux Hintergrund-Boost & Wake-Lock ausgeführt!", android.widget.Toast.LENGTH_SHORT).show()
+                                                    android.widget.Toast.makeText(context, "🚀 Termux background boost requested.", android.widget.Toast.LENGTH_SHORT).show()
                                                 } else {
-                                                    android.widget.Toast.makeText(context, "Verbinde mit Termux... Bitte Termux geöffnet im Hintergrund lassen!", android.widget.Toast.LENGTH_LONG).show()
+                                                    android.widget.Toast.makeText(context, "Connecting to Termux... Leave Termux running in the background.", android.widget.Toast.LENGTH_LONG).show()
                                                     if (!isIgnoringBattery) {
                                                         try {
                                                             context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
@@ -669,7 +669,7 @@ fun ChatScreen(
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.Send,
-                                        contentDescription = "Senden",
+                                        contentDescription = "Send",
                                         tint = if (canSend) Color.Black else TextMuted,
                                         modifier = Modifier.size(16.dp)
                                     )
@@ -757,7 +757,7 @@ private fun QuickModelPickerDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Modell auswählen",
+                        text = "Select model",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = TextWhite
@@ -768,7 +768,7 @@ private fun QuickModelPickerDialog(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Schließen", tint = TextMuted)
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted)
                     }
                 }
 
@@ -812,7 +812,7 @@ private fun QuickModelPickerDialog(
 
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = "Empfohlene Modelle (${selectedProvider.displayName})",
+                        text = "Suggested models (${selectedProvider.displayName})",
                         style = MaterialTheme.typography.labelSmall.copy(color = TextMuted)
                     )
                     Row(
@@ -851,7 +851,7 @@ private fun QuickModelPickerDialog(
                     shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = DarkBackground)
                 ) {
-                    Text("Übernehmen", fontWeight = FontWeight.Bold)
+                    Text("Apply", fontWeight = FontWeight.Bold)
                 }
             }
         }
