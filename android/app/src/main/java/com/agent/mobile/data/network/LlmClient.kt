@@ -1,6 +1,7 @@
 package com.agent.mobile.data.network
 
 import com.agent.mobile.data.model.ChatMessage
+import com.agent.mobile.data.model.MessageRole
 import com.agent.mobile.data.model.ModelConfig
 import com.agent.mobile.data.model.ProviderType
 import com.agent.mobile.data.model.ToolCall
@@ -68,11 +69,11 @@ class LlmClient {
         for (m in messages) {
             val mObj = JSONObject()
             when (m.role) {
-                com.agent.mobile.data.model.MessageRole.USER -> {
+                MessageRole.USER -> {
                     mObj.put("role", "user")
                     mObj.put("content", m.text)
                 }
-                com.agent.mobile.data.model.MessageRole.ASSISTANT -> {
+                MessageRole.ASSISTANT -> {
                     mObj.put("role", "assistant")
                     if (m.toolCall != null) {
                         mObj.put("content", if (m.text.isNotEmpty()) m.text else null)
@@ -90,7 +91,7 @@ class LlmClient {
                         mObj.put("content", m.text)
                     }
                 }
-                com.agent.mobile.data.model.MessageRole.TOOL -> {
+                MessageRole.TOOL -> {
                     mObj.put("role", "tool")
                     mObj.put("tool_call_id", m.toolResult?.toolCallId ?: "default")
                     val content = JSONObject().apply {
@@ -124,8 +125,8 @@ class LlmClient {
             reqBuilder.addHeader("Authorization", "Bearer ${config.apiKey}")
         }
         if (config.provider == ProviderType.OPENROUTER) {
-            reqBuilder.addHeader("HTTP-Referer", "https://github.com/agent/mobile")
-            reqBuilder.addHeader("X-Title", "Android Autonomous Termux Agent")
+            reqBuilder.addHeader("HTTP-Referer", "https://github.com/Aimovix/Aimovix-AMC")
+            reqBuilder.addHeader("X-Title", "AMC - AI Mobile Center")
         }
 
         client.newCall(reqBuilder.build()).execute().use { response ->
@@ -157,7 +158,7 @@ class LlmClient {
                         argsMap[k] = argsObj.optString(k, "")
                     }
                 } catch (e: Exception) {
-                    argsMap["raw"] = fnArgs
+                    argsMap["command"] = fnArgs
                 }
 
                 return LlmResponse.Action(
@@ -200,7 +201,9 @@ class LlmClient {
         val contents = JSONArray()
         for (m in messages) {
             val part = JSONObject()
-            val role = if (m.role == com.agent.mobile.data.model.MessageRole.USER) "user" else "model"
+            // In Gemini API, only ASSISTANT is "model"; USER and TOOL observations must be "user"!
+            val role = if (m.role == MessageRole.ASSISTANT) "model" else "user"
+
             when {
                 m.toolCall != null -> {
                     part.put("functionCall", JSONObject().apply {
@@ -289,6 +292,11 @@ class LlmClient {
                 }
             }
 
+            val fallbackAction = extractToolCallFromText(textAcc)
+            if (fallbackAction != null) {
+                return fallbackAction
+            }
+
             return LlmResponse.Message(textAcc)
         }
     }
@@ -308,7 +316,7 @@ class LlmClient {
 
         val msgs = JSONArray()
         for (m in messages) {
-            val role = if (m.role == com.agent.mobile.data.model.MessageRole.USER) "user" else "assistant"
+            val role = if (m.role == MessageRole.USER) "user" else "assistant"
             msgs.put(JSONObject().apply {
                 put("role", role)
                 put("content", m.text)
@@ -347,23 +355,31 @@ class LlmClient {
     }
 
     private fun extractToolCallFromText(content: String): LlmResponse.Action? {
-        val pattern = Pattern.compile("```(?:json)?\\s*\\{\\s*\"tool\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"args\"\\s*:\\s*\\{([^}]+)\\}\\s*\\}\\s*```", Pattern.DOTALL)
-        val matcher = pattern.matcher(content)
-        if (matcher.find()) {
-            val toolName = matcher.group(1) ?: "execute_command"
-            val rawArgs = "{" + (matcher.group(2) ?: "") + "}"
-            val argsMap = mutableMapOf<String, String>()
+        // Robust regex searching for {"tool": "...", "args": {...}} or {"tool": "...", "command": "..."}
+        val p1 = Pattern.compile("```(?:json)?\\s*(\\{[\\s\\S]*?\\})\\s*```")
+        val m1 = p1.matcher(content)
+        while (m1.find()) {
+            val jsonCandidate = m1.group(1) ?: continue
             try {
-                val json = JSONObject(rawArgs)
-                json.keys().forEach { k -> argsMap[k] = json.optString(k, "") }
+                val obj = JSONObject(jsonCandidate)
+                if (obj.has("tool")) {
+                    val toolName = obj.getString("tool")
+                    val argsMap = mutableMapOf<String, String>()
+                    if (obj.has("args")) {
+                        val argsObj = obj.getJSONObject("args")
+                        argsObj.keys().forEach { k -> argsMap[k] = argsObj.optString(k) }
+                    } else if (obj.has("command")) {
+                        argsMap["command"] = obj.getString("command")
+                    }
+                    val thought = content.substring(0, m1.start()).trim()
+                    return LlmResponse.Action(
+                        thought = thought,
+                        toolCall = ToolCall(name = toolName, arguments = argsMap)
+                    )
+                }
             } catch (e: Exception) {
-                argsMap["command"] = rawArgs
+                // ignore parsing error and continue
             }
-            val thought = content.substring(0, matcher.start()).trim()
-            return LlmResponse.Action(
-                thought = thought,
-                toolCall = ToolCall(name = toolName, arguments = argsMap)
-            )
         }
         return null
     }

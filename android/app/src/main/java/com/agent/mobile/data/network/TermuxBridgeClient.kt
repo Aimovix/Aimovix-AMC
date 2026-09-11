@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
 class TermuxBridgeClient(
     private val host: String = "127.0.0.1",
     private val port: Int = 8765,
-    private val token: String = ""
+    private var token: String = ""
 ) {
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -30,16 +30,28 @@ class TermuxBridgeClient(
     private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
 
-    // Live terminal streaming events
-    val terminalOutputEvents = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 128)
+    // Live terminal streaming events (ID to Output chunk)
+    val terminalOutputEvents = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 256)
 
     // Map for waiting command execution completions
     private val pendingExecutions = ConcurrentHashMap<String, CompletableDeferred<ToolResult>>()
     private val executionOutputs = ConcurrentHashMap<String, StringBuilder>()
 
+    fun setToken(newToken: String) {
+        this.token = newToken
+    }
+
     fun connect(authToken: String = token) {
-        if (_connectionStatus.value is ConnectionStatus.Connected || _connectionStatus.value is ConnectionStatus.Connecting) {
+        this.token = authToken
+        if (_connectionStatus.value is ConnectionStatus.Connected) {
             return
+        }
+
+        // Close any hanging previous socket
+        try {
+            webSocket?.cancel()
+        } catch (e: Exception) {
+            // ignore
         }
 
         _connectionStatus.value = ConnectionStatus.Connecting
@@ -61,13 +73,31 @@ class TermuxBridgeClient(
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                failAllPendingExecutions("Verbindung zu Termux wurde geschlossen ($reason)")
                 _connectionStatus.value = ConnectionStatus.Disconnected
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                _connectionStatus.value = ConnectionStatus.Error(t.localizedMessage ?: "Verbindungsfehler")
+                failAllPendingExecutions("Verbindungsfehler: ${t.localizedMessage}")
+                _connectionStatus.value = ConnectionStatus.Error(t.localizedMessage ?: "Verbindungsfehler zu Termux")
             }
         })
+    }
+
+    private fun failAllPendingExecutions(reason: String) {
+        pendingExecutions.forEach { (id, deferred) ->
+            deferred.complete(
+                ToolResult(
+                    toolCallId = id,
+                    command = "",
+                    stderr = reason,
+                    exitCode = -1,
+                    isError = true
+                )
+            )
+        }
+        pendingExecutions.clear()
+        executionOutputs.clear()
     }
 
     private fun handleIncomingMessage(text: String) {
@@ -147,6 +177,7 @@ class TermuxBridgeClient(
 
     suspend fun executeCommand(
         command: String,
+        timeoutMs: Long = 90_000L,
         onChunk: ((String) -> Unit)? = null
     ): ToolResult = withContext(Dispatchers.IO) {
         val execId = UUID.randomUUID().toString()
@@ -170,23 +201,49 @@ class TermuxBridgeClient(
             }
         }
 
-        val sent = webSocket?.send(msg.toString()) ?: false
+        val ws = webSocket
+        if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
+            listenerJob?.cancel()
+            pendingExecutions.remove(execId)
+            return@withContext ToolResult(
+                toolCallId = execId,
+                command = command,
+                stderr = "Keine aktive Verbindung zu Termux (ws://127.0.0.1:8765). Bitte zuerst in Termux starten.",
+                exitCode = -1,
+                isError = true
+            )
+        }
+
+        val sent = ws.send(msg.toString())
         if (!sent) {
             listenerJob?.cancel()
             pendingExecutions.remove(execId)
             return@withContext ToolResult(
                 toolCallId = execId,
                 command = command,
-                stderr = "Keine Verbindung zu Termux",
+                stderr = "Befehl konnte nicht gesendet werden (Socket geschlossen).",
                 exitCode = -1,
                 isError = true
             )
         }
 
         val result = try {
-            deferred.await()
+            withTimeout(timeoutMs) {
+                deferred.await()
+            }
+        } catch (e: TimeoutCancellationException) {
+            interruptCurrent()
+            ToolResult(
+                toolCallId = execId,
+                command = command,
+                stderr = "Zeitüberschreitung: Befehl hat nach ${timeoutMs / 1000}s nicht geantwortet.",
+                exitCode = 124,
+                isError = true
+            )
         } finally {
             listenerJob?.cancel()
+            pendingExecutions.remove(execId)
+            executionOutputs.remove(execId)
         }
 
         result.copy(command = command)
@@ -200,6 +257,7 @@ class TermuxBridgeClient(
     }
 
     fun disconnect() {
+        failAllPendingExecutions("Client getrennt")
         webSocket?.close(1000, "App closed")
         webSocket = null
         _connectionStatus.value = ConnectionStatus.Disconnected

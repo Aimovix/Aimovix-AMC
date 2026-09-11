@@ -3,6 +3,7 @@ package com.agent.mobile.agent
 import com.agent.mobile.data.model.*
 import com.agent.mobile.data.network.LlmClient
 import com.agent.mobile.data.network.TermuxBridgeClient
+import com.agent.mobile.data.storage.PreferenceManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,7 +12,8 @@ import java.util.UUID
 
 class AutonomousAgentEngine(
     private val bridgeClient: TermuxBridgeClient,
-    private val llmClient: LlmClient = LlmClient()
+    private val llmClient: LlmClient = LlmClient(),
+    private val preferenceManager: PreferenceManager? = null
 ) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeJob: Job? = null
@@ -19,13 +21,17 @@ class AutonomousAgentEngine(
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
-    private val _executionMode = MutableStateFlow(ExecutionMode.AUTOPILOT)
+    private val _executionMode = MutableStateFlow(
+        preferenceManager?.loadExecutionMode() ?: ExecutionMode.AUTOPILOT
+    )
     val executionMode: StateFlow<ExecutionMode> = _executionMode.asStateFlow()
 
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
 
-    private val _modelConfig = MutableStateFlow(ModelConfig())
+    private val _modelConfig = MutableStateFlow(
+        preferenceManager?.loadModelConfig() ?: ModelConfig()
+    )
     val modelConfig: StateFlow<ModelConfig> = _modelConfig.asStateFlow()
 
     private val _pendingApproval = MutableStateFlow<Pair<String, ToolCall>?>(null)
@@ -35,13 +41,16 @@ class AutonomousAgentEngine(
 
     fun setExecutionMode(mode: ExecutionMode) {
         _executionMode.value = mode
+        preferenceManager?.saveExecutionMode(mode)
     }
 
     fun setModelConfig(config: ModelConfig) {
         _modelConfig.value = config
+        preferenceManager?.saveModelConfig(config)
     }
 
     fun clearHistory() {
+        emergencyStop()
         _messages.value = emptyList()
     }
 
@@ -193,6 +202,10 @@ class AutonomousAgentEngine(
                     break
                 }
             }
+        }
+
+        if (iterations >= maxIterations) {
+            appendSystemMessage("ℹ️ Maximales Schrittlimit von $maxIterations Schritten erreicht. Ausführung abgeschlossen.")
         }
     }
 

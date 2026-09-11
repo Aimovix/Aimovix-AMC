@@ -7,6 +7,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardReturn
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -204,7 +205,7 @@ fun TerminalScreen(
                             enabled = inputCmd.isNotBlank()
                         ) {
                             Icon(
-                                imageVector = Icons.Default.KeyboardReturn,
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardReturn,
                                 contentDescription = "Ausführen",
                                 tint = if (inputCmd.isNotBlank()) GreenPrimary else Color.DarkGray
                             )

@@ -12,27 +12,39 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.agent.mobile.MainActivity
 
+import android.content.pm.ServiceInfo
+import android.util.Log
+
 class AgentForegroundService : Service {
 
     constructor() : super()
 
     companion object {
+        private const val TAG = "AgentForegroundService"
         const val CHANNEL_ID = "agent_service_channel"
         const val NOTIFICATION_ID = 1001
         const val ACTION_STOP = "com.agent.mobile.ACTION_STOP"
 
         fun start(context: Context) {
-            val intent = Intent(context, AgentForegroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                val intent = Intent(context, AgentForegroundService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Konnte ForegroundService nicht starten: ${e.message}", e)
             }
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, AgentForegroundService::class.java)
-            context.stopService(intent)
+            try {
+                val intent = Intent(context, AgentForegroundService::class.java)
+                context.stopService(intent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Konnte ForegroundService nicht stoppen: ${e.message}", e)
+            }
         }
     }
 
@@ -48,7 +60,15 @@ class AgentForegroundService : Service {
         }
 
         val notification = buildNotification("Autonomer Agent bereit")
-        startForeground(NOTIFICATION_ID, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
         return START_STICKY
     }
 

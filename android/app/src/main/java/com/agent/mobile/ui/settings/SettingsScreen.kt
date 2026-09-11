@@ -22,12 +22,18 @@ import com.agent.mobile.ui.theme.DarkBackground
 import com.agent.mobile.ui.theme.DarkCard
 import com.agent.mobile.ui.theme.GreenPrimary
 
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
+import com.agent.mobile.data.storage.PreferenceManager
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     agentEngine: AutonomousAgentEngine,
+    preferenceManager: PreferenceManager,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val currentConfig by agentEngine.modelConfig.collectAsState()
 
     var selectedProvider by remember(currentConfig) { mutableStateOf(currentConfig.provider) }
@@ -183,6 +189,8 @@ fun SettingsScreen(
                         baseUrl = baseUrl.trim()
                     )
                     agentEngine.setModelConfig(newConfig)
+                    preferenceManager.saveModelConfig(newConfig)
+                    Toast.makeText(context, "✅ Einstellungen dauerhaft gespeichert!", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary, contentColor = Color.Black),

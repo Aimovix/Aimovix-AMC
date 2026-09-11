@@ -6,8 +6,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agent.mobile.agent.AutonomousAgentEngine
 import com.agent.mobile.data.network.TermuxBridgeClient
+import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.service.AgentForegroundService
 import com.agent.mobile.ui.chat.ChatScreen
 import com.agent.mobile.ui.settings.SettingsScreen
@@ -31,16 +32,20 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var bridgeClient: TermuxBridgeClient
     private lateinit var agentEngine: AutonomousAgentEngine
+    private lateinit var preferenceManager: PreferenceManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         // Read preferences
-        val prefs = getSharedPreferences("agent_prefs", MODE_PRIVATE)
-        val savedToken = prefs.getString("auth_token", "") ?: ""
+        preferenceManager = PreferenceManager(this)
+        val savedToken = preferenceManager.loadAuthToken()
 
         bridgeClient = TermuxBridgeClient(token = savedToken)
-        agentEngine = AutonomousAgentEngine(bridgeClient)
+        agentEngine = AutonomousAgentEngine(
+            bridgeClient = bridgeClient,
+            preferenceManager = preferenceManager
+        )
 
         // Auto-connect to local Termux bridge
         bridgeClient.connect(savedToken)
@@ -64,7 +69,7 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 0,
                                 onClick = { selectedTab = 0 },
-                                icon = { Icon(Icons.Default.Chat, contentDescription = "Chat") },
+                                icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Chat") },
                                 label = { Text("Chat", fontSize = 11.sp) },
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = GreenPrimary,
@@ -137,12 +142,13 @@ class MainActivity : ComponentActivity() {
                                 savedToken = currentToken,
                                 onTokenChanged = { newToken ->
                                     currentToken = newToken
-                                    prefs.edit().putString("auth_token", newToken).apply()
+                                    preferenceManager.saveAuthToken(newToken)
                                     bridgeClient.connect(newToken)
                                 }
                             )
                             3 -> SettingsScreen(
-                                agentEngine = agentEngine
+                                agentEngine = agentEngine,
+                                preferenceManager = preferenceManager
                             )
                         }
                     }

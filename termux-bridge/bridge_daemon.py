@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Termux Bridge Daemon
+AMC - AI Mobile Center Bridge Daemon
 High-performance WebSocket & HTTP bridge for controlling Termux from the Android Agent App.
-Supports live streaming of stdout/stderr, process interruption, and auth tokens.
+Supports live streaming of stdout/stderr, process interruption, resource stats, and auth tokens.
 """
 
 import asyncio
@@ -12,6 +12,7 @@ import signal
 import sys
 import subprocess
 import shutil
+import shlex
 from pathlib import Path
 
 # Try importing websockets; auto-install if missing
@@ -38,11 +39,25 @@ DEFAULT_CWD = os.environ.get("HOME", os.path.expanduser("~"))
 current_process = None
 current_cwd = DEFAULT_CWD
 
+# Ensure full Termux binary paths are present in PATH
+TERMUX_PREFIX = "/data/data/com.termux/files/usr"
+TERMUX_BIN = f"{TERMUX_PREFIX}/bin"
+TERMUX_APPLETS = f"{TERMUX_PREFIX}/bin/applets"
+
+ENV = os.environ.copy()
+if os.path.exists(TERMUX_BIN):
+    ENV["PREFIX"] = TERMUX_PREFIX
+    current_path = ENV.get("PATH", "")
+    if TERMUX_BIN not in current_path:
+        ENV["PATH"] = f"{TERMUX_BIN}:{TERMUX_APPLETS}:{current_path}"
+
 def load_or_generate_token() -> str:
     """Load existing auth token or create a secure random token."""
     if TOKEN_FILE.exists():
         try:
-            return TOKEN_FILE.read_text().strip()
+            t = TOKEN_FILE.read_text().strip()
+            if t:
+                return t
         except Exception:
             pass
     import secrets
@@ -57,53 +72,70 @@ def load_or_generate_token() -> str:
 AUTH_TOKEN = load_or_generate_token()
 
 def get_system_info() -> dict:
-    """Collect system and battery status via termux-api or standard Linux tools."""
+    """Collect system, memory, storage, and battery status via termux-api or standard Linux tools."""
     info = {
         "os": sys.platform,
         "cwd": current_cwd,
         "python_version": sys.version.split()[0],
-        "has_termux_api": shutil.which("termux-battery-status") is not None,
-        "has_llama": shutil.which("llama-server") is not None,
+        "has_termux_api": shutil.which("termux-battery-status", path=ENV.get("PATH")) is not None,
+        "has_llama": shutil.which("llama-server", path=ENV.get("PATH")) is not None,
     }
-    # Check battery if termux-api is available
+
+    # Battery
     if info["has_termux_api"]:
         try:
-            res = subprocess.run(["termux-battery-status"], capture_output=True, text=True, timeout=2)
-            if res.returncode == 0:
+            res = subprocess.run(["termux-battery-status"], capture_output=True, text=True, timeout=3, env=ENV)
+            if res.returncode == 0 and res.stdout.strip():
                 info["battery"] = json.loads(res.stdout)
         except Exception:
             pass
+
+    # Disk usage in HOME
+    try:
+        total, used, free = shutil.disk_usage(current_cwd)
+        info["disk"] = {
+            "total_mb": total // (1024 * 1024),
+            "free_mb": free // (1024 * 1024),
+            "used_mb": used // (1024 * 1024)
+        }
+    except Exception:
+        pass
+
     return info
+
+def handle_cd_command(cmd: str, target_cwd: str) -> tuple[bool, str, str]:
+    """
+    Checks if cmd is a pure cd command and updates current_cwd.
+    Returns: (is_cd, new_or_curr_cwd, error_message)
+    """
+    trimmed = cmd.strip()
+    if trimmed == "cd" or trimmed == "cd ~":
+        return True, DEFAULT_CWD, ""
+
+    if trimmed.startswith("cd ") and "&&" not in trimmed and ";" not in trimmed and "|" not in trimmed:
+        raw_target = trimmed[3:].strip().strip("\"'")
+        expanded = os.path.expanduser(raw_target)
+        full_path = os.path.normpath(os.path.join(target_cwd, expanded))
+        if os.path.isdir(full_path):
+            return True, full_path, ""
+        else:
+            return True, target_cwd, f"Verzeichnis nicht gefunden: {raw_target}\n"
+
+    return False, target_cwd, ""
 
 async def run_command_streaming(websocket, cmd: str, execution_id: str, cwd: str | None = None):
     """Executes a command and streams stdout/stderr chunks in real-time over WebSocket."""
     global current_process, current_cwd
     target_cwd = cwd or current_cwd
 
-    # Handle internal 'cd' commands directly
-    if cmd.strip().startswith("cd "):
-        new_dir = cmd.strip()[3:].strip()
-        expanded = os.path.expanduser(new_dir)
-        full_path = os.path.normpath(os.path.join(target_cwd, expanded))
-        if os.path.isdir(full_path):
-            current_cwd = full_path
-            await websocket.send(json.dumps({
-                "type": "stdout",
-                "execution_id": execution_id,
-                "data": f"Changed directory to {current_cwd}\n"
-            }))
-            await websocket.send(json.dumps({
-                "type": "completed",
-                "execution_id": execution_id,
-                "exit_code": 0,
-                "cwd": current_cwd
-            }))
-            return
-        else:
+    # 1. Handle pure cd commands directly
+    is_cd, new_cwd, cd_err = handle_cd_command(cmd, target_cwd)
+    if is_cd:
+        if cd_err:
             await websocket.send(json.dumps({
                 "type": "stderr",
                 "execution_id": execution_id,
-                "data": f"Directory not found: {new_dir}\n"
+                "data": cd_err
             }))
             await websocket.send(json.dumps({
                 "type": "completed",
@@ -111,12 +143,25 @@ async def run_command_streaming(websocket, cmd: str, execution_id: str, cwd: str
                 "exit_code": 1,
                 "cwd": current_cwd
             }))
-            return
+        else:
+            current_cwd = new_cwd
+            await websocket.send(json.dumps({
+                "type": "stdout",
+                "execution_id": execution_id,
+                "data": f"Verzeichnis gewechselt zu: {current_cwd}\n"
+            }))
+            await websocket.send(json.dumps({
+                "type": "completed",
+                "execution_id": execution_id,
+                "exit_code": 0,
+                "cwd": current_cwd
+            }))
+        return
 
     # Use bash shell if available, otherwise default system shell
     shell_bin = "/data/data/com.termux/files/usr/bin/bash"
     if not os.path.exists(shell_bin):
-        shell_bin = shutil.which("bash") or shutil.which("sh") or "sh"
+        shell_bin = shutil.which("bash", path=ENV.get("PATH")) or shutil.which("sh") or "sh"
 
     try:
         current_process = await asyncio.create_subprocess_shell(
@@ -125,6 +170,7 @@ async def run_command_streaming(websocket, cmd: str, execution_id: str, cwd: str
             stderr=asyncio.subprocess.PIPE,
             cwd=target_cwd,
             executable=shell_bin if sys.platform != "win32" else None,
+            env=ENV,
             preexec_fn=os.setsid if sys.platform != "win32" else None
         )
 
@@ -134,11 +180,14 @@ async def run_command_streaming(websocket, cmd: str, execution_id: str, cwd: str
                 if not line:
                     break
                 decoded = line.decode("utf-8", errors="replace")
-                await websocket.send(json.dumps({
-                    "type": msg_type,
-                    "execution_id": execution_id,
-                    "data": decoded
-                }))
+                try:
+                    await websocket.send(json.dumps({
+                        "type": msg_type,
+                        "execution_id": execution_id,
+                        "data": decoded
+                    }))
+                except Exception:
+                    break
 
         # Stream stdout and stderr concurrently
         await asyncio.gather(
@@ -183,7 +232,7 @@ async def handle_connection(websocket):
             try:
                 msg = json.loads(message)
             except json.JSONDecodeError:
-                await websocket.send(json.dumps({"type": "error", "error": "Invalid JSON format"}))
+                await websocket.send(json.dumps({"type": "error", "error": "Ungültiges JSON-Format"}))
                 continue
 
             action = msg.get("action")
@@ -191,7 +240,7 @@ async def handle_connection(websocket):
             # 1. Authentication handshake
             if action == "auth":
                 provided_token = msg.get("token", "")
-                if provided_token == AUTH_TOKEN:
+                if provided_token == AUTH_TOKEN or not AUTH_TOKEN:
                     authenticated = True
                     await websocket.send(json.dumps({
                         "type": "auth_ok",
@@ -201,14 +250,14 @@ async def handle_connection(websocket):
                 else:
                     await websocket.send(json.dumps({
                         "type": "auth_fail",
-                        "error": "Authentication failed: invalid token"
+                        "error": "Authentifizierung fehlgeschlagen: Token ungültig."
                     }))
                 continue
 
             if not authenticated:
                 await websocket.send(json.dumps({
                     "type": "error",
-                    "error": "Not authenticated. Send {'action': 'auth', 'token': '...'} first."
+                    "error": "Nicht authentifiziert. Zuerst {'action': 'auth', 'token': '...'} senden."
                 }))
                 continue
 
@@ -235,7 +284,7 @@ async def handle_connection(websocket):
                     await websocket.send(json.dumps({
                         "type": "error",
                         "execution_id": execution_id,
-                        "error": "Empty command"
+                        "error": "Leerer Befehl übergeben"
                     }))
                     continue
                 await run_command_streaming(websocket, cmd, execution_id, cwd)
@@ -255,12 +304,12 @@ async def handle_connection(websocket):
                     except Exception as e:
                         await websocket.send(json.dumps({
                             "type": "error",
-                            "error": f"Failed to interrupt: {e}"
+                            "error": f"Abbruch fehlgeschlagen: {e}"
                         }))
                 else:
                     await websocket.send(json.dumps({
                         "type": "info",
-                        "message": "No active process to interrupt"
+                        "message": "Kein aktiver Prozess zum Abbrechen"
                     }))
 
             # 6. Read file
@@ -318,7 +367,14 @@ async def main():
     print(f" Token File: {TOKEN_FILE}")
     print(f"==================================================")
 
-    async with websockets.serve(handle_connection, HOST, PORT):
+    async with websockets.serve(
+        handle_connection,
+        HOST,
+        PORT,
+        max_size=10 * 1024 * 1024,
+        ping_interval=20,
+        ping_timeout=20
+    ):
         await asyncio.Future()  # run forever
 
 if __name__ == "__main__":
