@@ -173,7 +173,7 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                     .padding(12.dp)
             ) {
                 Text(
-                    text = "curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix/main/termux-bridge/setup.sh | bash",
+                    text = "curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridge/setup.sh | bash",
                     color = GreenPrimary,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp
@@ -187,7 +187,7 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     val clip = ClipData.newPlainText(
                         "AMC Setup",
-                        "curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix/main/termux-bridge/setup.sh | bash"
+                        "curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridge/setup.sh | bash"
                     )
                     clipboard.setPrimaryClip(clip)
                     Toast.makeText(context, "AMC-Befehl kopiert! Jetzt in Termux einfügen.", Toast.LENGTH_LONG).show()

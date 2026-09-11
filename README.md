@@ -19,7 +19,7 @@ Installiere beide Apps über **F-Droid** (wichtig: die Version aus dem Google Pl
 Öffne Termux auf deinem Smartphone und führe folgenden Befehl aus (oder nutze den "Kopieren"-Button im Setup-Tab der AMC-App):
 
 ```bash
-curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix/main/termux-bridge/setup.sh | bash
+curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridge/setup.sh | bash
 ```
 
 Das Skript erledigt automatisch:

@@ -34,7 +34,7 @@ if [ -f "$SCRIPT_PATH" ]; then
 else
     # Fallback if executed via curl pipe
     echo "⬇️ Lade bridge_daemon.py aus Aimovix-Repository..."
-    curl -sL "https://raw.githubusercontent.com/Aimovix/Aimovix/main/termux-bridge/bridge_daemon.py" -o "$TARGET_DIR/bridge_daemon.py"
+    curl -sL "https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridge/bridge_daemon.py" -o "$TARGET_DIR/bridge_daemon.py"
 fi
 
 # Make run script
