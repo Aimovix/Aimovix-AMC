@@ -14,12 +14,21 @@ import subprocess
 import shutil
 from pathlib import Path
 
-# Try importing websockets; provide helpful error if missing
+# Try importing websockets; auto-install if missing
 try:
     import websockets
 except ImportError:
-    print("[ERROR] 'websockets' library is required. Run: pip install websockets", file=sys.stderr)
-    sys.exit(1)
+    print("[INFO] 'websockets' Paket wird nachinstalliert...", file=sys.stderr)
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "websockets"], check=True)
+        import websockets
+    except Exception:
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "websockets"], check=True)
+            import websockets
+        except Exception as e:
+            print(f"[ERROR] 'websockets' konnte nicht geladen werden: {e}", file=sys.stderr)
+            sys.exit(1)
 
 PORT = int(os.environ.get("BRIDGE_PORT", 8765))
 HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")

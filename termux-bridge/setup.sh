@@ -20,8 +20,7 @@ pkg install -y python python-pip git curl jq termux-api
 
 # 3. Install Python dependencies
 echo "🐍 [3/5] Installiere Python-Bibliotheken (websockets)..."
-pip install --upgrade pip
-pip install websockets
+pip install websockets 2>/dev/null || pip install --break-system-packages websockets 2>/dev/null || python -m pip install websockets 2>/dev/null || python -m pip install --break-system-packages websockets 2>/dev/null || true
 
 # 4. Setup working directory and scripts
 echo "⚙️ [4/5] Richte Agent-Bridge Verzeichnis ein..."
