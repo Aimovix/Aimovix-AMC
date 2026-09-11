@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -29,24 +30,24 @@ fun QuickActionToolbar(
 ) {
     val actions = listOf(
         QuickAction(
-            label = "Akku & Health",
+            label = "Akku Status",
             icon = Icons.Default.BatteryChargingFull,
-            prompt = "Prüfe meinen aktuellen Akkustand und zeige Ladezustand, Temperatur und Prozent an."
+            prompt = "Prüfe meinen Akkustand und sage mir, ob das Handy geladen wird."
         ),
         QuickAction(
-            label = "Foto machen",
+            label = "WLAN Info",
+            icon = Icons.Default.Wifi,
+            prompt = "Zeige mir Details über mein verbundenes WLAN an (SSID, IP, Signalstärke)."
+        ),
+        QuickAction(
+            label = "Kamera Foto",
             icon = Icons.Default.CameraAlt,
-            prompt = "Mache ein Foto mit der Hauptkamera und speichere es ab."
+            prompt = "Mache ein Foto mit der Hauptkamera und speichere es im Termux Home-Verzeichnis."
         ),
         QuickAction(
-            label = "GPS Standort",
-            icon = Icons.Default.LocationOn,
-            prompt = "Ermittle meinen aktuellen GPS-Standort und zeige die Koordinaten an."
-        ),
-        QuickAction(
-            label = "System-Info",
-            icon = Icons.Default.Memory,
-            prompt = "Zeige mir den freien Speicherplatz, RAM und System-Details an."
+            label = "Clipboard",
+            icon = Icons.Default.ContentPaste,
+            prompt = "Lies den aktuellen Inhalt der Android Zwischenablage aus."
         ),
         QuickAction(
             label = "Notification",
@@ -55,7 +56,7 @@ fun QuickActionToolbar(
         ),
         QuickAction(
             label = "Vorlesen (TTS)",
-            icon = Icons.Default.VolumeUp,
+            icon = Icons.AutoMirrored.Filled.VolumeUp,
             prompt = "Lies deine letzte Antwort laut über den Smartphone-Lautsprecher vor."
         )
     )

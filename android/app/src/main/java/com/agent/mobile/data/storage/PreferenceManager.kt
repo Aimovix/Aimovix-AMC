@@ -2,12 +2,31 @@ package com.agent.mobile.data.storage
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.agent.mobile.data.model.ExecutionMode
 import com.agent.mobile.data.model.ModelConfig
 import com.agent.mobile.data.model.ProviderType
 
 class PreferenceManager(context: Context) {
-    private val prefs: SharedPreferences = context.getSharedPreferences("amc_secure_prefs", Context.MODE_PRIVATE)
+
+    private val prefs: SharedPreferences = try {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+
+        EncryptedSharedPreferences.create(
+            context,
+            "amc_encrypted_prefs",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    } catch (e: Exception) {
+        Log.w("PreferenceManager", "EncryptedSharedPreferences initialization failed, falling back to private SharedPreferences: ${e.message}")
+        context.getSharedPreferences("amc_secure_prefs", Context.MODE_PRIVATE)
+    }
 
     companion object {
         private const val KEY_PROVIDER = "key_provider"
@@ -16,6 +35,28 @@ class PreferenceManager(context: Context) {
         private const val KEY_BASE_URL = "key_base_url"
         private const val KEY_EXEC_MODE = "key_exec_mode"
         private const val KEY_AUTH_TOKEN = "key_auth_token"
+    }
+
+    init {
+        migrateOldPrefs(context)
+    }
+
+    private fun migrateOldPrefs(context: Context) {
+        try {
+            val oldPrefs = context.getSharedPreferences("amc_secure_prefs", Context.MODE_PRIVATE)
+            if (oldPrefs.all.isNotEmpty() && prefs !== oldPrefs) {
+                val editor = prefs.edit()
+                oldPrefs.all.forEach { (key, value) ->
+                    if (value is String) {
+                        editor.putString(key, value)
+                    }
+                }
+                editor.apply()
+                oldPrefs.edit().clear().apply()
+            }
+        } catch (e: Exception) {
+            Log.w("PreferenceManager", "Migration from legacy preferences failed: ${e.message}")
+        }
     }
 
     fun saveModelConfig(config: ModelConfig) {

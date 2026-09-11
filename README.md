@@ -7,8 +7,8 @@
 ## 📱 Schnellstart-Anleitung
 
 ### 1. App auf dem Smartphone installieren
-Kopiere die fertige APK auf dein Android-Smartphone und installiere sie:
-- Download direkt im Repository: **`AMC.apk`**
+Installiere die aktuelle Version der AMC-App auf deinem Android-Smartphone:
+- **Download:** Direkt über **[GitHub Releases](https://github.com/Aimovix/Aimovix-AMC/releases)** (APK im aktuellen Release) oder baue sie selbst via `./gradlew assembleRelease`.
 
 ### 2. Termux & Termux:API installieren
 Installiere beide Apps über **F-Droid** (wichtig: die Version aus dem Google Play Store ist veraltet):
@@ -60,11 +60,11 @@ In der AMC-App unter dem Tab **"Einstellungen"**:
 
 ```
 Aimovix/
-├── AMC.apk                    # Installationsfertige Android-App (AI Mobile Center)
 ├── android/                   # Native Android App (Kotlin & Jetpack Compose)
 │   ├── app/src/main/java/com/agent/mobile/
 │   │   ├── agent/             # ReAct-Engine, Prompting, Autopilot-Logik
 │   │   ├── data/              # WebSocket-Client, Multi-Provider LLM-Client
+│   │   ├── security/          # 3-Tier Security Filter & Obfuscation Guards
 │   │   ├── service/           # Android Foreground Service
 │   │   └── ui/                # Compose UI (Chat, Terminal, Setup, Settings)
 ├── termux-bridge/             # Termux Python Bridge Daemon & Setup Scripts

@@ -74,4 +74,10 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+
+    // Hardware-backed secure keystore storage
+    implementation(libs.androidx.security.crypto)
+
+    // Unit Testing
+    testImplementation(libs.junit)
 }

@@ -187,11 +187,16 @@ class AutonomousAgentEngine(
 
                     updateMessageStatus(actionMessageId, MessageStatus.COMPLETED)
 
-                    // Add tool observation to context
+                    // Add tool observation to context with untrusted boundaries
+                    val rawOutput = if (result.stdout.isNotEmpty()) result.stdout else result.stderr
+                    val guardedResult = result.copy(
+                        stdout = if (result.stdout.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${result.stdout}\n[UNTRUSTED_OUTPUT_END]" else "",
+                        stderr = if (result.stderr.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${result.stderr}\n[UNTRUSTED_OUTPUT_END]" else ""
+                    )
                     val toolMsg = ChatMessage(
                         role = MessageRole.TOOL,
-                        text = if (result.stdout.isNotEmpty()) result.stdout else result.stderr,
-                        toolResult = result,
+                        text = "[UNTRUSTED_OUTPUT_START]\n$rawOutput\n[UNTRUSTED_OUTPUT_END]",
+                        toolResult = guardedResult,
                         status = MessageStatus.COMPLETED
                     )
                     _messages.value = _messages.value + toolMsg
