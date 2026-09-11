@@ -53,6 +53,8 @@ if os.path.exists(TERMUX_BIN):
 
 def load_or_generate_token() -> str:
     """Load existing auth token or create a secure random token."""
+    if os.environ.get("BRIDGE_NO_AUTH", "0") == "1" or "--no-auth" in sys.argv:
+        return ""
     if TOKEN_FILE.exists():
         try:
             t = TOKEN_FILE.read_text().strip()
@@ -363,8 +365,18 @@ async def main():
     print(f"==================================================")
     print(f" AMC - AI Mobile Center Bridge Daemon")
     print(f" Listening on ws://{HOST}:{PORT}")
-    print(f" Auth Token: {AUTH_TOKEN}")
-    print(f" Token File: {TOKEN_FILE}")
+    if AUTH_TOKEN:
+        print(f" Auth Token: {AUTH_TOKEN}")
+        print(f" Token File: {TOKEN_FILE}")
+        clip_cmd = shutil.which("termux-clipboard-set", path=ENV.get("PATH"))
+        if clip_cmd:
+            try:
+                subprocess.run([clip_cmd, AUTH_TOKEN], env=ENV, timeout=2)
+                print(f" [INFO] 📋 Token wurde in die Android-Zwischenablage kopiert!")
+            except Exception:
+                pass
+    else:
+        print(f" Auth Token: DEAKTIVIERT (Offener lokaler Modus)")
     print(f"==================================================")
 
     async with websockets.serve(

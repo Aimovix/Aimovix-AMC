@@ -215,12 +215,26 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
             OutlinedTextField(
                 value = inputToken,
                 onValueChange = {
-                    inputToken = it
-                    onTokenChanged(it)
+                    val trimmed = it.trim()
+                    inputToken = trimmed
+                    onTokenChanged(trimmed)
                 },
                 label = { Text("Auth Token") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
+                trailingIcon = {
+                    IconButton(onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = clipboard.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
+                        if (clip.isNotEmpty()) {
+                            inputToken = clip
+                            onTokenChanged(clip)
+                            Toast.makeText(context, "Token eingefügt!", Toast.LENGTH_SHORT).show()
+                        }
+                    }) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = "Aus Zwischenablage einfügen", tint = GreenPrimary)
+                    }
+                },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = GreenPrimary,
                     unfocusedBorderColor = Color.Gray,
@@ -228,6 +242,22 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                     unfocusedTextColor = Color.White
                 )
             )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = {
+                    onTokenChanged(inputToken)
+                    bridgeClient.connect(inputToken)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary, contentColor = Color.Black),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Jetzt verbinden", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
