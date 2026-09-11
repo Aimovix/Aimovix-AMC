@@ -37,7 +37,7 @@ class AgentForegroundService : Service {
                     context.startService(intent)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Konnte ForegroundService nicht starten: ${e.message}", e)
+                Log.e(TAG, "Could not start foreground service: ${e.message}", e)
             }
         }
 
@@ -50,7 +50,7 @@ class AgentForegroundService : Service {
                 }
                 context.startService(intent)
             } catch (e: Exception) {
-                Log.e(TAG, "Konnte Benachrichtigung nicht aktualisieren: ${e.message}", e)
+                Log.e(TAG, "Could not update notification: ${e.message}", e)
             }
         }
 
@@ -59,7 +59,7 @@ class AgentForegroundService : Service {
                 val intent = Intent(context, AgentForegroundService::class.java)
                 context.stopService(intent)
             } catch (e: Exception) {
-                Log.e(TAG, "Konnte ForegroundService nicht stoppen: ${e.message}", e)
+                Log.e(TAG, "Could not stop foreground service: ${e.message}", e)
             }
         }
     }
@@ -76,7 +76,7 @@ class AgentForegroundService : Service {
         }
 
         val title = intent?.getStringExtra(EXTRA_TITLE) ?: "AMC – AI Mobile Center"
-        val message = intent?.getStringExtra(EXTRA_MESSAGE) ?: "Autonomer Agent bereit"
+        val message = intent?.getStringExtra(EXTRA_MESSAGE) ?: "Autonomous agent ready"
 
         val notification = buildNotification(title, message)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -114,10 +114,10 @@ class AgentForegroundService : Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Agent Hintergrunddienst",
+                "Agent background service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Hält die Verbindung zu Termux im Hintergrund aktiv"
+                description = "Maintains the Termux connection in the background"
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)

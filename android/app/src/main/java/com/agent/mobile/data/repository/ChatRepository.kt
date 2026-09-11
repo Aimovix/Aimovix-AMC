@@ -38,7 +38,7 @@ class ChatRepository(
     }
 
     suspend fun createNewSession(
-        title: String = "Neuer Chat",
+        title: String = "New chat",
         provider: String = "GEMINI",
         model: String = "gemini-2.0-flash"
     ): ChatSession = withContext(Dispatchers.IO) {
@@ -95,10 +95,10 @@ class ChatRepository(
     fun generateConciseTitle(userPrompt: String): String {
         val clean = userPrompt.trim()
             .replace(Regex("^[#!?/><*+\\s]+"), "")
-            .lines().firstOrNull()?.trim() ?: "Neuer Chat"
+            .lines().firstOrNull()?.trim() ?: "New chat"
 
         return if (clean.length <= 35) {
-            clean.ifEmpty { "Neuer Chat" }
+            clean.ifEmpty { "New chat" }
         } else {
             val cut = clean.substring(0, 32)
             val lastSpace = cut.lastIndexOf(' ')
@@ -111,21 +111,21 @@ class ChatRepository(
     }
 
     fun exportToMarkdown(session: ChatSession, messages: List<ChatMessage>): String {
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH)
         val sb = StringBuilder()
         sb.append("# ${session.title}\n\n")
-        sb.append("- **Sitzungs-ID:** `${session.id}`\n")
-        sb.append("- **Erstellt:** ${dateFormat.format(Date(session.createdAt))}\n")
-        sb.append("- **Modell:** ${session.modelProvider} (${session.modelName})\n")
+        sb.append("- **Session ID:** `${session.id}`\n")
+        sb.append("- **Created:** ${dateFormat.format(Date(session.createdAt))}\n")
+        sb.append("- **Model:** ${session.modelProvider} (${session.modelName})\n")
         sb.append("- **Tokens:** Prompt: ${session.totalPromptTokens} | Completion: ${session.totalCompletionTokens}\n")
-        sb.append("- **Geschätzte Kosten:** \$${String.format(Locale.US, "%.5f", session.estimatedCostUsd)}\n\n")
+        sb.append("- **Estimated cost:** \$${String.format(Locale.US, "%.5f", session.estimatedCostUsd)}\n\n")
         sb.append("---\n\n")
 
         for (m in messages) {
             val time = dateFormat.format(Date(m.timestamp))
             when (m.role) {
                 MessageRole.USER -> {
-                    sb.append("### 👤 Nutzer ($time)\n\n${m.text}\n\n")
+                    sb.append("### 👤 User ($time)\n\n${m.text}\n\n")
                 }
                 MessageRole.ASSISTANT -> {
                     sb.append("### 🤖 AMC Agent ($time)\n\n")
@@ -133,11 +133,11 @@ class ChatRepository(
                         sb.append("${m.text}\n\n")
                     }
                     if (m.toolCall != null) {
-                        sb.append("**Ausgeführter Befehl:**\n```bash\n${m.toolCall.arguments["command"] ?: ""}\n```\n\n")
+                        sb.append("**Executed command:**\n```bash\n${m.toolCall.arguments["command"] ?: ""}\n```\n\n")
                     }
                 }
                 MessageRole.TOOL -> {
-                    sb.append("### 💻 Terminal-Ausgabe ($time)\n\n")
+                    sb.append("### 💻 Terminal output ($time)\n\n")
                     val out = m.toolResult?.stdout ?: m.text
                     sb.append("```bash\n$out\n```\n\n")
                 }

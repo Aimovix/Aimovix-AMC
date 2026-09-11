@@ -8,11 +8,11 @@ set -e
 MODELS_DIR="$HOME/.termux_agent/models"
 mkdir -p "$MODELS_DIR"
 
-echo "🧠 [1/3] Prüfe llama.cpp Installation..."
+echo "🧠 [1/3] Checking llama.cpp installation..."
 if ! command -v llama-server &> /dev/null; then
-    echo "📦 Installiere llama.cpp..."
+    echo "📦 Installing llama.cpp..."
     pkg install -y llama.cpp 2>/dev/null || {
-        echo "Kompiliere llama.cpp aus Quellcode..."
+        echo "Building llama.cpp from source..."
         pkg install -y git cmake clang make
         cd "$HOME"
         git clone --depth 1 https://github.com/ggerganov/llama.cpp.git
@@ -23,12 +23,12 @@ if ! command -v llama-server &> /dev/null; then
     }
 fi
 
-echo "📥 [2/3] Lokales Modell auswählen..."
-echo "1) Qwen 2.5 1.5B Instruct (Q4_K_M, ~1.0 GB RAM - Sehr schnell)"
-echo "2) SmolLM2 1.7B Instruct (Q4_K_M, ~1.1 GB RAM - Kompakt)"
-echo "3) Qwen 2.5 3B Instruct (Q4_K_M, ~2.1 GB RAM - Leistungsstark)"
+echo "📥 [2/3] Select a local model..."
+echo "1) Qwen 2.5 1.5B Instruct (Q4_K_M, ~1.0 GB RAM - Very fast)"
+echo "2) SmolLM2 1.7B Instruct (Q4_K_M, ~1.1 GB RAM - Compact)"
+echo "3) Qwen 2.5 3B Instruct (Q4_K_M, ~2.1 GB RAM - More capable)"
 
-read -p "Auswahl [1-3, Standard: 1]: " CHOICE
+read -p "Selection [1-3, default: 1]: " CHOICE
 CHOICE=${CHOICE:-1}
 
 case $CHOICE in
@@ -45,7 +45,7 @@ case $CHOICE in
         MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
         ;;
     *)
-        echo "Ungültige Auswahl, nutze Standard (Qwen 2.5 1.5B)."
+        echo "Invalid selection; using the default (Qwen 2.5 1.5B)."
         MODEL_NAME="qwen2.5-1.5b-instruct-q4_k_m.gguf"
         MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
         ;;
@@ -54,15 +54,15 @@ esac
 MODEL_PATH="$MODELS_DIR/$MODEL_NAME"
 
 if [ ! -f "$MODEL_PATH" ]; then
-    echo "⬇️ Lade $MODEL_NAME herunter..."
+    echo "⬇️ Downloading $MODEL_NAME..."
     curl -L "$MODEL_URL" -o "$MODEL_PATH"
 else
-    echo "✅ Modell bereits vorhanden: $MODEL_NAME"
+    echo "✅ Model already downloaded: $MODEL_NAME"
 fi
 
-echo "🚀 [3/3] Starte lokalen Inferenz-Server auf http://127.0.0.1:8080..."
-echo "In deiner App unter Einstellungen: 'Lokaler Server' auswählen mit http://127.0.0.1:8080/v1"
-echo "Drücke Strg+C zum Beenden."
+echo "🚀 [3/3] Starting local inference server at http://127.0.0.1:8080..."
+echo "In app Settings, select 'Local server' with http://127.0.0.1:8080/v1"
+echo "Press Ctrl+C to stop."
 
 exec llama-server \
     -m "$MODEL_PATH" \

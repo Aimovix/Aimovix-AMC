@@ -35,7 +35,7 @@ fun AuditLogDialog(
     val allAudits by (chatRepository?.allAudits ?: remember { kotlinx.coroutines.flow.flowOf(emptyList()) }).collectAsState(initial = emptyList())
     var selectedRiskFilter by remember { mutableStateOf<String?>("ALL") }
     var searchQuery by remember { mutableStateOf("") }
-    val dateFormat = remember { SimpleDateFormat("HH:mm:ss dd.MM", Locale.getDefault()) }
+    val dateFormat = remember { SimpleDateFormat("HH:mm:ss dd.MM", Locale.ENGLISH) }
 
     val filteredAudits = remember(allAudits, selectedRiskFilter, searchQuery) {
         allAudits.filter { audit ->
@@ -75,7 +75,7 @@ fun AuditLogDialog(
                         Icon(Icons.Default.Shield, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Sicherheits-Audit-Log",
+                            text = "Security audit log",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite, fontSize = 14.5.sp),
                             maxLines = 1,
                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -89,10 +89,10 @@ fun AuditLogDialog(
                                 coroutineScope.launch { chatRepository?.clearAudits() }
                             }
                         ) {
-                            Icon(Icons.Default.DeleteSweep, contentDescription = "Leeren", tint = TextMuted)
+                            Icon(Icons.Default.DeleteSweep, contentDescription = "Clear", tint = TextMuted)
                         }
                         IconButton(onClick = onDismiss) {
-                            Icon(Icons.Default.Close, contentDescription = "Schließen", tint = TextMuted)
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted)
                         }
                     }
                 }
@@ -103,7 +103,7 @@ fun AuditLogDialog(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text("Befehle oder Begründungen durchsuchen...", fontSize = 12.sp, color = TextMuted) },
+                    placeholder = { Text("Search commands or reasons...", fontSize = 12.sp, color = TextMuted) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     shape = RoundedCornerShape(8.dp),
@@ -155,7 +155,7 @@ fun AuditLogDialog(
                 // Audit Log List
                 if (filteredAudits.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("Keine Audit-Einträge vorhanden", color = TextMuted, fontSize = 13.sp)
+                        Text("No audit entries yet", color = TextMuted, fontSize = 13.sp)
                     }
                 } else {
                     LazyColumn(
@@ -164,10 +164,10 @@ fun AuditLogDialog(
                     ) {
                         items(filteredAudits, key = { it.id }) { audit ->
                             val (levelColor, levelLabel) = when (audit.riskLevel) {
-                                RiskLevel.BLOCKED.name -> Pair(RedEmergency, "BLOCKIERT")
-                                RiskLevel.HIGH.name -> Pair(RedEmergency, "HOCH")
-                                RiskLevel.MEDIUM.name -> Pair(YellowWarning, "MITTEL")
-                                else -> Pair(StatusOnline, "GERING")
+                                RiskLevel.BLOCKED.name -> Pair(RedEmergency, "BLOCKED")
+                                RiskLevel.HIGH.name -> Pair(RedEmergency, "HIGH")
+                                RiskLevel.MEDIUM.name -> Pair(YellowWarning, "MEDIUM")
+                                else -> Pair(StatusOnline, "LOW")
                             }
 
                             Surface(
@@ -215,7 +215,7 @@ fun AuditLogDialog(
 
                                     if (audit.riskReason.isNotEmpty()) {
                                         Text(
-                                            text = "Grund: ${audit.riskReason}",
+                                            text = "Reason: ${audit.riskReason}",
                                             style = MaterialTheme.typography.labelSmall.copy(color = TextSecondary, fontSize = 11.sp),
                                             modifier = Modifier.padding(top = 2.dp)
                                         )

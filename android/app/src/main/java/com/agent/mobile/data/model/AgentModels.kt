@@ -85,7 +85,7 @@ enum class ProviderType(
         )
     ),
     LOCAL(
-        displayName = "Lokaler Server (llama.cpp/Ollama)",
+        displayName = "Local server (llama.cpp/Ollama)",
         defaultBaseUrl = "http://127.0.0.1:8080/v1",
         defaultModel = "default",
         suggestedModels = listOf(

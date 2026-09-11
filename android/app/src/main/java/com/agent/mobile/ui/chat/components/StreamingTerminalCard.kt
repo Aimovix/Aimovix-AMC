@@ -47,7 +47,7 @@ fun StreamingTerminalCard(
     val displayText = when {
         liveOutput.isNotEmpty() -> liveOutput
         toolResult != null -> (toolResult.stdout.ifEmpty { toolResult.stderr })
-        else -> "Warte auf Ausführung..."
+        else -> "Waiting for execution..."
     }
 
     val scrollState = rememberScrollState()
@@ -132,13 +132,13 @@ fun StreamingTerminalCard(
                         onClick = {
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Terminal Output", displayText))
-                            Toast.makeText(context, "Terminal-Ausgabe kopiert", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Terminal output copied", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.size(24.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "Kopieren",
+                            contentDescription = "Copy",
                             tint = TextMuted,
                             modifier = Modifier.size(13.dp)
                         )

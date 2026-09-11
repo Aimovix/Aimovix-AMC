@@ -41,7 +41,22 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // Read preferences & database
-        preferenceManager = PreferenceManager(this)
+        try {
+            preferenceManager = PreferenceManager(this)
+        } catch (error: IllegalStateException) {
+            setContent {
+                AutonomousAgentTheme {
+                    Surface(modifier = Modifier.fillMaxSize(), color = DarkBackground) {
+                        Column(modifier = Modifier.padding(24.dp)) {
+                            Text("Secure storage unavailable", style = MaterialTheme.typography.titleLarge)
+                            Text("Unlock your device and reopen AMC. Credentials cannot be loaded or saved until encrypted storage is available.")
+                            Button(onClick = { recreate() }) { Text("Retry") }
+                        }
+                    }
+                }
+            }
+            return
+        }
         database = com.agent.mobile.data.storage.db.AppDatabase.getInstance(this)
         chatRepository = com.agent.mobile.data.repository.ChatRepository(database)
 
@@ -144,10 +159,10 @@ class MainActivity : ComponentActivity() {
                                 NavigationBarItem(
                                     selected = selectedTab == 3,
                                     onClick = { selectedTab = 3 },
-                                    icon = { Icon(Icons.Default.Settings, contentDescription = "Optionen") },
+                                    icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
                                     label = {
                                         Text(
-                                            text = "Optionen",
+                                            text = "Settings",
                                             fontSize = 10.sp,
                                             maxLines = 1,
                                             softWrap = false,
@@ -207,18 +222,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        bridgeClient.reconnectIfDisconnected(force = true)
+        if (::bridgeClient.isInitialized) bridgeClient.reconnectIfDisconnected(force = true)
     }
 
     override fun onResume() {
         super.onResume()
         // Automatically reconnect the moment the user switches back from Termux to AMC
-        bridgeClient.reconnectIfDisconnected(force = true)
+        if (::bridgeClient.isInitialized) bridgeClient.reconnectIfDisconnected(force = true)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        bridgeClient.disconnect()
+        if (::bridgeClient.isInitialized) bridgeClient.disconnect()
     }
 }
 

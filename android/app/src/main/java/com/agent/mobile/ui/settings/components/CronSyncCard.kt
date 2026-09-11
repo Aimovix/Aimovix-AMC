@@ -32,7 +32,7 @@ fun CronSyncCard(
     var isLoadingCron by remember { mutableStateOf(false) }
     var isSavingCron by remember { mutableStateOf(false) }
 
-    var workflowTitle by remember { mutableStateOf("Morgen-Routine") }
+    var workflowTitle by remember { mutableStateOf("Morning routine") }
     var workflowCommand by remember { mutableStateOf("termux-battery-status") }
     var repeatHours by remember { mutableStateOf("6") }
     var requireWifi by remember { mutableStateOf(false) }
@@ -76,9 +76,9 @@ fun CronSyncCard(
                         coroutineScope.launch {
                             try {
                                 crontabContent = bridgeClient.getCrontab()
-                                Toast.makeText(context, "Crontab aus Termux geladen", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Crontab loaded from Termux", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) {
-                                Toast.makeText(context, "Fehler beim Laden: ${e.message}", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Failed to load: ${e.message}", Toast.LENGTH_SHORT).show()
                             } finally {
                                 isLoadingCron = false
                             }
@@ -90,7 +90,7 @@ fun CronSyncCard(
                 ) {
                     Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Laden", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("Load", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -104,7 +104,7 @@ fun CronSyncCard(
                 OutlinedTextField(
                     value = crontabContent,
                     onValueChange = { crontabContent = it },
-                    placeholder = { Text("# Beispiel:\n0 8 * * * termux-battery-status\n*/30 * * * * python script.py", fontSize = 11.sp, color = TextMuted) },
+                    placeholder = { Text("# Example:\n0 8 * * * termux-battery-status\n*/30 * * * * python script.py", fontSize = 11.sp, color = TextMuted) },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3,
                     maxLines = 6,
@@ -118,6 +118,10 @@ fun CronSyncCard(
                     )
                 )
 
+                Text(
+                    "Cron runs independently of AMC approval checks and the chat stop button. Review every entry before syncing.",
+                    color = TextMuted, fontSize = 12.sp
+                )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     Button(
                         onClick = {
@@ -126,9 +130,9 @@ fun CronSyncCard(
                                 try {
                                     val res = bridgeClient.setCrontab(crontabContent)
                                     if (res.exitCode == 0) {
-                                        Toast.makeText(context, "✅ Crontab erfolgreich synchronisiert", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "✅ Crontab synchronized", Toast.LENGTH_SHORT).show()
                                     } else {
-                                        Toast.makeText(context, "⚠️ Fehler: ${res.stderr}", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(context, "⚠️ Error: ${res.stderr}", Toast.LENGTH_LONG).show()
                                     }
                                 } finally {
                                     isSavingCron = false
@@ -139,7 +143,7 @@ fun CronSyncCard(
                         colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = DarkBackground),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                     ) {
-                        Text("Crontab synchronisieren", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Sync crontab", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -149,14 +153,14 @@ fun CronSyncCard(
             // Section 2: Android WorkManager Automation
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Android WorkManager Hintergrund-Automation",
+                    text = "Android WorkManager background automation",
                     style = MaterialTheme.typography.labelSmall.copy(color = AccentPrimary, fontWeight = FontWeight.Bold)
                 )
 
                 OutlinedTextField(
                     value = workflowTitle,
                     onValueChange = { workflowTitle = it },
-                    label = { Text("Workflow-Name") },
+                    label = { Text("Workflow name") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     shape = RoundedCornerShape(8.dp),
@@ -173,7 +177,7 @@ fun CronSyncCard(
                 OutlinedTextField(
                     value = workflowCommand,
                     onValueChange = { workflowCommand = it },
-                    label = { Text("Shell-Befehl") },
+                    label = { Text("Shell command") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     shape = RoundedCornerShape(8.dp),
@@ -199,7 +203,7 @@ fun CronSyncCard(
                             onCheckedChange = { requireWifi = it },
                             colors = CheckboxDefaults.colors(checkedColor = AccentPrimary)
                         )
-                        Text("Nur bei WLAN", color = TextSecondary, fontSize = 12.sp)
+                        Text("Wi-Fi only", color = TextSecondary, fontSize = 12.sp)
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -208,7 +212,7 @@ fun CronSyncCard(
                             onCheckedChange = { requireCharging = it },
                             colors = CheckboxDefaults.colors(checkedColor = AccentPrimary)
                         )
-                        Text("Nur am Ladekabel", color = TextSecondary, fontSize = 12.sp)
+                        Text("Only while charging", color = TextSecondary, fontSize = 12.sp)
                     }
                 }
 
@@ -227,7 +231,7 @@ fun CronSyncCard(
                                 requiresCharging = requireCharging,
                                 requiresBatteryNotLow = true
                             )
-                            Toast.makeText(context, "✅ Geplant: '$workflowTitle' alle ${interval}h", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "✅ Scheduled: '$workflowTitle' every ${interval}h", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp),
@@ -235,7 +239,7 @@ fun CronSyncCard(
                         colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = DarkBackground)
                     ) {
                         Text(
-                            text = "Periodisch planen",
+                            text = "Schedule recurring",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 2,
@@ -253,7 +257,7 @@ fun CronSyncCard(
                                 requiresCharging = requireCharging,
                                 requiresBatteryNotLow = true
                             )
-                            Toast.makeText(context, "✅ Einmaliger Task eingereiht", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "✅ One-time task queued", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp),
@@ -261,7 +265,7 @@ fun CronSyncCard(
                         colors = ButtonDefaults.buttonColors(containerColor = DarkCardElevated, contentColor = TextWhite)
                     ) {
                         Text(
-                            text = "Sofort einreihen",
+                            text = "Queue now",
                             fontSize = 11.sp,
                             maxLines = 2,
                             softWrap = true,

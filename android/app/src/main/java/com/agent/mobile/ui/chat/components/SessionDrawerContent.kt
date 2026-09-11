@@ -45,7 +45,7 @@ fun SessionDrawerContent(
     var sessionToExport by remember { mutableStateOf<ChatSession?>(null) }
     var showExportDialog by remember { mutableStateOf(false) }
 
-    val dateFormat = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
+    val dateFormat = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.ENGLISH) }
 
     ModalDrawerSheet(
         drawerContainerColor = DarkBackground,
@@ -66,7 +66,7 @@ fun SessionDrawerContent(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Chat-Sitzungen",
+                    text = "Chat sessions",
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.Bold,
                         color = TextWhite,
@@ -74,7 +74,7 @@ fun SessionDrawerContent(
                     )
                 )
                 IconButton(onClick = onCloseDrawer) {
-                    Icon(Icons.Default.Close, contentDescription = "Schließen", tint = TextMuted)
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted)
                 }
             }
 
@@ -92,7 +92,7 @@ fun SessionDrawerContent(
             ) {
                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Neuer Chat", fontWeight = FontWeight.Bold)
+                Text("New chat", fontWeight = FontWeight.Bold)
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -112,7 +112,7 @@ fun SessionDrawerContent(
                         searchResults = emptyList()
                     }
                 },
-                placeholder = { Text("Verlauf & Terminal durchsuchen...", fontSize = 12.sp, color = TextMuted) },
+                placeholder = { Text("Search history and terminal...", fontSize = 12.sp, color = TextMuted) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp)) },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
@@ -139,14 +139,14 @@ fun SessionDrawerContent(
             // Search Results or Sessions List
             if (searchQuery.isNotBlank()) {
                 Text(
-                    text = "Suchergebnisse (${searchResults.size}):",
+                    text = "Search results (${searchResults.size}):",
                     style = MaterialTheme.typography.labelSmall.copy(color = TextMuted),
                     modifier = Modifier.padding(bottom = 6.dp)
                 )
 
                 if (searchResults.isEmpty()) {
                     Box(modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp), contentAlignment = Alignment.Center) {
-                        Text("Keine Treffer gefunden", color = TextMuted, fontSize = 12.sp)
+                        Text("No results found", color = TextMuted, fontSize = 12.sp)
                     }
                 } else {
                     LazyColumn(
@@ -179,7 +179,7 @@ fun SessionDrawerContent(
                 }
             } else {
                 Text(
-                    text = "Alle Chats (${allSessions.size}):",
+                    text = "All chats (${allSessions.size}):",
                     style = MaterialTheme.typography.labelSmall.copy(color = TextMuted),
                     modifier = Modifier.padding(bottom = 6.dp)
                 )
@@ -245,7 +245,7 @@ fun SessionDrawerContent(
                                         },
                                         modifier = Modifier.size(28.dp)
                                     ) {
-                                        Icon(Icons.Default.FileDownload, contentDescription = "Exportieren", tint = TextMuted, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.FileDownload, contentDescription = "Export", tint = TextMuted, modifier = Modifier.size(16.dp))
                                     }
 
                                     // Delete Button
@@ -253,7 +253,7 @@ fun SessionDrawerContent(
                                         onClick = { agentEngine.deleteSession(session.id) },
                                         modifier = Modifier.size(28.dp)
                                     ) {
-                                        Icon(Icons.Default.Delete, contentDescription = "Löschen", tint = TextMuted, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = TextMuted, modifier = Modifier.size(16.dp))
                                     }
                                 }
                             }
@@ -269,14 +269,14 @@ fun SessionDrawerContent(
         val session = sessionToExport!!
         AlertDialog(
             onDismissRequest = { showExportDialog = false },
-            title = { Text("Chat exportieren", color = TextWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            title = { Text("Export chat", color = TextWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
             text = {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = "Wähle das Export-Format für '${session.title}':",
+                        text = "Choose the export format for '${session.title}':",
                         color = TextSecondary,
                         fontSize = 12.5.sp
                     )
@@ -287,7 +287,7 @@ fun SessionDrawerContent(
                                 val messages = chatRepository?.getMessagesForSessionSync(session.id) ?: emptyList()
                                 val md = chatRepository?.exportToMarkdown(session, messages) ?: ""
                                 val file = chatRepository?.saveExportFile(context, "chat_${session.id.take(8)}.md", md)
-                                Toast.makeText(context, "Gespeichert unter: ${file?.name}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "Saved to: ${file?.name}", Toast.LENGTH_LONG).show()
                                 showExportDialog = false
                             }
                         },
@@ -304,7 +304,7 @@ fun SessionDrawerContent(
                                 val messages = chatRepository?.getMessagesForSessionSync(session.id) ?: emptyList()
                                 val json = chatRepository?.exportToJson(session, messages) ?: ""
                                 val file = chatRepository?.saveExportFile(context, "chat_${session.id.take(8)}.json", json)
-                                Toast.makeText(context, "Gespeichert unter: ${file?.name}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "Saved to: ${file?.name}", Toast.LENGTH_LONG).show()
                                 showExportDialog = false
                             }
                         },
@@ -319,7 +319,7 @@ fun SessionDrawerContent(
             confirmButton = {},
             dismissButton = {
                 TextButton(onClick = { showExportDialog = false }) {
-                    Text("Abbrechen", color = TextMuted, fontSize = 12.sp)
+                    Text("Cancel", color = TextMuted, fontSize = 12.sp)
                 }
             },
             containerColor = DarkCard

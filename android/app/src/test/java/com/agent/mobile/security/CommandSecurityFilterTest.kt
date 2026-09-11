@@ -106,7 +106,7 @@ class CommandSecurityFilterTest {
     }
 
     @Test
-    fun testCustomWhitelistOverridesStandardRules() {
+    fun testAllowlistExemptsRecognizedMediumCommandsOnly() {
         val customCmd = "curl https://api.example.com"
         // Without whitelist, curl is analyzed by default rules (MEDIUM risk)
         val defaultAssessment = CommandSecurityFilter.analyze(customCmd)
@@ -121,7 +121,6 @@ class CommandSecurityFilterTest {
 
         val whitelistedAssessment = CommandSecurityFilter.analyze(customCmd)
         assertEquals(RiskLevel.LOW, whitelistedAssessment.level)
-        assertTrue(whitelistedAssessment.reason.contains("Custom-Whitelist"))
         assertFalse(CommandSecurityFilter.shouldRequireApproval(whitelistedAssessment, ExecutionMode.AUTOPILOT))
     }
 
@@ -147,9 +146,9 @@ class CommandSecurityFilterTest {
         val assessment = CommandSecurityFilter.analyze(mediumCmd)
         assertEquals(RiskLevel.MEDIUM, assessment.level)
 
-        // Normal autopilot does not require approval for medium risk
+        // File and network changes require approval unless specifically allowlisted.
         CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
-        assertFalse(CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT))
 
         // Strict mode forces approval for medium risk in autopilot
         CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = true)
@@ -157,5 +156,42 @@ class CommandSecurityFilterTest {
             "Strict Mode must force approval for medium risk commands in Autopilot",
             CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT)
         )
+    }
+    @Test
+    fun testBroadAllowlistCannotBypassDangerousOrUnknownCommands() {
+        CommandSecurityFilter.setCustomRules(listOf(".*"), emptyList())
+        for (command in listOf(
+            "termux-sms-send -n 123 Hello",
+            "termux-sms-list",
+            "termux-location",
+            "python script.py",
+            "some-new-program",
+            "echo ok; termux-camera-photo photo.jpg",
+            "echo ok > important.txt",
+            "echo $(whoami)",
+            "curl https://example.com\npython script.py"
+        )) {
+            val assessment = CommandSecurityFilter.analyze(command)
+            assertEquals(command, RiskLevel.HIGH, assessment.level)
+            assertTrue(command, CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT))
+        }
+    }
+
+    @Test
+    fun testAllowlistMustMatchTheWholeCommand() {
+        CommandSecurityFilter.setCustomRules(listOf("curl"), emptyList())
+        val assessment = CommandSecurityFilter.analyze("curl https://example.com")
+        assertEquals(RiskLevel.MEDIUM, assessment.level)
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT))
+    }
+
+    @Test
+    fun testExplicitModesOverrideAllowlist() {
+        CommandSecurityFilter.setCustomRules(listOf("^curl\\s+.*"), emptyList())
+        val assessment = CommandSecurityFilter.analyze("curl https://example.com")
+        assertEquals(RiskLevel.LOW, assessment.level)
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.STEP_BY_STEP))
+        CommandSecurityFilter.setCustomRules(listOf(".*"), emptyList(), strict = true)
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT))
     }
 }

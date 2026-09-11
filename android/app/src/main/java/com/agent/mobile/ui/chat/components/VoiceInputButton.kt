@@ -49,7 +49,7 @@ fun VoiceInputButton(
         if (granted) {
             startListening(context, speechRecognizer, onListeningChange = { isListening = it }, onResult = onSpeechResult)
         } else {
-            Toast.makeText(context, "Mikrofon-Berechtigung erforderlich", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Microphone permission required", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -61,7 +61,7 @@ fun VoiceInputButton(
     IconButton(
         onClick = {
             if (speechRecognizer == null) {
-                Toast.makeText(context, "Spracherkennung auf diesem Gerät nicht verfügbar", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Speech recognition is unavailable on this device", Toast.LENGTH_SHORT).show()
                 return@IconButton
             }
 
@@ -84,7 +84,7 @@ fun VoiceInputButton(
     ) {
         Icon(
             imageVector = if (isListening) Icons.Default.MicOff else Icons.Default.Mic,
-            contentDescription = "Spracheingabe",
+            contentDescription = "Voice input",
             tint = micColor,
             modifier = Modifier.size(22.dp)
         )
@@ -107,14 +107,14 @@ private fun startListening(
 
     val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.ENGLISH.toLanguageTag())
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
     }
 
     speechRecognizer.setRecognitionListener(object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
             onListeningChange(true)
-            Toast.makeText(context, "🎤 Sprich jetzt...", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "🎤 Speak now...", Toast.LENGTH_SHORT).show()
         }
 
         override fun onResults(results: Bundle?) {

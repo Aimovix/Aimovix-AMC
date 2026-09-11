@@ -50,13 +50,13 @@ fun ApprovalPromptCard(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Shield,
-                        contentDescription = "Sicherheit",
+                        contentDescription = "Security",
                         tint = badgeColor,
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (isHighRisk) "Sicherheits-Freigabe" else "Aktion bestätigen",
+                        text = if (isHighRisk) "Security approval" else "Confirm action",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.Bold,
@@ -75,7 +75,7 @@ fun ApprovalPromptCard(
                     color = badgeColor.copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = if (isHighRisk) "Kritisch" else "Prüfung nötig",
+                        text = if (isHighRisk) "High risk" else "Review required",
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                         fontSize = 9.5.sp,
                         fontWeight = FontWeight.Bold,
@@ -129,7 +129,7 @@ fun ApprovalPromptCard(
                 ) {
                     Icon(imageVector = Icons.Default.Close, contentDescription = null, modifier = Modifier.size(13.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Ablehnen", fontSize = 11.5.sp)
+                    Text("Reject", fontSize = 11.5.sp)
                 }
 
                 Spacer(modifier = Modifier.width(8.dp))
@@ -145,7 +145,7 @@ fun ApprovalPromptCard(
                 ) {
                     Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(13.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Ausführen", fontWeight = FontWeight.Bold, fontSize = 11.5.sp)
+                    Text("Run", fontWeight = FontWeight.Bold, fontSize = 11.5.sp)
                 }
             }
         }

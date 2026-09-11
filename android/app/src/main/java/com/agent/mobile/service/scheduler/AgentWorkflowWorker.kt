@@ -13,6 +13,8 @@ import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.data.storage.db.AppDatabase
 import com.agent.mobile.data.storage.db.entity.CommandAuditEntity
 import com.agent.mobile.security.CommandSecurityFilter
+import com.agent.mobile.data.model.ExecutionMode
+import kotlinx.coroutines.CancellationException
 
 class AgentWorkflowWorker(
     private val appContext: Context,
@@ -29,35 +31,43 @@ class AgentWorkflowWorker(
     }
 
     override suspend fun doWork(): Result {
-        val title = inputData.getString(KEY_TITLE) ?: "Hintergrund-Workflow"
+        val title = inputData.getString(KEY_TITLE) ?: "Background workflow"
         val command = inputData.getString(KEY_COMMAND) ?: "termux-battery-status"
-        Log.i(TAG, "Starte Hintergrund-Automation: $title mit Befehl: $command")
+        Log.i(TAG, "Starting background automation: $title with command: $command")
 
-        sendNotification(title, "Führe Befehl aus: $command...")
+        sendNotification(title, "Running command: $command...")
 
         return try {
+            val prefs = PreferenceManager(appContext)
+            CommandSecurityFilter.setCustomRules(prefs.loadWhitelist(), prefs.loadBlacklist(), prefs.loadStrictMode())
             val assessment = CommandSecurityFilter.analyze(command)
             if (assessment.isBlocked) {
-                sendNotification("🛡️ Sicherheits-Sperre ($title)", "Befehl `$command` wurde aus Sicherheitsgründen blockiert.")
+                sendNotification("🛡️ Security block ($title)", "Command `$command` was blocked by security rules.")
                 return Result.failure()
             }
 
-            val prefs = PreferenceManager(appContext)
+            if (CommandSecurityFilter.shouldRequireApproval(assessment, prefs.loadExecutionMode())) {
+                sendNotification("Approval required ($title)", "Run this command interactively in AMC to review and approve it.")
+                return Result.failure()
+            }
             val token = prefs.loadAuthToken()
             val bridge = TermuxBridgeClient(token = token)
             bridge.connect(token)
 
             val startTime = System.currentTimeMillis()
-            val result = bridge.executeCommand(command, timeoutMs = 60_000L)
+            val result = try {
+                bridge.awaitConnected()
+                bridge.executeCommand(command, timeoutMs = 60_000L)
+            } finally {
+                bridge.disconnect()
+            }
             val duration = System.currentTimeMillis() - startTime
-            bridge.disconnect()
-
             val db = AppDatabase.getInstance(appContext)
             db.commandAuditDao().insertAudit(
                 CommandAuditEntity(
                     command = command,
                     riskLevel = assessment.level.name,
-                    riskReason = "Geplanter Hintergrund-Workflow: $title",
+                    riskReason = "Scheduled background workflow: $title",
                     executionDurationMs = duration,
                     exitCode = result.exitCode,
                     stdout = result.stdout.take(500),
@@ -68,16 +78,18 @@ class AgentWorkflowWorker(
             )
 
             val summary = if (result.exitCode == 0) {
-                "Erfolgreich abgeschlossen (Code 0)\n${result.stdout.take(120)}"
+                "Completed successfully (Code 0)\n${result.stdout.take(120)}"
             } else {
-                "Fehler bei Ausführung (Code ${result.exitCode})\n${result.stderr.take(120)}"
+                "Execution failed (Code ${result.exitCode})\n${result.stderr.take(120)}"
             }
 
             sendNotification("✅ $title", summary)
-            Result.success()
+            if (result.exitCode == 0) Result.success() else Result.failure()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Fehler bei Hintergrund-Workflow: ${e.message}", e)
-            sendNotification("⚠️ Fehler ($title)", e.localizedMessage ?: "Unbekannter Fehler")
+            Log.e(TAG, "Background workflow failed: ${e.message}", e)
+            sendNotification("⚠️ Error ($title)", e.localizedMessage ?: "Unknown error")
             if (runAttemptCount < 2) Result.retry() else Result.failure()
         }
     }
@@ -87,10 +99,10 @@ class AgentWorkflowWorker(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Automations-Benachrichtigungen",
+                "Automation notifications",
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Ergebnisse zeit- und ereignisgesteuerter Workflows"
+                description = "Results of scheduled and event-triggered workflows"
             }
             notificationManager.createNotificationChannel(channel)
         }

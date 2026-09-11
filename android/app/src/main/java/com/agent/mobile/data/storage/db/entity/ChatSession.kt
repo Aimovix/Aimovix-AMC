@@ -8,7 +8,7 @@ import java.util.UUID
 data class ChatSession(
     @PrimaryKey
     val id: String = UUID.randomUUID().toString(),
-    val title: String = "Neuer Chat",
+    val title: String = "New chat",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     val modelProvider: String = "GEMINI",

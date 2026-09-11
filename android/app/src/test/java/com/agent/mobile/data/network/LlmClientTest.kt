@@ -36,7 +36,7 @@ class LlmClientTest {
     @Test
     fun testOpenAiSseStreamingTokens() = runBlocking {
         val sseBody = """
-            data: {"choices":[{"delta":{"content":"Hallo "}}]}
+            data: {"choices":[{"delta":{"content":"Hello "}}]}
             
             data: {"choices":[{"delta":{"content":"Android!"}}]}
             
@@ -65,11 +65,11 @@ class LlmClientTest {
         ).toList()
 
         val tokens = events.filterIsInstance<LlmClient.LlmStreamEvent.Token>().map { it.textChunk }
-        assertEquals(listOf("Hallo ", "Android!"), tokens)
+        assertEquals(listOf("Hello ", "Android!"), tokens)
 
         val completed = events.filterIsInstance<LlmClient.LlmStreamEvent.Completed>().firstOrNull()
         assertNotNull(completed)
-        assertEquals("Hallo Android!", completed?.fullText)
+        assertEquals("Hello Android!", completed?.fullText)
     }
 
     @Test
@@ -140,7 +140,7 @@ class LlmClientTest {
             MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "text/event-stream")
-                .setBody("data: {\"choices\":[{\"delta\":{\"content\":\"Bild analysiert.\"}}]}\n\ndata: [DONE]\n\n")
+                .setBody("data: {\"choices\":[{\"delta\":{\"content\":\"Image analyzed.\"}}]}\n\ndata: [DONE]\n\n")
         )
 
         val config = ModelConfig(
@@ -153,7 +153,7 @@ class LlmClientTest {
         val fakeBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
         val userMsgWithImage = ChatMessage(
             role = MessageRole.USER,
-            text = "Was siehst du auf diesem Bild?",
+            text = "What do you see in this image?",
             imageBase64 = fakeBase64,
             imageMimeType = "image/png"
         )

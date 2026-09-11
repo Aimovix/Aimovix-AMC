@@ -29,34 +29,34 @@ fun QuickActionToolbar(
 ) {
     val actions = listOf(
         QuickAction(
-            label = "Akku Status",
+            label = "Battery status",
             icon = Icons.Default.BatteryChargingFull,
-            prompt = "Prüfe meinen Akkustand und sage mir, ob das Handy geladen wird."
+            prompt = "Check my battery level and tell me whether the phone is charging."
         ),
         QuickAction(
-            label = "WLAN Info",
+            label = "Wi-Fi info",
             icon = Icons.Default.Wifi,
-            prompt = "Zeige mir Details über mein verbundenes WLAN an (SSID, IP, Signalstärke)."
+            prompt = "Show details of my Wi-Fi connection (SSID, IP address, signal strength)."
         ),
         QuickAction(
-            label = "Kamera Foto",
+            label = "Camera photo",
             icon = Icons.Default.CameraAlt,
-            prompt = "Mache ein Foto mit der Hauptkamera und speichere es im Termux Home-Verzeichnis."
+            prompt = "Take a photo with the rear camera and save it in the Termux home directory."
         ),
         QuickAction(
             label = "Clipboard",
             icon = Icons.Default.ContentPaste,
-            prompt = "Lies den aktuellen Inhalt der Android Zwischenablage aus."
+            prompt = "Read the current Android clipboard."
         ),
         QuickAction(
             label = "Notification",
             icon = Icons.Default.Notifications,
-            prompt = "Sende eine Android-Systembenachrichtigung mit dem Titel 'AMC Agent' und Text 'Bereit'."
+            prompt = "Send an Android notification titled 'AMC Agent' with the text 'Ready'."
         ),
         QuickAction(
-            label = "Vorlesen (TTS)",
+            label = "Read aloud (TTS)",
             icon = Icons.AutoMirrored.Filled.VolumeUp,
-            prompt = "Lies deine letzte Antwort laut über den Smartphone-Lautsprecher vor."
+            prompt = "Read your last response aloud through the phone speaker."
         )
     )
 
