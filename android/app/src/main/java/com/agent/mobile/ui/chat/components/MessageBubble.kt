@@ -10,11 +10,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -42,14 +45,37 @@ fun MessageBubble(
                     color = DarkCardElevated,
                     border = BorderStroke(1.dp, BorderSubtle)
                 ) {
-                    Box(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                        Text(
-                            text = message.text,
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                color = TextWhite,
-                                lineHeight = 20.sp
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        if (message.imageBase64 != null) {
+                            val bitmap = remember(message.imageBase64) {
+                                try {
+                                    val bytes = android.util.Base64.decode(message.imageBase64, android.util.Base64.DEFAULT)
+                                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                                } catch (e: Exception) {
+                                    null
+                                }
+                            }
+                            if (bitmap != null) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = bitmap,
+                                    contentDescription = "Angehängtes Bild",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 200.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .padding(bottom = 6.dp)
+                                )
+                            }
+                        }
+                        if (message.text.isNotEmpty()) {
+                            Text(
+                                text = message.text,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    color = TextWhite,
+                                    lineHeight = 20.sp
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }

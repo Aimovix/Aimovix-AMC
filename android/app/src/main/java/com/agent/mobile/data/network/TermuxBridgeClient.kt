@@ -45,6 +45,9 @@ class TermuxBridgeClient(
     private val pendingExecutions = ConcurrentHashMap<String, CompletableDeferred<ToolResult>>()
     private val executionOutputs = ConcurrentHashMap<String, StringBuilder>()
 
+    // Map for waiting file reads
+    private val pendingFileReads = ConcurrentHashMap<String, CompletableDeferred<String>>()
+
     // Auto-reconnect worker state
     private var isAutoReconnectEnabled = true
     private var reconnectJob: Job? = null
@@ -219,9 +222,25 @@ class TermuxBridgeClient(
                         executionOutputs.remove(execId)
                     }
                 }
+                "file_content" -> {
+                    val path = json.optString("path")
+                    val content = json.optString("content")
+                    val deferred = pendingFileReads.remove(path)
+                    deferred?.complete(content)
+                }
+                "file_base64" -> {
+                    val path = json.optString("path")
+                    val b64 = json.optString("data")
+                    val deferred = pendingFileReads.remove(path)
+                    deferred?.complete(b64)
+                }
                 "error" -> {
                     val execId = json.optString("execution_id")
                     val err = json.optString("error")
+                    val path = json.optString("path")
+                    if (path.isNotEmpty()) {
+                        pendingFileReads.remove(path)?.completeExceptionally(Exception(err))
+                    }
                     val deferred = pendingExecutions[execId]
                     if (deferred != null) {
                         deferred.complete(
@@ -322,6 +341,56 @@ class TermuxBridgeClient(
             put("action", "interrupt")
         }
         webSocket?.send(msg.toString())
+    }
+
+    suspend fun readFile(path: String, timeoutMs: Long = 10_000L): String = withContext(Dispatchers.IO) {
+        val deferred = CompletableDeferred<String>()
+        pendingFileReads[path] = deferred
+        val msg = JSONObject().apply {
+            put("action", "read_file")
+            put("path", path)
+        }
+        val ws = webSocket
+        if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
+            pendingFileReads.remove(path)
+            throw IllegalStateException("Keine Verbindung zu Termux")
+        }
+        ws.send(msg.toString())
+        try {
+            withTimeout(timeoutMs) { deferred.await() }
+        } finally {
+            pendingFileReads.remove(path)
+        }
+    }
+
+    suspend fun readFileBase64(path: String, timeoutMs: Long = 15_000L): String = withContext(Dispatchers.IO) {
+        val deferred = CompletableDeferred<String>()
+        pendingFileReads[path] = deferred
+        val msg = JSONObject().apply {
+            put("action", "read_file_base64")
+            put("path", path)
+        }
+        val ws = webSocket
+        if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
+            pendingFileReads.remove(path)
+            throw IllegalStateException("Keine Verbindung zu Termux")
+        }
+        ws.send(msg.toString())
+        try {
+            withTimeout(timeoutMs) { deferred.await() }
+        } finally {
+            pendingFileReads.remove(path)
+        }
+    }
+
+    suspend fun getCrontab(): String {
+        val res = executeCommand("crontab -l")
+        return if (res.exitCode == 0) res.stdout else ""
+    }
+
+    suspend fun setCrontab(crontabContent: String): ToolResult {
+        val escaped = crontabContent.replace("'", "'\\''")
+        return executeCommand("echo '$escaped' | crontab -")
     }
 
     fun disconnect() {

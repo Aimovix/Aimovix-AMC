@@ -104,11 +104,54 @@ API-Keys und Bridge-Tokens werden mit `EncryptedSharedPreferences` über den And
 
 ---
 
+## 🌟 Enterprise Mega-Upgrade & Architektur
+
+AMC wurde auf Enterprise-Niveau gehoben und verfügt über eine modulare, resiliente und vollständig abgesicherte Architektur:
+
+### 1. Multi-Session-Persistenz & Chat-Verwaltung (Room Database)
+- **Room SQLite Engine (`AppDatabase.kt`):** Vollständige persistente Speicherung aller Chats, Nachrichten und Terminal-Ausgaben (`ChatSession`, `ChatMessageEntity`, `CommandAuditEntity`) mit Fremdschlüsselkaskadierung (`CASCADE`).
+- **Multi-Session-Drawer:** Schnelles Umschalten zwischen parallelen Chat-Sessions, Erstellen neuer Sessions und Löschen alter Historien.
+- **Automatische Titelgenerierung:** KI-basierte und heuristische Generierung prägnanter Titel aus der ersten Nutzeranweisung.
+- **Volltextsuche:** Durchsucht alle historischen Chat-Nachrichten sowie ausgeführte Terminal-Ausgaben in Echtzeit.
+- **Export (Markdown & JSON):** 1-Klick-Export vollständiger Sessions inklusive aller Tool-Calls, Token-Metriken und Terminal-Logs in den Gerätespeicher (`Documents/`).
+
+### 2. Multimodale Vision- & Artefakt-Pipeline
+- **Multi-Provider Vision (`LlmClient.kt`):** Unterstützt Bild-Inputs über alle führenden Vision-APIs:
+  - Google Gemini: Natives `inlineData` Base64-Streaming
+  - OpenAI / OpenRouter: Dynamische `image_url` data-URIs
+  - Anthropic Claude: Base64 Source Objects (`image/jpeg`, `image/png`, `image/webp`)
+- **Chat-Integration:** Fotos können direkt über die Kamera aufgenommen oder aus der Galerie an jede Chat-Nachricht angehängt werden.
+- **Autonome Termux-Vision-Loop:** Wenn der Agent `termux-camera-photo` aufruft, liest der Daemon das Bild automatisch im Base64-Format aus dem Termux-Dateisystem (`read_file_base64`) und injiziert es als visuelle Beobachtung in den Chat.
+- **In-App Artefakt-Viewer (`ArtifactViewerDialog.kt`):** Rendert erzeugte Dateien, Skripte, Code-Dateien und HTML-Reports in einem interaktiven Modal mit Syntax-Highlighting, Copy-Action und 1-Klick-Ausführung in Termux.
+
+### 3. SSE Token-Streaming & Provider-Resilienz
+- **Server-Sent Events (SSE):** Flüssiges Word-by-Word Streaming über Kotlin Coroutines Flow für OpenAI, Groq, OpenRouter, Claude (`/messages?stream=true`) und Gemini (`streamGenerateContent?alt=sse`).
+- **Automatisches Sekundär-Provider-Fallback:** Bei Rate-Limits (HTTP 429), Timeouts oder Serverfehlern (HTTP 5xx) schaltet die Engine nahtlos und unterbrechungsfrei auf den konfigurierten Fallback-Provider um (z. B. Primär Gemini Flash -> Fallback Groq Llama 3.3).
+- **Token- & Kosten-Tracking:** Protokolliert akkumulierte Prompt- und Completion-Tokens sowie geschätzte USD-Kosten pro Nachricht und Sitzung.
+
+### 4. Hybrid-Scheduler & Hintergrund-Automation
+- **Android WorkManager Integration (`AgentWorkflowWorker.kt`, `SchedulerManager.kt`):** Periodische und einmalige Hintergrund-Automationen mit Hardware-Constraints (z. B. nur bei WLAN, Akku nicht schwach, Ladezustand).
+- **Termux Crontab-Sync:** Synchronisiert geplante Aufgaben direkt mit dem Linux-Cron (`crontab -l`, `crontab -`) in Termux über den Bridge-Daemon.
+- **Interaktive Service-Benachrichtigungen:** Der Vordergrunddienst (`AgentForegroundService.kt`) aktualisiert Benachrichtigungen mit Live-Status und Stopp-Action.
+
+### 5. Security-Cockpit & Guardrails
+- **Sicherheits-Cockpit (`SecurityCockpitCard.kt`):**
+  - **Benutzerdefinierte Whitelist-Regex:** Freigabe spezifischer Befehle ohne Bestätigungsabfrage.
+  - **Benutzerdefinierte Blacklist-Regex:** Sofortige Blockierung individueller Befehlsmuster.
+  - **Strikter Modus (Strict Mode):** Erzwingt auch im Autopilot-Modus Bestätigungen für mittlere Risiken.
+- **Runaway & Cyclic Loop Detection:** Verhindert Endlosschleifen durch automatischen Abbruch bei:
+  - Wiederholter Ausführung desselben Befehls (>= 3 Mal identisch)
+  - Ping-Pong-Zyklen (Befehl A -> B -> A -> B)
+  - Persistenten Fehlern (>= 3 aufeinanderfolgende Fehler)
+- **Vollständiges Audit-Log:** Jeder ausgeführte oder abgelehnte Befehl wird mit Zeitstempel, Risiko-Level, Ausführungsdauer, Exit-Code und Ausgaben in der Room-Datenbank auditiert.
+
+---
+
 ## 🛠️ Entwicklung & Build
 
 ### Voraussetzungen
 - Android Studio Ladybug (oder neuer)
-- JDK 17+ (z. B. JetBrains Runtime 21)
+- JDK 21 (z. B. Eclipse Temurin 21)
 - Android SDK Platform 35
 
 ### Befehle
@@ -116,15 +159,21 @@ API-Keys und Bridge-Tokens werden mit `EncryptedSharedPreferences` über den And
 ```bash
 cd android
 
-# Unit-Tests für Security-Filter und Obfuskationserkennung ausführen
-./gradlew test
+# Alle Unit-Tests (Room DAOs, Engine, Security Filter, MockWebServer) ausführen
+./gradlew testDebugUnitTest --no-daemon
 
 # Debug-Build erstellen
-./gradlew assembleDebug
+./gradlew assembleDebug --no-daemon
 
-# Signierten Release-Build erstellen (erzeugt APK unter app/build/outputs/apk/release/)
-./gradlew assembleRelease
+# Signierten Release-Build erstellen
+./gradlew assembleRelease --no-daemon
 ```
+
+### CI/CD Pipeline
+Die GitHub Actions Pipeline (`.github/workflows/android-ci.yml`) führt bei jedem Push und Pull Request automatisch:
+- JDK 21 Setup mit Gradle Dependency Caching
+- Ausführung aller Unit- & Integrationstests
+- Kompilierung und Upload des Debug-APKs als Artefakt
 
 ---
 
@@ -132,18 +181,25 @@ cd android
 
 ```
 Aimovix-AMC/
+├── .github/workflows/
+│   └── android-ci.yml         # CI/CD Workflow für Tests & APK-Build
 ├── android/                   # Native Android App (Kotlin & Jetpack Compose)
 │   ├── app/src/main/
 │   │   ├── java/com/agent/mobile/
-│   │   │   ├── agent/         # ReAct-Engine, Prompting & Injection-Guardrails
-│   │   │   ├── data/          # WebSocket-Bridge, Multi-Provider LLM-Client, EncryptedStorage
-│   │   │   ├── security/      # 3-Tier Security Filter & Obfuscation Guards
-│   │   │   ├── service/       # Android Foreground Service & Wakelock
-│   │   │   └── ui/            # Compose UI (Chat, Terminal, Setup, Settings)
-│   │   └── res/xml/           # network_security_config.xml (Localhost-only Cleartext)
-│   └── app/src/test/          # Automatisierte Unit-Tests für Sicherheitsfilter
+│   │   │   ├── agent/         # ReAct-Engine, Prompting & Loop-Detection Guardrails
+│   │   │   ├── data/
+│   │   │   │   ├── model/     # Datenmodelle (Tokens, Provider, Artefakte, Tools)
+│   │   │   │   ├── network/   # SSE-Streaming LLM-Client, WebSocket Termux Bridge
+│   │   │   │   ├── repository/# ChatRepository mit Room & Metriken
+│   │   │   │   └── storage/   # EncryptedSharedPreferences & Room DB (DAOs, Entities)
+│   │   │   ├── scheduler/     # WorkManager Background Worker & Scheduler
+│   │   │   ├── security/      # 3-Tier Security Filter, Custom Regex & Strict Mode
+│   │   │   ├── service/       # Android Foreground Service mit Live-Notification
+│   │   │   └── ui/            # Modernes Zinc Dark UI (Chat, Drawer, Artifacts, Settings)
+│   │   └── res/xml/           # network_security_config.xml
+│   └── app/src/test/          # Unit- & Integrationstests (Room DAOs, MockWebServer, Engine)
 ├── termux-bridge/             # Termux Python Bridge Daemon & Setup Scripts
-│   ├── bridge_daemon.py       # Asynchroner WebSocket-Bridge-Server
+│   ├── bridge_daemon.py       # WebSocket Server (Befehle, Streaming, Base64-Dateitransfer, Cron)
 │   ├── setup.sh               # 1-Klick Setup-Skript für Termux
 │   └── local_model_manager.sh # llama.cpp & GGUF Modell-Manager
 └── README.md

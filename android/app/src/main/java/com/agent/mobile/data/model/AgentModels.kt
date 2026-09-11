@@ -103,7 +103,11 @@ data class ModelConfig(
     val provider: ProviderType = ProviderType.GEMINI,
     val modelName: String = provider.defaultModel,
     val apiKey: String = "",
-    val baseUrl: String = provider.defaultBaseUrl
+    val baseUrl: String = provider.defaultBaseUrl,
+    val fallbackProvider: ProviderType? = null,
+    val fallbackModelName: String = "",
+    val fallbackApiKey: String = "",
+    val fallbackBaseUrl: String = ""
 )
 
 @Serializable
@@ -143,7 +147,32 @@ data class ChatMessage(
     val toolResult: ToolResult? = null,
     val streamingTerminalOutput: String = "",
     val timestamp: Long = System.currentTimeMillis(),
-    val status: MessageStatus = MessageStatus.COMPLETED
+    val status: MessageStatus = MessageStatus.COMPLETED,
+    val imageBase64: String? = null,
+    val imageMimeType: String? = null
+)
+
+enum class ArtifactType {
+    TEXT,
+    CODE,
+    MARKDOWN,
+    HTML,
+    IMAGE
+}
+
+data class ArtifactItem(
+    val filename: String,
+    val path: String,
+    val type: ArtifactType,
+    val content: String? = null,
+    val base64Data: String? = null,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+data class SessionMetrics(
+    val promptTokens: Int = 0,
+    val completionTokens: Int = 0,
+    val estimatedCostUsd: Double = 0.0
 )
 
 data class TermuxSystemInfo(

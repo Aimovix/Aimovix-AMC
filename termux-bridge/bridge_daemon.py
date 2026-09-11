@@ -398,6 +398,27 @@ async def handle_connection(websocket):
                         "error": str(e)
                     }))
 
+            # 6b. Read file base64 (multimodal vision & binary transfer)
+            elif action == "read_file_base64":
+                path = os.path.expanduser(msg.get("path", ""))
+                if not os.path.isabs(path):
+                    path = os.path.join(current_cwd, path)
+                try:
+                    import base64
+                    with open(path, "rb") as f:
+                        b64_content = base64.b64encode(f.read()).decode("ascii")
+                    await websocket.send(json.dumps({
+                        "type": "file_base64",
+                        "path": path,
+                        "data": b64_content
+                    }))
+                except Exception as e:
+                    await websocket.send(json.dumps({
+                        "type": "error",
+                        "path": path,
+                        "error": str(e)
+                    }))
+
             # 7. Write file
             elif action == "write_file":
                 path = os.path.expanduser(msg.get("path", ""))

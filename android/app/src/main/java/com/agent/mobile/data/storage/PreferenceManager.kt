@@ -33,8 +33,16 @@ class PreferenceManager(context: Context) {
         private const val KEY_MODEL = "key_model"
         private const val KEY_API_KEY = "key_api_key"
         private const val KEY_BASE_URL = "key_base_url"
+        private const val KEY_FALLBACK_PROVIDER = "key_fallback_provider"
+        private const val KEY_FALLBACK_MODEL = "key_fallback_model"
+        private const val KEY_FALLBACK_API_KEY = "key_fallback_api_key"
+        private const val KEY_FALLBACK_BASE_URL = "key_fallback_base_url"
         private const val KEY_EXEC_MODE = "key_exec_mode"
         private const val KEY_AUTH_TOKEN = "key_auth_token"
+        private const val KEY_WHITELIST = "key_whitelist"
+        private const val KEY_BLACKLIST = "key_blacklist"
+        private const val KEY_STRICT_MODE = "key_strict_mode"
+        private const val KEY_ACTIVE_SESSION_ID = "key_active_session_id"
     }
 
     init {
@@ -65,6 +73,10 @@ class PreferenceManager(context: Context) {
             putString(KEY_MODEL, config.modelName)
             putString(KEY_API_KEY, config.apiKey)
             putString(KEY_BASE_URL, config.baseUrl)
+            putString(KEY_FALLBACK_PROVIDER, config.fallbackProvider?.name ?: "")
+            putString(KEY_FALLBACK_MODEL, config.fallbackModelName)
+            putString(KEY_FALLBACK_API_KEY, config.fallbackApiKey)
+            putString(KEY_FALLBACK_BASE_URL, config.fallbackBaseUrl)
             apply()
         }
     }
@@ -80,11 +92,23 @@ class PreferenceManager(context: Context) {
         val apiKey = prefs.getString(KEY_API_KEY, "") ?: ""
         val baseUrl = prefs.getString(KEY_BASE_URL, provider.defaultBaseUrl) ?: provider.defaultBaseUrl
 
+        val fallbackProviderName = prefs.getString(KEY_FALLBACK_PROVIDER, "") ?: ""
+        val fallbackProvider = if (fallbackProviderName.isNotEmpty()) {
+            try { ProviderType.valueOf(fallbackProviderName) } catch (e: Exception) { null }
+        } else null
+        val fallbackModelName = prefs.getString(KEY_FALLBACK_MODEL, "") ?: ""
+        val fallbackApiKey = prefs.getString(KEY_FALLBACK_API_KEY, "") ?: ""
+        val fallbackBaseUrl = prefs.getString(KEY_FALLBACK_BASE_URL, "") ?: ""
+
         return ModelConfig(
             provider = provider,
             modelName = modelName,
             apiKey = apiKey,
-            baseUrl = baseUrl
+            baseUrl = baseUrl,
+            fallbackProvider = fallbackProvider,
+            fallbackModelName = fallbackModelName,
+            fallbackApiKey = fallbackApiKey,
+            fallbackBaseUrl = fallbackBaseUrl
         )
     }
 
@@ -107,5 +131,39 @@ class PreferenceManager(context: Context) {
 
     fun loadAuthToken(): String {
         return prefs.getString(KEY_AUTH_TOKEN, "") ?: ""
+    }
+
+    fun saveWhitelist(patterns: List<String>) {
+        prefs.edit().putString(KEY_WHITELIST, patterns.joinToString("\n")).apply()
+    }
+
+    fun loadWhitelist(): List<String> {
+        val raw = prefs.getString(KEY_WHITELIST, "") ?: ""
+        return if (raw.isBlank()) emptyList() else raw.lines().map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
+    fun saveBlacklist(patterns: List<String>) {
+        prefs.edit().putString(KEY_BLACKLIST, patterns.joinToString("\n")).apply()
+    }
+
+    fun loadBlacklist(): List<String> {
+        val raw = prefs.getString(KEY_BLACKLIST, "") ?: ""
+        return if (raw.isBlank()) emptyList() else raw.lines().map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
+    fun saveStrictMode(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_STRICT_MODE, enabled).apply()
+    }
+
+    fun loadStrictMode(): Boolean {
+        return prefs.getBoolean(KEY_STRICT_MODE, false)
+    }
+
+    fun saveActiveSessionId(sessionId: String) {
+        prefs.edit().putString(KEY_ACTIVE_SESSION_ID, sessionId).apply()
+    }
+
+    fun loadActiveSessionId(): String? {
+        return prefs.getString(KEY_ACTIVE_SESSION_ID, null)
     }
 }

@@ -18,7 +18,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -32,7 +31,12 @@ import androidx.compose.ui.unit.sp
 import com.agent.mobile.agent.AutonomousAgentEngine
 import com.agent.mobile.data.model.ModelConfig
 import com.agent.mobile.data.model.ProviderType
+import com.agent.mobile.data.network.TermuxBridgeClient
+import com.agent.mobile.data.repository.ChatRepository
 import com.agent.mobile.data.storage.PreferenceManager
+import com.agent.mobile.service.scheduler.SchedulerManager
+import com.agent.mobile.ui.settings.components.CronSyncCard
+import com.agent.mobile.ui.settings.components.SecurityCockpitCard
 import com.agent.mobile.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -40,6 +44,8 @@ import com.agent.mobile.ui.theme.*
 fun SettingsScreen(
     agentEngine: AutonomousAgentEngine,
     preferenceManager: PreferenceManager,
+    chatRepository: ChatRepository? = null,
+    bridgeClient: TermuxBridgeClient? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -51,10 +57,18 @@ fun SettingsScreen(
     var modelName by remember(currentConfig) { mutableStateOf(currentConfig.modelName) }
     var baseUrl by remember(currentConfig) { mutableStateOf(currentConfig.baseUrl) }
 
+    var fallbackProvider by remember(currentConfig) { mutableStateOf(currentConfig.fallbackProvider) }
+    var fallbackModelName by remember(currentConfig) { mutableStateOf(currentConfig.fallbackModelName) }
+    var fallbackApiKey by remember(currentConfig) { mutableStateOf(currentConfig.fallbackApiKey) }
+    var fallbackBaseUrl by remember(currentConfig) { mutableStateOf(currentConfig.fallbackBaseUrl) }
+
     var isApiKeyVisible by remember { mutableStateOf(false) }
+    var isFallbackApiKeyVisible by remember { mutableStateOf(false) }
     var showAdvanced by remember { mutableStateOf(false) }
+    var showFallbackSection by remember { mutableStateOf(fallbackProvider != null) }
 
     val scrollState = rememberScrollState()
+    val schedulerManager = remember { SchedulerManager(context) }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -63,7 +77,7 @@ fun SettingsScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = "Modell & Schnittstellen",
+                        text = "Einstellungen & Cockpit",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = TextWhite
@@ -81,10 +95,10 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            // Section 1: Provider Picker
+            // Section 1: Primary Provider Picker
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "KI-PROVIDER",
+                    text = "PRIMÄRER KI-PROVIDER",
                     style = MaterialTheme.typography.labelMedium.copy(
                         color = TextMuted,
                         fontWeight = FontWeight.Bold,
@@ -92,7 +106,6 @@ fun SettingsScreen(
                     )
                 )
 
-                // Modern 2-column or wrapping Provider Selector
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ProviderType.values().forEach { provider ->
                         val isSelected = selectedProvider == provider
@@ -187,10 +200,10 @@ fun SettingsScreen(
                         )
                     )
 
-                    // 1. Suggested Model Quick-Select Chips
+                    // Suggested Model Quick-Select Chips
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "Modell-Vorschläge (Antippen zum Übernehmen):",
+                            text = "Modell-Vorschläge:",
                             style = MaterialTheme.typography.labelSmall.copy(color = TextMuted)
                         )
                         Row(
@@ -231,30 +244,15 @@ fun SettingsScreen(
                         }
                     }
 
-                    // 2. Editable Model Name Field (Custom typing supported!)
+                    // Model Name Field
                     OutlinedTextField(
                         value = modelName,
                         onValueChange = { modelName = it },
-                        label = { Text("Modellname (frei editierbar)") },
-                        placeholder = { Text("z. B. gemini-2.0-flash, gpt-4o, claude-3-7-sonnet...") },
+                        label = { Text("Modellname") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         shape = RoundedCornerShape(8.dp),
                         textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace, color = TextWhite),
-                        supportingText = {
-                            Text(
-                                text = "Tippe einen beliebigen Modellnamen ein oder wähle oben einen Vorschlag.",
-                                color = TextMuted,
-                                fontSize = 11.sp
-                            )
-                        },
-                        trailingIcon = {
-                            if (modelName.isNotEmpty()) {
-                                IconButton(onClick = { modelName = "" }) {
-                                    Icon(Icons.Default.Clear, contentDescription = "Leeren", tint = TextMuted)
-                                }
-                            }
-                        },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = AccentPrimary,
                             unfocusedBorderColor = BorderSubtle,
@@ -262,12 +260,10 @@ fun SettingsScreen(
                             unfocusedTextColor = TextWhite,
                             focusedContainerColor = DarkSurface,
                             unfocusedContainerColor = DarkSurface
-                        ),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() })
+                        )
                     )
 
-                    // 3. API Key (for Cloud Providers)
+                    // API Key Field
                     if (selectedProvider != ProviderType.LOCAL) {
                         OutlinedTextField(
                             value = apiKey,
@@ -284,7 +280,7 @@ fun SettingsScreen(
                                     IconButton(onClick = { isApiKeyVisible = !isApiKeyVisible }) {
                                         Icon(
                                             imageVector = if (isApiKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                            contentDescription = "Passwort anzeigen",
+                                            contentDescription = "Anzeigen",
                                             tint = TextMuted
                                         )
                                     }
@@ -311,7 +307,7 @@ fun SettingsScreen(
                         )
                     }
 
-                    // 4. Advanced: Base URL Accordion
+                    // Advanced Base URL Accordion
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         color = DarkSurface,
@@ -327,23 +323,11 @@ fun SettingsScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Tune,
-                                    contentDescription = null,
-                                    tint = TextMuted,
-                                    modifier = Modifier.size(16.dp)
-                                )
+                                Icon(Icons.Default.Tune, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Erweiterte Endpoint-Einstellungen",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
-                                )
+                                Text("Erweiterte Endpunkt-Einstellungen", style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary))
                             }
-                            Icon(
-                                imageVector = if (showAdvanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                                tint = TextMuted
-                            )
+                            Icon(if (showAdvanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null, tint = TextMuted)
                         }
                     }
 
@@ -351,16 +335,11 @@ fun SettingsScreen(
                         OutlinedTextField(
                             value = baseUrl,
                             onValueChange = { baseUrl = it },
-                            label = { Text("Base URL / Custom Endpoint") },
+                            label = { Text("Base URL") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                             shape = RoundedCornerShape(8.dp),
                             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, color = TextWhite),
-                            trailingIcon = {
-                                IconButton(onClick = { baseUrl = selectedProvider.defaultBaseUrl }) {
-                                    Icon(Icons.Default.Refresh, contentDescription = "Standard wiederherstellen", tint = TextMuted)
-                                }
-                            },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = AccentPrimary,
                                 unfocusedBorderColor = BorderSubtle,
@@ -374,7 +353,134 @@ fun SettingsScreen(
                 }
             }
 
-            // Section 3: Save Button
+            // Section 3: Fallback Provider Resilience Card
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = DarkCard,
+                border = BorderStroke(1.dp, BorderSubtle)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Sekundärer Fallback-Provider",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold, color = TextWhite)
+                            )
+                            Text(
+                                text = "Automatischer Wechsel bei 429 Rate Limit, Timeout oder API-Ausfall",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
+                            )
+                        }
+                        Switch(
+                            checked = showFallbackSection,
+                            onCheckedChange = {
+                                showFallbackSection = it
+                                if (!it) fallbackProvider = null
+                                else if (fallbackProvider == null) {
+                                    fallbackProvider = if (selectedProvider != ProviderType.GROQ) ProviderType.GROQ else ProviderType.LOCAL
+                                    fallbackModelName = fallbackProvider!!.defaultModel
+                                    fallbackBaseUrl = fallbackProvider!!.defaultBaseUrl
+                                }
+                            },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Color.Black, checkedTrackColor = AccentPrimary)
+                        )
+                    }
+
+                    AnimatedVisibility(visible = showFallbackSection && fallbackProvider != null) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("Fallback-Provider auswählen:", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted))
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                ProviderType.values().filter { it != selectedProvider }.forEach { prov ->
+                                    val isChosen = fallbackProvider == prov
+                                    FilterChip(
+                                        selected = isChosen,
+                                        onClick = {
+                                            fallbackProvider = prov
+                                            fallbackModelName = prov.defaultModel
+                                            fallbackBaseUrl = prov.defaultBaseUrl
+                                        },
+                                        label = { Text(prov.displayName, fontSize = 11.sp) },
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = AccentPrimary.copy(alpha = 0.2f),
+                                            selectedLabelColor = AccentPrimary
+                                        )
+                                    )
+                                }
+                            }
+
+                            OutlinedTextField(
+                                value = fallbackModelName,
+                                onValueChange = { fallbackModelName = it },
+                                label = { Text("Fallback-Modell") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                shape = RoundedCornerShape(8.dp),
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, color = TextWhite),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = AccentPrimary,
+                                    unfocusedBorderColor = BorderSubtle,
+                                    focusedTextColor = TextWhite,
+                                    unfocusedTextColor = TextWhite,
+                                    focusedContainerColor = DarkSurface,
+                                    unfocusedContainerColor = DarkSurface
+                                )
+                            )
+
+                            if (fallbackProvider != ProviderType.LOCAL) {
+                                OutlinedTextField(
+                                    value = fallbackApiKey,
+                                    onValueChange = { fallbackApiKey = it },
+                                    label = { Text("Fallback API Key") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(8.dp),
+                                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, color = TextWhite),
+                                    visualTransformation = if (isFallbackApiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                    trailingIcon = {
+                                        IconButton(onClick = { isFallbackApiKeyVisible = !isFallbackApiKeyVisible }) {
+                                            Icon(if (isFallbackApiKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = null, tint = TextMuted)
+                                        }
+                                    },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = AccentPrimary,
+                                        unfocusedBorderColor = BorderSubtle,
+                                        focusedTextColor = TextWhite,
+                                        unfocusedTextColor = TextWhite,
+                                        focusedContainerColor = DarkSurface,
+                                        unfocusedContainerColor = DarkSurface
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Section 4: Security Cockpit & Guardrails
+            SecurityCockpitCard(
+                agentEngine = agentEngine,
+                preferenceManager = preferenceManager,
+                chatRepository = chatRepository
+            )
+
+            // Section 5: Cron-Sync & Hybrid Scheduler
+            if (bridgeClient != null) {
+                CronSyncCard(
+                    bridgeClient = bridgeClient,
+                    schedulerManager = schedulerManager
+                )
+            }
+
+            // Section 6: Save Button
             Button(
                 onClick = {
                     val finalModel = modelName.trim().ifEmpty { selectedProvider.defaultModel }
@@ -382,7 +488,11 @@ fun SettingsScreen(
                         provider = selectedProvider,
                         modelName = finalModel,
                         apiKey = apiKey.trim(),
-                        baseUrl = baseUrl.trim().ifEmpty { selectedProvider.defaultBaseUrl }
+                        baseUrl = baseUrl.trim().ifEmpty { selectedProvider.defaultBaseUrl },
+                        fallbackProvider = if (showFallbackSection) fallbackProvider else null,
+                        fallbackModelName = if (showFallbackSection) fallbackModelName.trim() else "",
+                        fallbackApiKey = if (showFallbackSection) fallbackApiKey.trim() else "",
+                        fallbackBaseUrl = if (showFallbackSection) fallbackBaseUrl.trim() else ""
                     )
                     agentEngine.setModelConfig(newConfig)
                     preferenceManager.saveModelConfig(newConfig)
@@ -401,7 +511,7 @@ fun SettingsScreen(
                 Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Einstellungen speichern",
+                    text = "Alle Einstellungen speichern",
                     style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
                 )
             }

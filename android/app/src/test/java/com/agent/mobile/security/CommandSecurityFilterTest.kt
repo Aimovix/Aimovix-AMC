@@ -99,4 +99,63 @@ class CommandSecurityFilterTest {
             )
         }
     }
+
+    @org.junit.After
+    fun tearDown() {
+        CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), false)
+    }
+
+    @Test
+    fun testCustomWhitelistOverridesStandardRules() {
+        val customCmd = "curl https://api.example.com"
+        // Without whitelist, curl is analyzed by default rules (MEDIUM risk)
+        val defaultAssessment = CommandSecurityFilter.analyze(customCmd)
+        assertEquals(RiskLevel.MEDIUM, defaultAssessment.level)
+
+        // Add custom whitelist regex
+        CommandSecurityFilter.setCustomRules(
+            whitelist = listOf("^curl\\s+.*"),
+            blacklist = emptyList(),
+            strict = false
+        )
+
+        val whitelistedAssessment = CommandSecurityFilter.analyze(customCmd)
+        assertEquals(RiskLevel.LOW, whitelistedAssessment.level)
+        assertTrue(whitelistedAssessment.reason.contains("Custom-Whitelist"))
+        assertFalse(CommandSecurityFilter.shouldRequireApproval(whitelistedAssessment, ExecutionMode.AUTOPILOT))
+    }
+
+    @Test
+    fun testCustomBlacklistBlocksCommands() {
+        val gitPushForce = "git push origin main --force"
+        CommandSecurityFilter.setCustomRules(
+            whitelist = emptyList(),
+            blacklist = listOf(".*--force.*"),
+            strict = false
+        )
+
+        val assessment = CommandSecurityFilter.analyze(gitPushForce)
+        assertTrue(assessment.isBlocked)
+        assertEquals(RiskLevel.BLOCKED, assessment.level)
+        assertTrue(assessment.reason.contains("Blacklist"))
+    }
+
+    @Test
+    fun testStrictModeForcesApprovalForEverything() {
+        // In strict mode, medium risk operations require user approval even in Autopilot
+        val mediumCmd = "touch new_file.txt"
+        val assessment = CommandSecurityFilter.analyze(mediumCmd)
+        assertEquals(RiskLevel.MEDIUM, assessment.level)
+
+        // Normal autopilot does not require approval for medium risk
+        CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
+        assertFalse(CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT))
+
+        // Strict mode forces approval for medium risk in autopilot
+        CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = true)
+        assertTrue(
+            "Strict Mode must force approval for medium risk commands in Autopilot",
+            CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT)
+        )
+    }
 }

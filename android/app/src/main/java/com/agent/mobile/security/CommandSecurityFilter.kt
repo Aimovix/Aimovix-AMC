@@ -62,11 +62,35 @@ object CommandSecurityFilter {
         Pair(Pattern.compile(">>|\\bcat\\s+<<"), "Dateierstellung / Anhängen von Daten")
     )
 
+    private var customWhitelist = listOf<Pattern>()
+    private var customBlacklist = listOf<Pattern>()
+    private var isStrictMode = false
+
+    fun setCustomRules(whitelist: List<String>, blacklist: List<String>, strict: Boolean = false) {
+        customWhitelist = whitelist.mapNotNull {
+            try { Pattern.compile(it, Pattern.CASE_INSENSITIVE) } catch (e: Exception) { null }
+        }
+        customBlacklist = blacklist.mapNotNull {
+            try { Pattern.compile(it, Pattern.CASE_INSENSITIVE) } catch (e: Exception) { null }
+        }
+        isStrictMode = strict
+    }
+
     fun analyze(command: String): SecurityAssessment {
         val trimmed = command.trim()
         val normalized = normalizeCommand(trimmed)
 
-        // 1. Check Catastrophic Blacklist
+        // 1. Check Custom Blacklist
+        for (pattern in customBlacklist) {
+            if (pattern.matcher(trimmed).find() || pattern.matcher(normalized).find()) {
+                return SecurityAssessment(
+                    level = RiskLevel.BLOCKED,
+                    reason = "Custom-Blacklist: Befehl wurde durch benutzerdefinierte Blacklist gesperrt."
+                )
+            }
+        }
+
+        // 2. Check Catastrophic Blacklist
         for (pattern in BLACKLIST_PATTERNS) {
             if (pattern.matcher(trimmed).find() || pattern.matcher(normalized).find()) {
                 return SecurityAssessment(
@@ -76,7 +100,17 @@ object CommandSecurityFilter {
             }
         }
 
-        // 2. Check High Risk
+        // 3. Check Custom Whitelist (exempt from high/medium risk classification)
+        for (pattern in customWhitelist) {
+            if (pattern.matcher(trimmed).find() || pattern.matcher(normalized).find()) {
+                return SecurityAssessment(
+                    level = RiskLevel.LOW,
+                    reason = "Custom-Whitelist: Freigegebener Befehl"
+                )
+            }
+        }
+
+        // 4. Check High Risk
         for ((pattern, desc) in HIGH_RISK_PATTERNS) {
             if (pattern.matcher(trimmed).find() || pattern.matcher(normalized).find()) {
                 return SecurityAssessment(
@@ -86,7 +120,7 @@ object CommandSecurityFilter {
             }
         }
 
-        // 3. Check Medium Risk
+        // 5. Check Medium Risk
         for ((pattern, desc) in MEDIUM_RISK_PATTERNS) {
             if (pattern.matcher(trimmed).find() || pattern.matcher(normalized).find()) {
                 return SecurityAssessment(
@@ -96,7 +130,7 @@ object CommandSecurityFilter {
             }
         }
 
-        // 4. Default to Low Risk (Read-only commands, diagnostics, info)
+        // 6. Default to Low Risk (Read-only commands, diagnostics, info)
         return SecurityAssessment(
             level = RiskLevel.LOW,
             reason = "Sicherer Lese- oder Informationsbefehl"
@@ -114,9 +148,12 @@ object CommandSecurityFilter {
     /**
      * Determines whether user approval is mandatory before running the command.
      * Even in AUTOPILOT mode, HIGH risk commands ALWAYS enforce confirmation!
+     * Whitelist exceptions bypass approval. In strict mode, MEDIUM risk also requires approval.
      */
     fun shouldRequireApproval(assessment: SecurityAssessment, mode: ExecutionMode): Boolean {
         if (assessment.isBlocked) return false // Blocked commands can never be approved
+        if (assessment.reason.contains("Custom-Whitelist")) return false
+        if (isStrictMode) return true
         if (mode == ExecutionMode.STEP_BY_STEP) return true
         // Autopilot Safety Guard: High Risk always requires approval!
         return assessment.level == RiskLevel.HIGH

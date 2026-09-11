@@ -1,6 +1,13 @@
 package com.agent.mobile.ui.chat
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -13,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -21,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
@@ -31,15 +40,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.agent.mobile.agent.AutonomousAgentEngine
-import com.agent.mobile.data.model.ConnectionStatus
-import com.agent.mobile.data.model.ExecutionMode
-import com.agent.mobile.data.model.ModelConfig
-import com.agent.mobile.data.model.ProviderType
+import com.agent.mobile.data.model.*
 import com.agent.mobile.data.network.TermuxBridgeClient
+import com.agent.mobile.ui.chat.components.ArtifactViewerDialog
 import com.agent.mobile.ui.chat.components.MessageBubble
 import com.agent.mobile.ui.chat.components.QuickActionToolbar
+import com.agent.mobile.ui.chat.components.SessionDrawerContent
 import com.agent.mobile.ui.chat.components.VoiceInputButton
 import com.agent.mobile.ui.theme.*
+import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,13 +66,45 @@ fun ChatScreen(
     val executionMode by agentEngine.executionMode.collectAsState()
     val modelConfig by agentEngine.modelConfig.collectAsState()
     val connectionStatus by bridgeClient.connectionStatus.collectAsState()
+    val currentSession by agentEngine.currentSession.collectAsState()
+    val artifacts by agentEngine.artifacts.collectAsState()
+    val metrics by agentEngine.metrics.collectAsState()
 
     var inputText by remember { mutableStateOf("") }
     var showModelPickerDialog by remember { mutableStateOf(false) }
+    var viewingArtifact by remember { mutableStateOf<ArtifactItem?>(null) }
+
+    // Multimodal image attachment states
+    var pendingImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var pendingImageBase64 by remember { mutableStateOf<String?>(null) }
+    var pendingImageMimeType by remember { mutableStateOf<String?>("image/jpeg") }
+    var showAttachMenu by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val context = LocalContext.current
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val coroutineScope = rememberCoroutineScope()
+
+    // Activity result launchers for camera and gallery
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            val res = readUriAsBase64(context, uri)
+            if (res != null) {
+                pendingImageBase64 = res.first
+                pendingImageMimeType = res.second
+                pendingImageBitmap = res.third
+            }
+        }
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap: Bitmap? ->
+        if (bitmap != null) {
+            pendingImageBitmap = bitmap
+            pendingImageBase64 = bitmapToBase64(bitmap)
+            pendingImageMimeType = "image/jpeg"
+        }
+    }
 
     // Auto-scroll to bottom on new message
     LaunchedEffect(messages.size) {
@@ -70,429 +113,512 @@ fun ChatScreen(
         }
     }
 
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        containerColor = DarkBackground,
-        topBar = {
-            Column {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = "AMC",
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        fontSize = 17.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = TextWhite
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            SessionDrawerContent(
+                agentEngine = agentEngine,
+                chatRepository = agentEngine.chatRepository,
+                onCloseDrawer = { coroutineScope.launch { drawerState.close() } }
+            )
+        }
+    ) {
+        Scaffold(
+            modifier = modifier.fillMaxSize(),
+            containerColor = DarkBackground,
+            topBar = {
+                Column {
+                    TopAppBar(
+                        navigationIcon = {
+                            IconButton(onClick = { coroutineScope.launch { drawerState.open() } }) {
+                                Icon(Icons.Default.Menu, contentDescription = "Menü & Chats", tint = TextWhite)
+                            }
+                        },
+                        title = {
+                            Column {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = currentSession?.title?.take(18) ?: "AMC",
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = TextWhite
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
 
-                                // Quick Model Selector Pill
-                                Surface(
-                                    onClick = { showModelPickerDialog = true },
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = DarkCard,
-                                    border = BorderStroke(1.dp, BorderSubtle)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                    // Quick Model Selector Pill
+                                    Surface(
+                                        onClick = { showModelPickerDialog = true },
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = DarkCard,
+                                        border = BorderStroke(1.dp, BorderSubtle)
                                     ) {
-                                        Text(
-                                            text = modelConfig.modelName.ifEmpty { modelConfig.provider.defaultModel },
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                color = TextSecondary,
-                                                fontFamily = FontFamily.Monospace,
-                                                fontSize = 11.sp
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = modelConfig.modelName.ifEmpty { modelConfig.provider.defaultModel }.take(14),
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    color = TextSecondary,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontSize = 10.sp
+                                                )
                                             )
+                                            Icon(
+                                                imageVector = Icons.Default.ArrowDropDown,
+                                                contentDescription = "Modell wechseln",
+                                                tint = TextMuted,
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Status row: Termux connection & metrics
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                ) {
+                                    val (dotColor, statusLabel) = when (connectionStatus) {
+                                        is ConnectionStatus.Connected -> Pair(StatusOnline, "Verbunden")
+                                        is ConnectionStatus.Connecting -> Pair(YellowWarning, "Verbindet...")
+                                        is ConnectionStatus.AuthFailed -> Pair(RedEmergency, "Auth-Fehler")
+                                        else -> Pair(TextMuted, "Getrennt")
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(5.dp)
+                                            .clip(CircleShape)
+                                            .background(dotColor)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Termux • $statusLabel",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 10.sp,
+                                            color = TextMuted
                                         )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Icon(
-                                            imageVector = Icons.Default.ArrowDropDown,
-                                            contentDescription = "Modell wechseln",
-                                            tint = TextMuted,
-                                            modifier = Modifier.size(14.dp)
+                                    )
+                                    if (metrics.estimatedCostUsd > 0.0) {
+                                        Text(
+                                            text = " • \$${String.format(Locale.US, "%.4f", metrics.estimatedCostUsd)}",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 10.sp,
+                                                color = AccentPrimary
+                                            )
                                         )
                                     }
                                 }
                             }
-
-                            // Connection Status row
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(top = 2.dp)
-                            ) {
-                                val (dotColor, statusLabel) = when (connectionStatus) {
-                                    is ConnectionStatus.Connected -> Pair(StatusOnline, "Verbunden")
-                                    is ConnectionStatus.Connecting -> Pair(YellowWarning, "Verbindet...")
-                                    is ConnectionStatus.AuthFailed -> Pair(RedEmergency, "Auth-Fehler")
-                                    else -> Pair(TextMuted, "Getrennt")
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(dotColor)
-                                )
-                                Spacer(modifier = Modifier.width(5.dp))
-                                Text(
-                                    text = "Termux • $statusLabel",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontSize = 11.sp,
-                                        color = TextMuted
+                        },
+                        actions = {
+                            // Execution mode toggle chip
+                            Surface(
+                                onClick = {
+                                    agentEngine.setExecutionMode(
+                                        if (executionMode == ExecutionMode.AUTOPILOT) ExecutionMode.STEP_BY_STEP else ExecutionMode.AUTOPILOT
                                     )
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary.copy(alpha = 0.12f) else DarkCard,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary.copy(alpha = 0.4f) else BorderSubtle
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (executionMode == ExecutionMode.AUTOPILOT) Icons.Default.Bolt else Icons.Default.Shield,
+                                        contentDescription = null,
+                                        tint = if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary else TextMuted,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Text(
+                                        text = if (executionMode == ExecutionMode.AUTOPILOT) "Autopilot" else "Freigabe",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary else TextSecondary
+                                    )
+                                }
+                            }
+
+                            // New Chat button
+                            IconButton(onClick = { agentEngine.createNewSession() }) {
+                                Icon(
+                                    imageVector = Icons.Default.AddComment,
+                                    contentDescription = "Neuer Chat",
+                                    tint = TextSecondary
                                 )
                             }
-                        }
-                    },
-                    actions = {
-                        // Execution mode toggle chip
-                        Surface(
-                            onClick = {
-                                agentEngine.setExecutionMode(
-                                    if (executionMode == ExecutionMode.AUTOPILOT) ExecutionMode.STEP_BY_STEP else ExecutionMode.AUTOPILOT
-                                )
-                            },
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary.copy(alpha = 0.12f) else DarkCard,
-                            border = BorderStroke(
-                                1.dp,
-                                if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary.copy(alpha = 0.4f) else BorderSubtle
-                            )
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
+                    )
+                    HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
+                }
+            },
+            floatingActionButton = {
+                if (isBusy) {
+                    ExtendedFloatingActionButton(
+                        onClick = { agentEngine.emergencyStop() },
+                        containerColor = RedEmergency,
+                        contentColor = Color.White,
+                        shape = RoundedCornerShape(12.dp),
+                        icon = { Icon(Icons.Default.Stop, contentDescription = "Not-Aus") },
+                        text = { Text("NOT-AUS", fontWeight = FontWeight.Bold) }
+                    )
+                }
+            }
+        ) { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+            ) {
+                // Termux status banner when not connected
+                if (connectionStatus !is ConnectionStatus.Connected) {
+                    val bannerColor = when (connectionStatus) {
+                        is ConnectionStatus.AuthFailed -> RedEmergency
+                        is ConnectionStatus.Error -> RedEmergency
+                        else -> YellowWarning
+                    }
+                    val bannerText = when (connectionStatus) {
+                        is ConnectionStatus.Connecting -> "Verbinde mit Termux (ws://127.0.0.1:8765)..."
+                        is ConnectionStatus.AuthFailed -> "Auth-Fehler: Token stimmt nicht überein"
+                        is ConnectionStatus.Error -> "Termux nicht erreichbar ('amc start' in Termux nötig)"
+                        else -> "Termux Bridge nicht aktiv"
+                    }
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = DarkCard,
+                        border = BorderStroke(1.dp, bannerColor.copy(alpha = 0.3f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                modifier = Modifier.weight(1f)
                             ) {
                                 Icon(
-                                    imageVector = if (executionMode == ExecutionMode.AUTOPILOT) Icons.Default.Bolt else Icons.Default.Shield,
+                                    if (connectionStatus is ConnectionStatus.Error || connectionStatus is ConnectionStatus.AuthFailed) Icons.Default.ErrorOutline else Icons.Default.Warning,
                                     contentDescription = null,
-                                    tint = if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary else TextMuted,
-                                    modifier = Modifier.size(13.dp)
+                                    tint = bannerColor,
+                                    modifier = Modifier.size(16.dp)
                                 )
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = if (executionMode == ExecutionMode.AUTOPILOT) "Autopilot" else "Freigabe",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary else TextSecondary
+                                    text = bannerText,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = TextSecondary),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (connectionStatus is ConnectionStatus.Connecting) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = AccentPrimary)
+                                } else {
+                                    TextButton(
+                                        onClick = { bridgeClient.reconnectIfDisconnected(force = true) },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("Verbinden", color = AccentPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
                         }
-
-                        IconButton(onClick = { agentEngine.clearHistory() }) {
-                            Icon(
-                                imageVector = Icons.Default.DeleteSweep,
-                                contentDescription = "Verlauf leeren",
-                                tint = TextMuted
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
-                )
-                HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
-            }
-        },
-        floatingActionButton = {
-            if (isBusy) {
-                ExtendedFloatingActionButton(
-                    onClick = { agentEngine.emergencyStop() },
-                    containerColor = RedEmergency,
-                    contentColor = Color.White,
-                    shape = RoundedCornerShape(12.dp),
-                    icon = { Icon(Icons.Default.Stop, contentDescription = "Not-Aus") },
-                    text = { Text("NOT-AUS", fontWeight = FontWeight.Bold) }
-                )
-            }
-        }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-        ) {
-            // Unconnected Banner
-            if (connectionStatus !is ConnectionStatus.Connected) {
-                val bannerColor = when (connectionStatus) {
-                    is ConnectionStatus.AuthFailed -> RedEmergency
-                    is ConnectionStatus.Error -> RedEmergency
-                    else -> YellowWarning
-                }
-                val bannerText = when (connectionStatus) {
-                    is ConnectionStatus.Connecting -> "Verbinde mit Termux (ws://127.0.0.1:8765)..."
-                    is ConnectionStatus.AuthFailed -> "Auth-Fehler: Token stimmt nicht überein"
-                    is ConnectionStatus.Error -> "Termux nicht erreichbar (amc start in Termux nötig)"
-                    else -> "Termux Bridge nicht aktiv"
+                    }
                 }
 
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    color = DarkCard,
-                    border = BorderStroke(1.dp, bannerColor.copy(alpha = 0.3f))
-                ) {
+                // Discovered Artifacts Strip
+                if (artifacts.isNotEmpty()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                if (connectionStatus is ConnectionStatus.Error || connectionStatus is ConnectionStatus.AuthFailed) Icons.Default.ErrorOutline else Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = bannerColor,
-                                modifier = Modifier.size(16.dp)
+                        Text("Artefakte:", style = MaterialTheme.typography.labelSmall.copy(color = TextMuted, fontSize = 10.sp))
+                        artifacts.forEach { item ->
+                            val icon = when (item.type) {
+                                ArtifactType.IMAGE -> Icons.Default.Image
+                                ArtifactType.HTML -> Icons.Default.Html
+                                ArtifactType.CODE -> Icons.Default.Code
+                                ArtifactType.MARKDOWN -> Icons.Default.Description
+                                else -> Icons.AutoMirrored.Filled.Article
+                            }
+                            AssistChip(
+                                onClick = { viewingArtifact = item },
+                                label = { Text(item.filename, fontSize = 11.sp, maxLines = 1) },
+                                leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentPrimary) },
+                                colors = AssistChipDefaults.assistChipColors(
+                                    containerColor = DarkCardElevated,
+                                    labelColor = TextWhite
+                                ),
+                                border = AssistChipDefaults.assistChipBorder(enabled = true, borderColor = BorderSubtle)
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = bannerText,
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = TextSecondary),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (connectionStatus is ConnectionStatus.Connecting) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp,
-                                    color = AccentPrimary
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                            } else {
-                                TextButton(
-                                    onClick = { bridgeClient.reconnectIfDisconnected(force = true) },
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Text("Verbinden", color = AccentPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                            TextButton(
-                                onClick = {
-                                    val launchIntent = context.packageManager.getLaunchIntentForPackage("com.termux")
-                                    if (launchIntent != null) {
-                                        context.startActivity(launchIntent)
-                                    } else {
-                                        onNavigateSetup()
-                                    }
-                                },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Text("Termux", color = TextMuted, fontSize = 12.sp)
-                            }
-                            TextButton(
-                                onClick = onNavigateSetup,
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Text("Setup", color = TextMuted, fontSize = 12.sp)
-                            }
                         }
                     }
                 }
-            }
 
-            // Message List
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(vertical = 12.dp)
-            ) {
-                if (messages.isEmpty()) {
-                    item {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 40.dp, bottom = 20.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = DarkCard,
-                                border = BorderStroke(1.dp, BorderSubtle),
-                                modifier = Modifier.size(64.dp)
+                // Chat Messages List
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(vertical = 12.dp)
+                ) {
+                    if (messages.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 40.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
                                     Icon(
                                         imageVector = Icons.Default.Terminal,
                                         contentDescription = null,
-                                        tint = AccentPrimary,
-                                        modifier = Modifier.size(32.dp)
+                                        tint = AccentPrimary.copy(alpha = 0.6f),
+                                        modifier = Modifier.size(48.dp)
+                                    )
+                                    Text(
+                                        text = "AMC Autonomous Mobile Agent",
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            color = TextWhite,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    )
+                                    Text(
+                                        text = "Multimodaler KI-Agent mit direkter Termux-Shell-Bridge\nund automatischer Fallback-Resilienz.",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = TextMuted,
+                                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                        )
                                     )
                                 }
                             }
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                text = "AMC Autonomous Terminal",
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextWhite
+                        }
+                    }
+
+                    items(messages, key = { it.id }) { msg ->
+                        MessageBubble(
+                            message = msg,
+                            onApproveTool = { agentEngine.approvePendingAction() },
+                            onRejectTool = { agentEngine.rejectPendingAction() }
+                        )
+                    }
+                }
+
+                // Quick Action Hardware Toolbar
+                QuickActionToolbar(
+                    onActionSelected = { prompt ->
+                        if (!isBusy) {
+                            agentEngine.startTask(prompt)
+                        }
+                    }
+                )
+
+                // Modern Floating Input Container with Vision Attachment
+                Surface(
+                    color = DarkCard,
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                    border = BorderStroke(1.dp, BorderSubtle),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        // Pending Image Preview Chip
+                        if (pendingImageBitmap != null) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 12.dp, end = 12.dp, top = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Image(
+                                        bitmap = pendingImageBitmap!!.asImageBitmap(),
+                                        contentDescription = "Vorschau",
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Bild angehängt (Vision bereit)",
+                                        style = MaterialTheme.typography.labelSmall.copy(color = AccentPrimary, fontWeight = FontWeight.Bold)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        pendingImageBitmap = null
+                                        pendingImageBase64 = null
+                                    },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Entfernen", tint = TextMuted, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Vision Attachment Button
+                            Box {
+                                IconButton(
+                                    onClick = { showAttachMenu = true },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AddPhotoAlternate,
+                                        contentDescription = "Bild anhängen",
+                                        tint = if (pendingImageBitmap != null) AccentPrimary else TextMuted,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+
+                                DropdownMenu(
+                                    expanded = showAttachMenu,
+                                    onDismissRequest = { showAttachMenu = false },
+                                    modifier = Modifier.background(DarkCard)
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Kamera-Schnappschuss", color = TextWhite) },
+                                        leadingIcon = { Icon(Icons.Default.PhotoCamera, contentDescription = null, tint = AccentPrimary) },
+                                        onClick = {
+                                            showAttachMenu = false
+                                            cameraLauncher.launch(null)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Aus Galerie wählen", color = TextWhite) },
+                                        leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = AccentPrimary) },
+                                        onClick = {
+                                            showAttachMenu = false
+                                            galleryLauncher.launch("image/*")
+                                        }
+                                    )
+                                }
+                            }
+
+                            TextField(
+                                value = inputText,
+                                onValueChange = { inputText = it },
+                                placeholder = {
+                                    Text(
+                                        if (pendingImageBitmap != null) "Frage zum Bild stellen..." else "Befehl oder Aufgabe eingeben...",
+                                        fontSize = 13.sp,
+                                        color = TextMuted
+                                    )
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                    focusedTextColor = TextWhite,
+                                    unfocusedTextColor = TextWhite
+                                ),
+                                maxLines = 4,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                                keyboardActions = KeyboardActions(
+                                    onSend = {
+                                        if ((inputText.isNotBlank() || pendingImageBase64 != null) && !isBusy) {
+                                            val prompt = inputText.trim().ifEmpty { "Analysiere das angehängte Bild." }
+                                            val imgB64 = pendingImageBase64
+                                            val mime = pendingImageMimeType
+                                            inputText = ""
+                                            pendingImageBitmap = null
+                                            pendingImageBase64 = null
+                                            focusManager.clearFocus()
+                                            agentEngine.startTask(prompt, imgB64, mime)
+                                        }
+                                    }
                                 )
                             )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "Führe beliebige Befehle aus oder steuere Android-Sensoren via Termux.",
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    color = TextMuted,
-                                    fontSize = 12.sp
-                                ),
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+
+                            // Speech-to-Text Microphone
+                            VoiceInputButton(
+                                onSpeechResult = { spokenText ->
+                                    inputText = spokenText
+                                }
                             )
 
-                            Spacer(modifier = Modifier.height(24.dp))
-
-                            // Suggested prompt shortcuts
-                            val samplePrompts = listOf(
-                                "Prüfe meinen Akkustand und Speicherplatz",
-                                "Erstelle eine Datei test.txt mit aktuellem Datum",
-                                "Zeige mir alle aktiven Netzwerkverbindungen"
-                            )
-
-                            samplePrompts.forEach { prompt ->
-                                Surface(
-                                    onClick = { inputText = prompt },
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = DarkCard,
-                                    border = BorderStroke(1.dp, BorderSubtle),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 4.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.SubdirectoryArrowRight,
-                                            contentDescription = null,
-                                            tint = AccentPrimary,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = prompt,
-                                            style = MaterialTheme.typography.bodySmall.copy(
-                                                color = TextSecondary,
-                                                fontSize = 12.sp
-                                            )
-                                        )
+                            // Send Button
+                            val canSend = (inputText.isNotBlank() || pendingImageBase64 != null) && !isBusy
+                            Surface(
+                                onClick = {
+                                    if (canSend) {
+                                        val prompt = inputText.trim().ifEmpty { "Analysiere das angehängte Bild." }
+                                        val imgB64 = pendingImageBase64
+                                        val mime = pendingImageMimeType
+                                        inputText = ""
+                                        pendingImageBitmap = null
+                                        pendingImageBase64 = null
+                                        focusManager.clearFocus()
+                                        agentEngine.startTask(prompt, imgB64, mime)
                                     }
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (canSend) AccentPrimary else DarkCardElevated,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.Send,
+                                        contentDescription = "Senden",
+                                        tint = if (canSend) Color.Black else TextMuted,
+                                        modifier = Modifier.size(16.dp)
+                                    )
                                 }
                             }
-                        }
-                    }
-                }
-
-                items(messages, key = { it.id }) { msg ->
-                    MessageBubble(
-                        message = msg,
-                        onApproveTool = { agentEngine.approvePendingAction() },
-                        onRejectTool = { agentEngine.rejectPendingAction() }
-                    )
-                }
-            }
-
-            // Quick Action Hardware Toolbar
-            QuickActionToolbar(
-                onActionSelected = { prompt ->
-                    if (!isBusy) {
-                        agentEngine.startTask(prompt)
-                    }
-                }
-            )
-
-            // Modern Floating Input Container
-            Surface(
-                color = DarkCard,
-                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
-                border = BorderStroke(1.dp, BorderSubtle),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        placeholder = {
-                            Text(
-                                "Befehl oder Aufgabe eingeben...",
-                                fontSize = 13.sp,
-                                color = TextMuted
-                            )
-                        },
-                        modifier = Modifier.weight(1f),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            focusedTextColor = TextWhite,
-                            unfocusedTextColor = TextWhite
-                        ),
-                        maxLines = 4,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(
-                            onSend = {
-                                if (inputText.isNotBlank() && !isBusy) {
-                                    val textToSend = inputText.trim()
-                                    inputText = ""
-                                    focusManager.clearFocus()
-                                    agentEngine.startTask(textToSend)
-                                }
-                            }
-                        )
-                    )
-
-                    // Speech-to-Text Microphone
-                    VoiceInputButton(
-                        onSpeechResult = { spokenText ->
-                            inputText = spokenText
-                        }
-                    )
-
-                    // Send Button
-                    val canSend = inputText.isNotBlank() && !isBusy
-                    Surface(
-                        onClick = {
-                            if (canSend) {
-                                val textToSend = inputText.trim()
-                                inputText = ""
-                                focusManager.clearFocus()
-                                agentEngine.startTask(textToSend)
-                            }
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (canSend) AccentPrimary else DarkCardElevated,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Senden",
-                                tint = if (canSend) Color.Black else TextMuted,
-                                modifier = Modifier.size(16.dp)
-                            )
                         }
                     }
                 }
             }
         }
+    }
+
+    // Artifact Viewer Dialog
+    if (viewingArtifact != null) {
+        ArtifactViewerDialog(
+            artifact = viewingArtifact!!,
+            onDismiss = { viewingArtifact = null },
+            onExecuteInTermux = { cmd ->
+                agentEngine.startTask(cmd)
+            }
+        )
     }
 
     // Quick Model Picker Dialog
@@ -508,6 +634,26 @@ fun ChatScreen(
     }
 }
 
+private fun bitmapToBase64(bitmap: Bitmap): String {
+    val stream = ByteArrayOutputStream()
+    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, stream)
+    return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+}
+
+private fun readUriAsBase64(context: Context, uri: Uri): Triple<String, String, Bitmap?>? {
+    return try {
+        val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+        val inputStream = context.contentResolver.openInputStream(uri)
+        val bytes = inputStream?.readBytes() ?: return null
+        inputStream.close()
+        val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        Triple(b64, mime, bitmap)
+    } catch (e: Exception) {
+        null
+    }
+}
+
 @Composable
 private fun QuickModelPickerDialog(
     currentConfig: ModelConfig,
@@ -516,7 +662,6 @@ private fun QuickModelPickerDialog(
 ) {
     var selectedProvider by remember { mutableStateOf(currentConfig.provider) }
     var selectedModel by remember { mutableStateOf(currentConfig.modelName) }
-    var customModelInput by remember { mutableStateOf(currentConfig.modelName) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -533,7 +678,6 @@ private fun QuickModelPickerDialog(
                     .padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -551,7 +695,6 @@ private fun QuickModelPickerDialog(
                     }
                 }
 
-                // Provider Switcher Row
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         text = "Provider",
@@ -569,7 +712,6 @@ private fun QuickModelPickerDialog(
                                 onClick = {
                                     selectedProvider = provider
                                     selectedModel = provider.defaultModel
-                                    customModelInput = provider.defaultModel
                                 },
                                 shape = RoundedCornerShape(6.dp),
                                 color = if (isSelected) AccentPrimary.copy(alpha = 0.15f) else DarkSurface,
@@ -591,7 +733,6 @@ private fun QuickModelPickerDialog(
                     }
                 }
 
-                // Suggested Models Chips
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         text = "Empfohlene Modelle (${selectedProvider.displayName})",
@@ -604,94 +745,38 @@ private fun QuickModelPickerDialog(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         selectedProvider.suggestedModels.forEach { model ->
-                            val isChosen = customModelInput.trim().equals(model, ignoreCase = true)
+                            val isSelected = selectedModel == model
                             FilterChip(
-                                selected = isChosen,
-                                onClick = {
-                                    selectedModel = model
-                                    customModelInput = model
-                                },
-                                label = {
-                                    Text(
-                                        text = model,
-                                        fontSize = 11.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = if (isChosen) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                },
+                                selected = isSelected,
+                                onClick = { selectedModel = model },
+                                label = { Text(model, fontSize = 11.sp, fontFamily = FontFamily.Monospace) },
                                 shape = RoundedCornerShape(6.dp),
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = AccentPrimary.copy(alpha = 0.15f),
-                                    selectedLabelColor = AccentPrimary,
-                                    containerColor = DarkSurface,
-                                    labelColor = TextSecondary
-                                ),
-                                border = FilterChipDefaults.filterChipBorder(
-                                    enabled = true,
-                                    selected = isChosen,
-                                    borderColor = if (isChosen) AccentPrimary else BorderSubtle,
-                                    selectedBorderColor = AccentPrimary,
-                                    borderWidth = 1.dp
+                                    selectedContainerColor = AccentPrimary.copy(alpha = 0.2f),
+                                    selectedLabelColor = AccentPrimary
                                 )
                             )
                         }
                     }
                 }
 
-                // Custom Model Name Input Field (Free text entry)
-                OutlinedTextField(
-                    value = customModelInput,
-                    onValueChange = { customModelInput = it },
-                    label = { Text("Modellname frei eingeben", fontSize = 12.sp) },
-                    placeholder = { Text("z. B. gemini-2.0-flash, gpt-4o...", fontSize = 12.sp) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(8.dp),
-                    textStyle = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        color = TextWhite
-                    ),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AccentPrimary,
-                        unfocusedBorderColor = BorderSubtle,
-                        focusedTextColor = TextWhite,
-                        unfocusedTextColor = TextWhite,
-                        focusedContainerColor = DarkSurface,
-                        unfocusedContainerColor = DarkSurface
-                    )
-                )
-
-                // Actions
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(onClick = onDismiss) {
-                        Text("Abbrechen", color = TextMuted, fontSize = 13.sp)
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Button(
-                        onClick = {
-                            val chosenModel = customModelInput.trim().ifEmpty { selectedProvider.defaultModel }
-                            val newConfig = currentConfig.copy(
+                Button(
+                    onClick = {
+                        onModelSelected(
+                            currentConfig.copy(
                                 provider = selectedProvider,
-                                modelName = chosenModel,
-                                baseUrl = if (selectedProvider != currentConfig.provider) selectedProvider.defaultBaseUrl else currentConfig.baseUrl
+                                modelName = selectedModel,
+                                baseUrl = selectedProvider.defaultBaseUrl
                             )
-                            onModelSelected(newConfig)
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = AccentPrimary,
-                            contentColor = Color.Black
                         )
-                    ) {
-                        Text("Übernehmen", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = DarkBackground)
+                ) {
+                    Text("Übernehmen", fontWeight = FontWeight.Bold)
                 }
             }
         }
     }
 }
-

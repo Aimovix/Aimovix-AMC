@@ -21,6 +21,8 @@ import com.agent.mobile.agent.AutonomousAgentEngine
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.service.AgentForegroundService
+import com.agent.mobile.data.repository.ChatRepository
+import com.agent.mobile.data.storage.db.AppDatabase
 import com.agent.mobile.ui.chat.ChatScreen
 import com.agent.mobile.ui.settings.SettingsScreen
 import com.agent.mobile.ui.setup.SetupWizardScreen
@@ -32,18 +34,24 @@ class MainActivity : ComponentActivity() {
     private lateinit var bridgeClient: TermuxBridgeClient
     private lateinit var agentEngine: AutonomousAgentEngine
     private lateinit var preferenceManager: PreferenceManager
+    private lateinit var database: AppDatabase
+    private lateinit var chatRepository: ChatRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Read preferences
+        // Read preferences & database
         preferenceManager = PreferenceManager(this)
+        database = com.agent.mobile.data.storage.db.AppDatabase.getInstance(this)
+        chatRepository = com.agent.mobile.data.repository.ChatRepository(database)
+
         val savedToken = preferenceManager.loadAuthToken()
 
         bridgeClient = TermuxBridgeClient(token = savedToken)
         agentEngine = AutonomousAgentEngine(
             bridgeClient = bridgeClient,
-            preferenceManager = preferenceManager
+            preferenceManager = preferenceManager,
+            chatRepository = chatRepository
         )
 
         // Auto-connect to local Termux bridge
@@ -150,7 +158,9 @@ class MainActivity : ComponentActivity() {
                             )
                             3 -> SettingsScreen(
                                 agentEngine = agentEngine,
-                                preferenceManager = preferenceManager
+                                preferenceManager = preferenceManager,
+                                chatRepository = chatRepository,
+                                bridgeClient = bridgeClient
                             )
                         }
                     }

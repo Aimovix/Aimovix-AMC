@@ -24,6 +24,9 @@ class AgentForegroundService : Service {
         const val CHANNEL_ID = "agent_service_channel"
         const val NOTIFICATION_ID = 1001
         const val ACTION_STOP = "com.agent.mobile.ACTION_STOP"
+        const val ACTION_UPDATE = "com.agent.mobile.ACTION_UPDATE"
+        const val EXTRA_TITLE = "extra_title"
+        const val EXTRA_MESSAGE = "extra_message"
 
         fun start(context: Context) {
             try {
@@ -35,6 +38,19 @@ class AgentForegroundService : Service {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Konnte ForegroundService nicht starten: ${e.message}", e)
+            }
+        }
+
+        fun updateNotification(context: Context, title: String, message: String) {
+            try {
+                val intent = Intent(context, AgentForegroundService::class.java).apply {
+                    action = ACTION_UPDATE
+                    putExtra(EXTRA_TITLE, title)
+                    putExtra(EXTRA_MESSAGE, message)
+                }
+                context.startService(intent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Konnte Benachrichtigung nicht aktualisieren: ${e.message}", e)
             }
         }
 
@@ -59,7 +75,10 @@ class AgentForegroundService : Service {
             return START_NOT_STICKY
         }
 
-        val notification = buildNotification("Autonomer Agent bereit")
+        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "AMC – AI Mobile Center"
+        val message = intent?.getStringExtra(EXTRA_MESSAGE) ?: "Autonomer Agent bereit"
+
+        val notification = buildNotification(title, message)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
@@ -74,7 +93,7 @@ class AgentForegroundService : Service {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun buildNotification(statusText: String): Notification {
+    private fun buildNotification(title: String = "AMC – AI Mobile Center", statusText: String): Notification {
         val appIntent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this, 0, appIntent,
@@ -82,7 +101,7 @@ class AgentForegroundService : Service {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("AMC – AI Mobile Center")
+            .setContentTitle(title)
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)
