@@ -21,10 +21,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -59,6 +61,7 @@ fun ChatScreen(
 
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
+    val context = LocalContext.current
 
     // Auto-scroll to bottom on new message
     LaunchedEffect(messages.size) {
@@ -212,13 +215,25 @@ fun ChatScreen(
         ) {
             // Unconnected Banner
             if (connectionStatus !is ConnectionStatus.Connected) {
+                val bannerColor = when (connectionStatus) {
+                    is ConnectionStatus.AuthFailed -> RedEmergency
+                    is ConnectionStatus.Error -> RedEmergency
+                    else -> YellowWarning
+                }
+                val bannerText = when (connectionStatus) {
+                    is ConnectionStatus.Connecting -> "Verbinde mit Termux (ws://127.0.0.1:8765)..."
+                    is ConnectionStatus.AuthFailed -> "Auth-Fehler: Token stimmt nicht überein"
+                    is ConnectionStatus.Error -> "Termux nicht erreichbar (amc start in Termux nötig)"
+                    else -> "Termux Bridge nicht aktiv"
+                }
+
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(8.dp),
                     color = DarkCard,
-                    border = BorderStroke(1.dp, YellowWarning.copy(alpha = 0.3f))
+                    border = BorderStroke(1.dp, bannerColor.copy(alpha = 0.3f))
                 ) {
                     Row(
                         modifier = Modifier
@@ -232,15 +247,17 @@ fun ChatScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(
-                                Icons.Default.Warning,
+                                if (connectionStatus is ConnectionStatus.Error || connectionStatus is ConnectionStatus.AuthFailed) Icons.Default.ErrorOutline else Icons.Default.Warning,
                                 contentDescription = null,
-                                tint = YellowWarning,
+                                tint = bannerColor,
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Termux Bridge nicht verbunden",
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = TextSecondary)
+                                text = bannerText,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = TextSecondary),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -251,7 +268,6 @@ fun ChatScreen(
                                     color = AccentPrimary
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Verbindet...", fontSize = 12.sp, color = TextMuted)
                             } else {
                                 TextButton(
                                     onClick = { bridgeClient.reconnectIfDisconnected(force = true) },
@@ -261,13 +277,25 @@ fun ChatScreen(
                                 }
                             }
                             TextButton(
+                                onClick = {
+                                    val launchIntent = context.packageManager.getLaunchIntentForPackage("com.termux")
+                                    if (launchIntent != null) {
+                                        context.startActivity(launchIntent)
+                                    } else {
+                                        onNavigateSetup()
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text("Termux", color = TextMuted, fontSize = 12.sp)
+                            }
+                            TextButton(
                                 onClick = onNavigateSetup,
                                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text("Setup", color = TextMuted, fontSize = 12.sp)
                             }
                         }
-
                     }
                 }
             }

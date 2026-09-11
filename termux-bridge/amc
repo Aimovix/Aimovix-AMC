@@ -4,15 +4,13 @@
 # Usage: amc [start|stop|restart|status|logs|autostart]
 # ==============================================================================
 
-set -e
-
 DIR="$HOME/.termux_agent"
 PID_FILE="$DIR/daemon.pid"
 LOG_FILE="$DIR/daemon.log"
 TOKEN_FILE="$HOME/.termux_agent_token"
 DAEMON_SCRIPT="$DIR/bridge_daemon.py"
 
-mkdir -p "$DIR"
+mkdir -p "$DIR" 2>/dev/null || true
 
 is_running() {
     if [ -f "$PID_FILE" ]; then
@@ -21,6 +19,9 @@ is_running() {
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             return 0
         fi
+    fi
+    if python -c "import socket; s = socket.socket(); s.settimeout(0.5); s.connect(('127.0.0.1', 8765)); s.close()" 2>/dev/null; then
+        return 0
     fi
     return 1
 }
@@ -36,48 +37,46 @@ get_token() {
 cmd_start() {
     if is_running; then
         local pid
-        pid=$(cat "$PID_FILE")
+        pid=$(cat "$PID_FILE" 2>/dev/null || echo "aktiv")
         echo "🟢 AMC Bridge läuft bereits im Hintergrund (PID: $pid)."
-        echo "   Auth-Token: $(get_token)"
         return 0
     fi
 
     echo "🚀 Starte AMC Termux Bridge im Hintergrund..."
 
     # 1. CPU-Wake-Lock aktivieren
-    if command -v termux-wake-lock &> /dev/null; then
-        termux-wake-lock 2>/dev/null || true
+    if command -v termux-wake-lock >/dev/null 2>&1; then
+        termux-wake-lock >/dev/null 2>&1 || true
         echo "🔋 Wake-Lock aktiviert."
     fi
 
-    # 2. Daemon entkoppelt im Hintergrund starten (nohup + disown)
-    cd "$DIR"
-    nohup python -u "$DAEMON_SCRIPT" > "$LOG_FILE" 2>&1 &
+    # 2. Daemon entkoppelt im Hintergrund starten (nohup + stdin null + disown)
+    cd "$DIR" 2>/dev/null || true
+    nohup python -u "$DAEMON_SCRIPT" < /dev/null >> "$LOG_FILE" 2>&1 &
     local new_pid=$!
     disown "$new_pid" 2>/dev/null || true
 
     echo "$new_pid" > "$PID_FILE"
 
-    # 3. Kurz warten und Status prüfen
-    sleep 1.5
+    # 3. Warten bis der Socket auf Port 8765 lauscht (bis zu 5 Sekunden)
+    local started=0
+    for i in {1..10}; do
+        if python -c "import socket; s = socket.socket(); s.settimeout(0.5); s.connect(('127.0.0.1', 8765)); s.close()" 2>/dev/null; then
+            started=1
+            break
+        fi
+        sleep 0.5
+    done
 
-    if is_running; then
-        local token
-        token=$(get_token)
+    if [ "$started" -eq 1 ]; then
         echo "✅ AMC Bridge erfolgreich im Hintergrund gestartet (PID: $new_pid)!"
         echo "📡 WebSocket: ws://127.0.0.1:8765"
-        if [ -n "$token" ]; then
-            echo "🔑 Auth-Token: $token"
-            if command -v termux-clipboard-set &> /dev/null; then
-                termux-clipboard-set "$token" 2>/dev/null || true
-                echo "📋 Token automatisch in Android-Zwischenablage kopiert!"
-            fi
-        fi
         echo "📄 Logs: amc logs"
+        echo "💡 Du kannst Termux jetzt minimieren oder zur AMC App wechseln."
     else
         echo "❌ Fehler beim Starten des Bridge-Daemons. Letzte Zeilen des Logs:"
-        tail -n 15 "$LOG_FILE" 2>/dev/null || true
-        exit 1
+        tail -n 20 "$LOG_FILE" 2>/dev/null || true
+        return 1
     fi
 }
 
@@ -134,33 +133,41 @@ cmd_restart() {
     cmd_start
 }
 
+cmd_run() {
+    echo "🚀 Starte AMC Termux Bridge im Vordergrund (Strg+C zum Beenden)..."
+    if command -v termux-wake-lock >/dev/null 2>&1; then
+        termux-wake-lock >/dev/null 2>&1 || true
+        echo "🔋 Wake-Lock aktiviert."
+    fi
+    cd "$DIR" 2>/dev/null || true
+    python -u "$DAEMON_SCRIPT"
+}
+
 cmd_status() {
     echo "=================================================="
     echo " AMC - AI Mobile Center Service Status"
     echo "=================================================="
-    if is_running; then
+    local port_ok=0
+    if python -c "import socket; s = socket.socket(); s.settimeout(0.5); s.connect(('127.0.0.1', 8765)); s.close()" 2>/dev/null; then
+        port_ok=1
+    fi
+
+    if is_running || [ "$port_ok" -eq 1 ]; then
         local pid
-        pid=$(cat "$PID_FILE")
+        pid=$(cat "$PID_FILE" 2>/dev/null || echo "aktiv")
         echo "Status:       🟢 AKTIV (Hintergrund)"
         echo "PID:          $pid"
         echo "Port:         8765"
-        echo "Auth-Token:   $(get_token)"
-        
-        # Prüfe Socket
-        if python -c "import socket; s = socket.socket(); s.settimeout(1); s.connect(('127.0.0.1', 8765)); s.close()" 2>/dev/null; then
-            echo "Port-Status:  ✅ 127.0.0.1:8765 erreichbar & lauscht"
-        else
-            echo "Port-Status:  ⚠️ Port antwortet noch nicht"
-        fi
+        echo "Port-Status:  ✅ 127.0.0.1:8765 erreichbar & lauscht"
 
         # Akku-Info falls termux-api vorhanden
-        if command -v termux-battery-status &> /dev/null; then
+        if command -v termux-battery-status >/dev/null 2>&1; then
             local batt
             batt=$(termux-battery-status 2>/dev/null || echo "")
             if [ -n "$batt" ]; then
                 local pct
-                pct=$(echo "$batt" | grep -o '"percentage": [0-9]*' | awk '{print $2}' || echo "?")
-                echo "Akku:         ${pct}%"
+                pct=$(echo "$batt" | grep -o '"percentage": [0-9]*' | awk '{print $2}' || echo "")
+                [ -n "$pct" ] && echo "Akku:         ${pct}%"
             fi
         fi
     else
@@ -206,6 +213,9 @@ case "$1" in
     start)
         cmd_start
         ;;
+    run|foreground)
+        cmd_run
+        ;;
     start-silent)
         cmd_start_silent
         ;;
@@ -225,13 +235,14 @@ case "$1" in
         cmd_autostart
         ;;
     *)
-        echo "Verwendung: amc {start|stop|restart|status|logs|autostart}"
+        echo "Verwendung: amc {start|run|stop|restart|status|logs|autostart}"
         echo ""
         echo "Befehle:"
         echo "  amc start       Startet die Bridge im Hintergrund (Wake-Lock + Notification)"
+        echo "  amc run         Startet die Bridge im Vordergrund (mit Live-Ausgabe)"
         echo "  amc stop        Beendet die Bridge"
         echo "  amc restart     Startet die Bridge neu"
-        echo "  amc status      Zeigt PID, Token und Verbindungsstatus an"
+        echo "  amc status      Zeigt PID, Port und Erreichbarkeit an"
         echo "  amc logs        Zeigt Live-Logs der Bridge an"
         echo "  amc autostart   Richtet automatischen Start bei Boot & Shell-Start ein"
         exit 1

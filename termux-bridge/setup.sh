@@ -3,24 +3,34 @@
 # AMC - AI Mobile Center (by Aimovix) - One-Click Setup Script
 # ==============================================================================
 
-set -e
+export DEBIAN_FRONTEND=noninteractive
 
 echo "🚀 [1/5] Initialisiere AMC Agent Setup..."
 
 # 1. Prevent Android from sleeping while agent runs
-if command -v termux-wake-lock &> /dev/null; then
-    termux-wake-lock
+if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock >/dev/null 2>&1 || true
     echo "🔋 Wake-Lock aktiviert (Hintergrundausführung gesichert)."
 fi
 
-# 2. Update Termux repositories and install core packages
-echo "📦 [2/5] Installiere benötigte Pakete (Python, Termux:API, Git, Curl)..."
-pkg update -y
-pkg install -y python python-pip git curl jq termux-api
+# 2. Update package lists and install required tools (Python, Git, Curl, JQ, Termux:API)
+# Note: In Termux, pip is included directly inside 'python'. 'python-pip' does NOT exist.
+echo "📦 [2/5] Installiere benötigte Pakete (Python, Termux:API, Git, Curl, JQ)..."
+pkg update -y < /dev/null || true
+pkg install -y python git curl jq termux-api < /dev/null || apt-get install -y python git curl jq termux-api < /dev/null || true
 
-# 3. Install Python dependencies
-echo "🐍 [3/5] Installiere Python-Bibliotheken (websockets)..."
-pip install websockets 2>/dev/null || pip install --break-system-packages websockets 2>/dev/null || python -m pip install websockets 2>/dev/null || python -m pip install --break-system-packages websockets 2>/dev/null || true
+# 3. Install Python dependencies (websockets)
+echo "🐍 [3/5] Installiere Python-Bibliothek 'websockets'..."
+python -m ensurepip >/dev/null 2>&1 || true
+pip install --break-system-packages websockets 2>/dev/null || \
+pip install websockets 2>/dev/null || \
+python -m pip install --break-system-packages websockets 2>/dev/null || \
+python -m pip install websockets 2>/dev/null || true
+
+if ! python -c "import websockets" >/dev/null 2>&1; then
+    echo "⚠️ Versuche erzwungene websockets-Installation..."
+    pip install --break-system-packages --no-cache-dir websockets || true
+fi
 
 # 4. Setup working directory, daemon script, and amc CLI tool
 echo "⚙️ [4/5] Richte AMC Service und CLI-Tool ein..."
@@ -29,7 +39,8 @@ mkdir -p "$TARGET_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
 
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bridge_daemon.py" ]; then
+# Install bridge_daemon.py
+if [ -n "$SCRIPT_DIR" ] && [ -s "$SCRIPT_DIR/bridge_daemon.py" ]; then
     cp "$SCRIPT_DIR/bridge_daemon.py" "$TARGET_DIR/bridge_daemon.py"
 else
     echo "⬇️ Lade bridge_daemon.py aus GitHub..."
@@ -40,7 +51,7 @@ fi
 BIN_DIR="${PREFIX:-/data/data/com.termux/files/usr}/bin"
 mkdir -p "$BIN_DIR"
 
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/amc" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -s "$SCRIPT_DIR/amc" ]; then
     cp "$SCRIPT_DIR/amc" "$BIN_DIR/amc"
 else
     echo "⬇️ Lade amc CLI-Tool aus GitHub..."
@@ -49,8 +60,8 @@ fi
 chmod +x "$BIN_DIR/amc"
 cp "$BIN_DIR/amc" "$TARGET_DIR/amc" 2>/dev/null || true
 
-# Richte Autostart bei Boot und Shell-Start ein
-"$BIN_DIR/amc" autostart > /dev/null 2>&1 || true
+# Autostart in .bashrc und Termux:Boot hinterlegen
+"$BIN_DIR/amc" autostart >/dev/null 2>&1 || true
 
 # 5. Start the Bridge Daemon in Background
 echo "🚀 [5/5] Starte AMC Hintergrunddienst..."
@@ -63,11 +74,10 @@ echo "================================================================"
 echo ""
 echo "Der Dienst läuft jetzt dauerhaft im Hintergrund (auch wenn Termux minimiert wird)."
 echo ""
-echo "💡 WICHTIGER HINWEIS FÜR ANDROID-HINTERGRUNDBETRIEB:"
-echo "   Gehe in die Android-Einstellungen deines Handys:"
+echo "💡 WICHTIG FÜR ANDROID-HINTERGRUNDBETRIEB:"
+echo "   In den Android-Einstellungen deines Handys:"
 echo "   -> Apps -> Termux -> Akku / Akkunutzung"
 echo "   -> Wähle 'Nicht optimiert' bzw. 'Uneingeschränkt'"
-echo "   Dadurch verhindert Android, dass Termux im Hintergrund pausiert wird."
 echo ""
 echo "Hilfreiche Termux-Befehle:"
 echo "   amc status     - Zeigt aktuellen Status, Port & Token"
@@ -76,4 +86,3 @@ echo "   amc restart    - Startet den Hintergrunddienst neu"
 echo "   amc stop       - Beendet den Dienst"
 echo "================================================================"
 echo ""
-

@@ -117,12 +117,28 @@ fun SetupWizardScreen(
                         }
                     }
 
-                    Button(
-                        onClick = { bridgeClient.connect(inputToken) },
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = Color.Black),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Verbinden", fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val launchIntent = context.packageManager.getLaunchIntentForPackage("com.termux")
+                                if (launchIntent != null) {
+                                    context.startActivity(launchIntent)
+                                }
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, BorderSubtle),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
+                        ) {
+                            Text("Termux", fontSize = 13.sp)
+                        }
+
+                        Button(
+                            onClick = { bridgeClient.connect(inputToken) },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = Color.Black),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Verbinden", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }

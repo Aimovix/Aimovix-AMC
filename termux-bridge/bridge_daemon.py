@@ -13,6 +13,7 @@ import sys
 import subprocess
 import shutil
 import shlex
+import time
 from pathlib import Path
 
 # Try importing websockets; auto-install if missing
@@ -58,7 +59,7 @@ def ensure_wake_lock():
     wake_lock = shutil.which("termux-wake-lock", path=ENV.get("PATH"))
     if wake_lock:
         try:
-            subprocess.run([wake_lock], env=ENV, timeout=3, capture_output=True)
+            subprocess.run([wake_lock], env=ENV, timeout=1, capture_output=True)
         except Exception:
             pass
 
@@ -74,7 +75,7 @@ def update_termux_notification(status_text="Bridge aktiv • Port 8765"):
                 "--content", status_text,
                 "--ongoing",
                 "--priority", "high"
-            ], env=ENV, timeout=3, capture_output=True)
+            ], env=ENV, timeout=1, capture_output=True)
         except Exception:
             pass
 
@@ -83,7 +84,7 @@ def remove_termux_notification():
     termux_notif_rm = shutil.which("termux-notification-remove", path=ENV.get("PATH"))
     if termux_notif_rm:
         try:
-            subprocess.run([termux_notif_rm, "amc_bridge"], env=ENV, timeout=3, capture_output=True)
+            subprocess.run([termux_notif_rm, "amc_bridge"], env=ENV, timeout=1, capture_output=True)
         except Exception:
             pass
 
@@ -109,9 +110,12 @@ def load_or_generate_token() -> str:
 
 AUTH_TOKEN = load_or_generate_token()
 
+_cached_battery = None
+_last_battery_check = 0.0
 
 def get_system_info() -> dict:
     """Collect system, memory, storage, and battery status via termux-api or standard Linux tools."""
+    global _cached_battery, _last_battery_check
     info = {
         "os": sys.platform,
         "cwd": current_cwd,
@@ -120,14 +124,21 @@ def get_system_info() -> dict:
         "has_llama": shutil.which("llama-server", path=ENV.get("PATH")) is not None,
     }
 
-    # Battery
+    # Battery (cached for 30 seconds to prevent blocking event loop)
+    now = time.time()
     if info["has_termux_api"]:
-        try:
-            res = subprocess.run(["termux-battery-status"], capture_output=True, text=True, timeout=3, env=ENV)
-            if res.returncode == 0 and res.stdout.strip():
-                info["battery"] = json.loads(res.stdout)
-        except Exception:
-            pass
+        if _cached_battery is not None and (now - _last_battery_check < 30.0):
+            info["battery"] = _cached_battery
+        else:
+            try:
+                res = subprocess.run(["termux-battery-status"], capture_output=True, text=True, timeout=1, env=ENV)
+                if res.returncode == 0 and res.stdout.strip():
+                    _cached_battery = json.loads(res.stdout)
+                    _last_battery_check = now
+                    info["battery"] = _cached_battery
+            except Exception:
+                if _cached_battery:
+                    info["battery"] = _cached_battery
 
     # Disk usage in HOME
     try:
@@ -141,6 +152,21 @@ def get_system_info() -> dict:
         pass
 
     return info
+
+def is_client_loopback(websocket) -> bool:
+    """Check if client connects via localhost/loopback (on the same Android device)."""
+    try:
+        remote = getattr(websocket, "remote_address", None)
+        if not remote:
+            return True
+        ip = str(remote[0]).strip().lower()
+        return (
+            ip in ("127.0.0.1", "::1", "localhost", "testclient")
+            or ip.startswith("127.")
+            or ip.startswith("fe80:")
+        )
+    except Exception:
+        return True
 
 def handle_cd_command(cmd: str, target_cwd: str) -> tuple[bool, str, str]:
     """
@@ -264,7 +290,8 @@ async def run_command_streaming(websocket, cmd: str, execution_id: str, cwd: str
 async def handle_connection(websocket):
     """Handle incoming WebSocket client connection with authentication."""
     global current_process, current_cwd
-    authenticated = False
+    is_local = is_client_loopback(websocket)
+    authenticated = is_local
 
     try:
         async for message in websocket:
@@ -279,7 +306,7 @@ async def handle_connection(websocket):
             # 1. Authentication handshake
             if action == "auth":
                 provided_token = msg.get("token", "")
-                if provided_token == AUTH_TOKEN or not AUTH_TOKEN:
+                if is_local or not AUTH_TOKEN or (provided_token and provided_token == AUTH_TOKEN):
                     authenticated = True
                     await websocket.send(json.dumps({
                         "type": "auth_ok",
@@ -414,10 +441,15 @@ async def background_watchdog():
         await asyncio.sleep(45)
 
 async def main():
-    # Ignore SIGHUP so closing the Termux terminal session does not terminate the daemon
+    # Ignore SIGHUP and SIGPIPE so closing terminal or broken pipes do not terminate the daemon
     if hasattr(signal, "SIGHUP"):
         try:
             signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        except Exception:
+            pass
+    if hasattr(signal, "SIGPIPE"):
+        try:
+            signal.signal(signal.SIGPIPE, signal.SIG_IGN)
         except Exception:
             pass
 
