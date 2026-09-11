@@ -24,3 +24,5 @@ venv/
 # Android binaries
 *.apk
 *.aab
+.kotlin/
+android/.kotlin/

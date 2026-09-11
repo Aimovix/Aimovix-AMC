@@ -59,7 +59,7 @@ def ensure_wake_lock():
     wake_lock = shutil.which("termux-wake-lock", path=ENV.get("PATH"))
     if wake_lock:
         try:
-            subprocess.run([wake_lock], env=ENV, timeout=1, capture_output=True)
+            subprocess.run([wake_lock], env=ENV, timeout=2, capture_output=True)
         except Exception:
             pass
 
@@ -75,7 +75,7 @@ def update_termux_notification(status_text="Bridge aktiv • Port 8765"):
                 "--content", status_text,
                 "--ongoing",
                 "--priority", "high"
-            ], env=ENV, timeout=1, capture_output=True)
+            ], env=ENV, timeout=2, capture_output=True)
         except Exception:
             pass
 
@@ -84,7 +84,7 @@ def remove_termux_notification():
     termux_notif_rm = shutil.which("termux-notification-remove", path=ENV.get("PATH"))
     if termux_notif_rm:
         try:
-            subprocess.run([termux_notif_rm, "amc_bridge"], env=ENV, timeout=1, capture_output=True)
+            subprocess.run([termux_notif_rm, "amc_bridge"], env=ENV, timeout=2, capture_output=True)
         except Exception:
             pass
 
@@ -112,10 +112,29 @@ AUTH_TOKEN = load_or_generate_token()
 
 _cached_battery = None
 _last_battery_check = 0.0
+_termux_api_available = True
+
+def get_battery_info_fast() -> dict | None:
+    """Quickly read Android battery capacity and status from kernel sysfs without blocking."""
+    try:
+        cap_file = Path("/sys/class/power_supply/battery/capacity")
+        if cap_file.exists():
+            pct = int(cap_file.read_text().strip())
+            stat_file = Path("/sys/class/power_supply/battery/status")
+            status = stat_file.read_text().strip().upper() if stat_file.exists() else "UNKNOWN"
+            return {
+                "percentage": pct,
+                "plugged": "AC" if status in ("CHARGING", "FULL") else "UNPLUGGED",
+                "status": status,
+                "health": "GOOD"
+            }
+    except Exception:
+        pass
+    return None
 
 def get_system_info() -> dict:
-    """Collect system, memory, storage, and battery status via termux-api or standard Linux tools."""
-    global _cached_battery, _last_battery_check
+    """Collect system, memory, storage, and battery status via fast sysfs or termux-api."""
+    global _cached_battery, _last_battery_check, _termux_api_available
     info = {
         "os": sys.platform,
         "cwd": current_cwd,
@@ -124,21 +143,30 @@ def get_system_info() -> dict:
         "has_llama": shutil.which("llama-server", path=ENV.get("PATH")) is not None,
     }
 
-    # Battery (cached for 30 seconds to prevent blocking event loop)
-    now = time.time()
-    if info["has_termux_api"]:
-        if _cached_battery is not None and (now - _last_battery_check < 30.0):
-            info["battery"] = _cached_battery
-        else:
-            try:
-                res = subprocess.run(["termux-battery-status"], capture_output=True, text=True, timeout=1, env=ENV)
-                if res.returncode == 0 and res.stdout.strip():
-                    _cached_battery = json.loads(res.stdout)
-                    _last_battery_check = now
-                    info["battery"] = _cached_battery
-            except Exception:
-                if _cached_battery:
-                    info["battery"] = _cached_battery
+    # 1. First try fast kernel sysfs battery read (0.1ms, non-blocking)
+    fast_batt = get_battery_info_fast()
+    if fast_batt is not None:
+        info["battery"] = fast_batt
+        _cached_battery = fast_batt
+    else:
+        # 2. Fallback to cached battery or termux-battery-status with short 1s timeout
+        now = time.time()
+        if info["has_termux_api"] and _termux_api_available:
+            if _cached_battery is not None and (now - _last_battery_check < 30.0):
+                info["battery"] = _cached_battery
+            else:
+                try:
+                    res = subprocess.run(["termux-battery-status"], capture_output=True, text=True, timeout=1.5, env=ENV)
+                    if res.returncode == 0 and res.stdout.strip():
+                        _cached_battery = json.loads(res.stdout)
+                        _last_battery_check = now
+                        info["battery"] = _cached_battery
+                    else:
+                        _termux_api_available = False
+                except Exception:
+                    _termux_api_available = False
+                    if _cached_battery:
+                        info["battery"] = _cached_battery
 
     # Disk usage in HOME
     try:
@@ -446,22 +474,45 @@ async def handle_connection(websocket):
     except Exception as e:
         print(f"[ERROR] WebSocket handler error: {e}", file=sys.stderr)
 
+def _watchdog_sync_cycle():
+    """Run wake-lock and notification update in background thread so event loop is never blocked."""
+    try:
+        ensure_wake_lock()
+        info = get_system_info()
+        batt = info.get("battery", {})
+        pct = batt.get("percentage")
+        status_text = f"Port {PORT} • Akku: {pct}%" if pct is not None else f"Port {PORT} • Hintergrund aktiv"
+        update_termux_notification(status_text)
+    except Exception:
+        pass
+
 async def background_watchdog():
     """Background task running alongside the websocket server to keep Termux alive."""
     while True:
         try:
-            ensure_wake_lock()
-            # Update notification with current battery status if available
-            info = get_system_info()
-            batt = info.get("battery", {})
-            pct = batt.get("percentage")
-            status_text = f"Port {PORT} • Akku: {pct}%" if pct is not None else f"Port {PORT} • Hintergrund aktiv"
-            update_termux_notification(status_text)
+            if hasattr(asyncio, "to_thread"):
+                await asyncio.to_thread(_watchdog_sync_cycle)
+            else:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, _watchdog_sync_cycle)
         except Exception:
             pass
         await asyncio.sleep(45)
 
 async def main():
+    # Ensure process runs in its own session to survive terminal closure
+    if sys.platform != "win32":
+        try:
+            if os.getpgrp() == os.getpid():
+                # Process is group leader (e.g. from shell background job).
+                # Fork so the child is not a process group leader and setsid succeeds.
+                pid = os.fork()
+                if pid > 0:
+                    sys.exit(0)
+            os.setsid()
+        except OSError:
+            pass
+
     # Ignore SIGHUP and SIGPIPE so closing terminal or broken pipes do not terminate the daemon
     if hasattr(signal, "SIGHUP"):
         try:
@@ -506,13 +557,14 @@ async def main():
     watchdog_task = asyncio.create_task(background_watchdog())
 
     try:
+        # On loopback/localhost, disable server-side ping timeouts so mobile background scheduling doesn't drop connections
         async with websockets.serve(
             handle_connection,
             HOST,
             PORT,
             max_size=10 * 1024 * 1024,
-            ping_interval=10,
-            ping_timeout=10
+            ping_interval=None,
+            ping_timeout=None
         ):
             await asyncio.Future()  # run forever
     finally:

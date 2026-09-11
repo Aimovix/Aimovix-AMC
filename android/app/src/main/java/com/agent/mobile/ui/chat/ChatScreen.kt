@@ -329,10 +329,32 @@ fun ChatScreen(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 if (connectionStatus is ConnectionStatus.Connecting) {
                                     CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = AccentPrimary)
                                 } else {
+                                    TextButton(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                bridgeClient.forceReconnect()
+                                                if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) {
+                                                    bridgeClient.triggerBoost()
+                                                    android.widget.Toast.makeText(context, "🚀 Termux Boost & Wake-Lock ausgeführt!", android.widget.Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    if (!TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")) {
+                                                        try {
+                                                            context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
+                                                        } catch (e: Exception) {
+                                                            // ignore
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("Boost", color = TerminalGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
                                     TextButton(
                                         onClick = { bridgeClient.reconnectIfDisconnected(force = true) },
                                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
@@ -562,7 +584,28 @@ fun ChatScreen(
                                             pendingImageBitmap = null
                                             pendingImageBase64 = null
                                             focusManager.clearFocus()
-                                            agentEngine.startTask(prompt, imgB64, mime)
+
+                                            if (prompt.startsWith("/boost", ignoreCase = true) || prompt.startsWith("amc boost", ignoreCase = true)) {
+                                                coroutineScope.launch {
+                                                    bridgeClient.forceReconnect()
+                                                    val isIgnoringBattery = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")
+                                                    if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) {
+                                                        bridgeClient.triggerBoost()
+                                                        android.widget.Toast.makeText(context, "🚀 Termux Hintergrund-Boost & Wake-Lock ausgeführt!", android.widget.Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        android.widget.Toast.makeText(context, "Verbinde mit Termux... Bitte Termux geöffnet im Hintergrund lassen!", android.widget.Toast.LENGTH_LONG).show()
+                                                        if (!isIgnoringBattery) {
+                                                            try {
+                                                                context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
+                                                            } catch (e: Exception) {
+                                                                // ignore
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                agentEngine.startTask(prompt, imgB64, mime)
+                                            }
                                         }
                                     }
                                 )
@@ -587,7 +630,28 @@ fun ChatScreen(
                                         pendingImageBitmap = null
                                         pendingImageBase64 = null
                                         focusManager.clearFocus()
-                                        agentEngine.startTask(prompt, imgB64, mime)
+
+                                        if (prompt.startsWith("/boost", ignoreCase = true) || prompt.startsWith("amc boost", ignoreCase = true)) {
+                                            coroutineScope.launch {
+                                                bridgeClient.forceReconnect()
+                                                val isIgnoringBattery = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")
+                                                if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) {
+                                                    bridgeClient.triggerBoost()
+                                                    android.widget.Toast.makeText(context, "🚀 Termux Hintergrund-Boost & Wake-Lock ausgeführt!", android.widget.Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    android.widget.Toast.makeText(context, "Verbinde mit Termux... Bitte Termux geöffnet im Hintergrund lassen!", android.widget.Toast.LENGTH_LONG).show()
+                                                    if (!isIgnoringBattery) {
+                                                        try {
+                                                            context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
+                                                        } catch (e: Exception) {
+                                                            // ignore
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            agentEngine.startTask(prompt, imgB64, mime)
+                                        }
                                     }
                                 },
                                 shape = RoundedCornerShape(8.dp),

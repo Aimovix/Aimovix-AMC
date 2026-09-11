@@ -38,9 +38,26 @@ fun SetupWizardScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     val connectionStatus by bridgeClient.connectionStatus.collectAsState()
     var inputToken by remember { mutableStateOf(savedToken) }
+    var isTermuxIgnoringBattery by remember {
+        mutableStateOf(TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux"))
+    }
     val scrollState = rememberScrollState()
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                isTermuxIgnoringBattery = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")
+                bridgeClient.reconnectIfDisconnected(force = true)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -241,6 +258,29 @@ fun SetupWizardScreen(
                 Text("Setup-Befehl kopieren", fontWeight = FontWeight.Bold)
             }
 
+            // Warning Box: Keep Termux in background, do not exit
+            Spacer(modifier = Modifier.height(10.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = YellowWarning.copy(alpha = 0.1f),
+                border = BorderStroke(1.dp, YellowWarning.copy(alpha = 0.35f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = YellowWarning, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "Wichtig: Nach dem Setup Termux NICHT mit 'exit' beenden und NICHT aus den Recent Apps wischen. Termux muss im Hintergrund minimiert bleiben (Home-Taste).",
+                        color = TextWhite,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(24.dp))
 
             // Step 3: Android Battery Optimization (Critical for background persistence)
@@ -253,43 +293,136 @@ fun SetupWizardScreen(
                 text = "Android pausiert oder friert Hintergrund-Apps beim Wechseln ein, wenn die Akku-Optimierung aktiv ist. Um dauerhafte Verbindung zu sichern:",
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp),
-                color = DarkCard,
-                border = BorderStroke(1.dp, BorderSubtle)
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "1. Öffne die Termux App-Info (Button unten)\n2. Tippe auf 'Akku' oder 'Akkunutzung'\n3. Wähle 'Uneingeschränkt' / 'Nicht optimiert'",
-                        style = MaterialTheme.typography.bodySmall.copy(color = TextWhite, fontSize = 12.sp, lineHeight = 18.sp)
-                    )
+            // Dynamic Battery Optimization Status Card
+            if (isTermuxIgnoringBattery) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    color = StatusOnline.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, StatusOnline.copy(alpha = 0.4f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = StatusOnline, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Hintergrundbetrieb gesichert",
+                                color = StatusOnline,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Akku-Optimierung für Termux ist deaktiviert (Uneingeschränkt). Termux wird von Android nicht eingefroren.",
+                                color = TextWhite,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
+                }
+            } else {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    color = RedEmergency.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, RedEmergency.copy(alpha = 0.4f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = RedEmergency, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Akku-Optimierung für Termux ist AKTIV!",
+                                color = RedEmergency,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Android trennt oder friert Termux im Hintergrund sofort ein, sobald du zur AMC-App wechselst. Bitte 'Uneingeschränkt' bzw. 'Nicht optimiert' einstellen.",
+                                color = TextWhite,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            OutlinedButton(
+            Button(
                 onClick = {
                     try {
-                        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                            data = Uri.parse("package:com.termux")
-                        }
-                        context.startActivity(intent)
+                        context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
                     } catch (e: Exception) {
-                        Toast.makeText(context, "Öffne Android-Einstellungen -> Apps -> Termux -> Akku", Toast.LENGTH_LONG).show()
+                        try {
+                            context.startActivity(TermuxBridgeClient.getIgnoreBatteryOptimizationListIntent())
+                        } catch (e2: Exception) {
+                            Toast.makeText(context, "Öffne Android-Einstellungen -> Apps -> Termux -> Akku (Uneingeschränkt)", Toast.LENGTH_LONG).show()
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, BorderSubtle),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
+                colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = Color.Black)
             ) {
-                Icon(Icons.Default.BatteryChargingFull, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentPrimary)
+                Icon(Icons.Default.BatteryChargingFull, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Termux App-Info öffnen (Akku)", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("Termux App-Info (Akku: Uneingeschränkt)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        try {
+                            context.startActivity(TermuxBridgeClient.getTermuxNotificationSettingsIntent())
+                        } catch (e: Exception) {
+                            try {
+                                context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
+                            } catch (e2: Exception) {
+                                Toast.makeText(context, "Öffne Einstellungen -> Apps -> Termux -> Benachrichtigungen", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, BorderSubtle),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
+                ) {
+                    Icon(Icons.Default.Notifications, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentPrimary)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Benachrichtigungen", fontSize = 11.sp)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        try {
+                            context.startActivity(TermuxBridgeClient.getDeveloperOptionsIntent())
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Entwickleroptionen in Android-Einstellungen öffnen", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, BorderSubtle),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
+                ) {
+                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentPrimary)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Entwickleroptionen", fontSize = 11.sp)
+                }
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -371,8 +504,9 @@ fun SetupWizardScreen(
                 border = BorderStroke(1.dp, BorderSubtle)
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("amc start    -> Startet Bridge im Hintergrund", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                    Text("amc status   -> Prüft PID, Port 8765 & Akku", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc boost    -> Hintergrund-Boost & Akku-Ausnahme reaktivieren", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc start    -> Startet Bridge im Hintergrund (Wake-Lock)", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text("amc status   -> Prüft PID, Port 8765, Akku & Token", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
                     Text("amc restart  -> Startet den Dienst neu", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
                     Text("amc logs     -> Zeigt Live-Ausgaben des Daemons", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
                     Text("amc stop     -> Beendet den Hintergrunddienst", color = TerminalGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)

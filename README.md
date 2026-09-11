@@ -24,20 +24,24 @@ curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridg
 
 Das Skript richtet die Umgebung automatisch als echten, robusten Hintergrunddienst ein:
 - **CLI-Tool `amc`:** Installiert den Service-Manager direkt nach `$PREFIX/bin/amc`.
-- **Hintergrund-Daemon (`nohup` + `disown` + `setsid`):** Der Prozess läuft vollständig entkoppelt von der interaktiven Shell und ignoriert `SIGHUP` (läuft weiter, wenn Termux geschlossen oder minimiert wird).
+- **Hintergrund-Daemon (`setsid` + `disown` + `nohup`):** Der Prozess läuft vollständig entkoppelt in einer eigenen Session und ignoriert `SIGHUP` (läuft weiter, wenn Termux minimiert wird).
 - **Vordergrund-Benachrichtigung:** Startet eine dauerhafte Android-Benachrichtigung (`termux-notification --ongoing`), die Android signalisiert, dass der Prozess aktiv ist.
 - **CPU-Wake-Lock:** Aktiviert `termux-wake-lock`, um Tiefschlaf des Prozessors zu unterbinden.
+- **Automatische Akku-Ausnahme:** Fordert Android beim Setup direkt auf, Termux von der Akku-Optimierung auszunehmen.
 - **Auto-Start:** Richtet automatischen Start für Termux:Boot (`~/.termux/boot/`) und die Shell (`~/.bashrc`) ein.
-- **Auto-Reconnect in AMC:** Die Android-App verbindet sich beim Öffnen (`onResume`) und im Hintergrund automatisch im Sekundentakt neu.
+- **Auto-Reconnect in AMC:** Die Android-App verbindet sich beim Öffnen (`onResume`) und im Hintergrund automatisch wieder.
 
-#### Wichtiger Schritt für Android-Geräte (Akku-Optimierung)
-Damit Android Termux beim Wechseln der Apps nicht pausiert:
-1. Öffne die **Android-Einstellungen** deines Smartphones.
-2. Gehe zu **Apps -> Termux -> Akku / Akkunutzung**.
-3. Wähle **„Nicht optimiert“** bzw. **„Uneingeschränkt“** (*Unrestricted*).
+#### 🛑 Wichtige Regeln für dauerhafte Hintergrund-Verbindung:
+1. **Termux geöffnet lassen:**
+   Termux nach dem Setup **NICHT** mit `exit` beenden und **NICHT** aus der App-Übersicht (Recent Apps) wischen! Einfach mit der **Home-Taste** minimieren und zur AMC-App wechseln.
+2. **Akku-Optimierung auf „Uneingeschränkt“ stellen:**
+   Falls der automatische Dialog nicht erschien: **Android-Einstellungen -> Apps -> Termux -> Akku -> „Uneingeschränkt“ / „Nicht optimiert“**.
+3. **Android 12/13/14+ Kindprozess-Beschränkungen (Phantom Process Killer):**
+   Falls Android Hintergrundprozesse nach einiger Zeit beendet: In den **Android-Entwickleroptionen** die Option **„Kindprozess-Beschränkungen deaktivieren“** (*Disable child process restrictions*) aktivieren.
 
 #### Termux Service-Befehle:
 ```bash
+amc boost      # Reaktiviert Wake-Lock, fordert Akku-Ausnahme an & startet Bridge neu
 amc status     # Prüft Status, PID, Port 8765, Akku & Token
 amc logs       # Zeigt Live-Logs der Bridge
 amc restart    # Startet den Hintergrunddienst neu

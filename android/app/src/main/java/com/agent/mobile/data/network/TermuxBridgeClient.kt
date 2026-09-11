@@ -1,5 +1,8 @@
 package com.agent.mobile.data.network
 
+import android.content.Context
+import android.content.Intent
+import android.os.PowerManager
 import android.util.Log
 import com.agent.mobile.data.model.ConnectionStatus
 import com.agent.mobile.data.model.TermuxSystemInfo
@@ -22,13 +25,57 @@ class TermuxBridgeClient(
 ) {
     companion object {
         private const val TAG = "TermuxBridgeClient"
-        private const val RECONNECT_DELAY_MS = 2500L
+        private const val RECONNECT_DELAY_MS = 1500L
+
+        fun isTermuxInstalled(context: Context): Boolean {
+            return try {
+                context.packageManager.getPackageInfo("com.termux", 0)
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        fun isIgnoringBatteryOptimizations(context: Context, packageName: String = "com.termux"): Boolean {
+            return try {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                pm?.isIgnoringBatteryOptimizations(packageName) ?: false
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        fun getTermuxBatterySettingsIntent(): Intent {
+            return Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = android.net.Uri.parse("package:com.termux")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+        }
+
+        fun getIgnoreBatteryOptimizationListIntent(): Intent {
+            return Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+        }
+
+        fun getTermuxNotificationSettingsIntent(): Intent {
+            return Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, "com.termux")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+        }
+
+        fun getDeveloperOptionsIntent(): Intent {
+            return Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+        }
     }
 
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .connectTimeout(4, TimeUnit.SECONDS)
-        .pingInterval(5, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .pingInterval(0, TimeUnit.MILLISECONDS) // 0 disables ping timeout aborts on localhost
         .retryOnConnectionFailure(true)
         .build()
 
@@ -77,9 +124,42 @@ class TermuxBridgeClient(
         }
     }
 
+    fun forceReconnect(authToken: String = token) {
+        this.token = authToken
+        this.isManualDisconnect = false
+        this.isAutoReconnectEnabled = true
+        reconnectJob?.cancel()
+        scope.launch {
+            try {
+                webSocket?.cancel()
+            } catch (e: Exception) {
+                // ignore
+            }
+            webSocket = null
+            doConnect(authToken)
+        }
+    }
+
     fun reconnectIfDisconnected(force: Boolean = false) {
         val current = _connectionStatus.value
-        if (current is ConnectionStatus.Connected) return
+        if (current is ConnectionStatus.Connected) {
+            if (force) {
+                // Check if existing socket is responsive; if not, force reconnect
+                val ws = webSocket
+                if (ws == null) {
+                    forceReconnect()
+                } else {
+                    val pingOk = ws.send(JSONObject().apply {
+                        put("action", "ping")
+                        put("timestamp", System.currentTimeMillis())
+                    }.toString())
+                    if (!pingOk) {
+                        forceReconnect()
+                    }
+                }
+            }
+            return
+        }
         if (current is ConnectionStatus.Connecting && !force) return
 
         this.isManualDisconnect = false
@@ -89,6 +169,10 @@ class TermuxBridgeClient(
         scope.launch {
             doConnect(token)
         }
+    }
+
+    suspend fun triggerBoost(): ToolResult {
+        return executeCommand("amc boost || amc restart")
     }
 
     private fun doConnect(authToken: String) {
