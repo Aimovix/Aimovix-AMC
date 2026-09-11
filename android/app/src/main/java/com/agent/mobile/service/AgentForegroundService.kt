@@ -62,7 +62,7 @@ class AgentForegroundService : Service {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Aimovix KI-Agent")
+            .setContentTitle("AMC – AI Mobile Center")
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)

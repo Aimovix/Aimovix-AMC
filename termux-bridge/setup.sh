@@ -1,11 +1,11 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ==============================================================================
-# Aimovix Agent Bridge - One-Click Automated Setup Script
+# AMC - AI Mobile Center (by Aimovix) - One-Click Setup Script
 # ==============================================================================
 
 set -e
 
-echo "🚀 [1/5] Initialisiere Aimovix Agent Setup..."
+echo "🚀 [1/5] Initialisiere AMC Agent Setup..."
 
 # 1. Prevent Android from sleeping while agent runs
 if command -v termux-wake-lock &> /dev/null; then

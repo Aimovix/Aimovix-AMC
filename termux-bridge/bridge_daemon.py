@@ -303,7 +303,7 @@ async def handle_connection(websocket):
 
 async def main():
     print(f"==================================================")
-    print(f" Aimovix Bridge Daemon")
+    print(f" AMC - AI Mobile Center Bridge Daemon")
     print(f" Listening on ws://{HOST}:{PORT}")
     print(f" Auth Token: {AUTH_TOKEN}")
     print(f" Token File: {TOKEN_FILE}")

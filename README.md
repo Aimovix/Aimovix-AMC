@@ -1,6 +1,6 @@
-# 🤖 Aimovix – Autonomer Android KI-Agent
+# 🤖 AMC – AI Mobile Center (by Aimovix)
 
-**Aimovix** ist eine native Android-App (Kotlin + Jetpack Compose), die dein Smartphone in einen vollautonomen mobilen KI-Agenten verwandelt. Der Agent steuert eine lokale Termux-Linux-Umgebung und erhält über `termux-api` sowie Shell-Befehle tiefgreifenden System- und Hardware-Zugriff (SMS, Kamera, GPS, Benachrichtigungen, Sensoren, Dateisystem, Python-Skripte).
+**AMC (AI Mobile Center)** ist eine native Android-App (Kotlin + Jetpack Compose), entwickelt von **Aimovix**, die dein Smartphone in einen vollautonomen mobilen KI-Agenten verwandelt. Der Agent steuert eine lokale Termux-Linux-Umgebung und erhält über `termux-api` sowie Shell-Befehle tiefgreifenden System- und Hardware-Zugriff (SMS, Kamera, GPS, Benachrichtigungen, Sensoren, Dateisystem, Python-Skripte).
 
 ---
 
@@ -8,7 +8,7 @@
 
 ### 1. App auf dem Smartphone installieren
 Kopiere die fertige APK auf dein Android-Smartphone und installiere sie:
-- Download direkt im Repository: **`Aimovix.apk`**
+- Download direkt im Repository: **`AMC.apk`**
 
 ### 2. Termux & Termux:API installieren
 Installiere beide Apps über **F-Droid** (wichtig: die Version aus dem Google Play Store ist veraltet):
@@ -16,7 +16,7 @@ Installiere beide Apps über **F-Droid** (wichtig: die Version aus dem Google Pl
 2. **[Termux:API auf F-Droid](https://f-droid.org/packages/com.termux.api/)**
 
 ### 3. Der 1-Klick-Setup-Befehl in Termux
-Öffne Termux auf deinem Smartphone und führe folgenden Befehl aus (oder nutze den "Kopieren"-Button im Setup-Tab der Aimovix-App):
+Öffne Termux auf deinem Smartphone und führe folgenden Befehl aus (oder nutze den "Kopieren"-Button im Setup-Tab der AMC-App):
 
 ```bash
 curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix/main/termux-bridge/setup.sh | bash
@@ -31,7 +31,7 @@ Das Skript erledigt automatisch:
 
 ## 🧠 KI-Modell wählen
 
-In der Aimovix-App unter dem Tab **"Einstellungen"**:
+In der AMC-App unter dem Tab **"Einstellungen"**:
 1. **Lokale KI (Offline)**:
    - Wähle **"Lokaler Server"** (`http://127.0.0.1:8080/v1`).
    - Starte in Termux über `bash termux-bridge/local_model_manager.sh` den `llama-server` (z. B. mit Qwen 2.5 1.5B oder 3B GGUF).
@@ -60,7 +60,7 @@ In der Aimovix-App unter dem Tab **"Einstellungen"**:
 
 ```
 Aimovix/
-├── Aimovix.apk                # Installationsfertige Android-App
+├── AMC.apk                    # Installationsfertige Android-App (AI Mobile Center)
 ├── android/                   # Native Android App (Kotlin & Jetpack Compose)
 │   ├── app/src/main/java/com/agent/mobile/
 │   │   ├── agent/             # ReAct-Engine, Prompting, Autopilot-Logik

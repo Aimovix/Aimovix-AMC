@@ -64,7 +64,7 @@ fun ChatScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Aimovix",
+                            text = "AMC",
                             style = MaterialTheme.typography.titleLarge.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         )
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -83,7 +83,7 @@ fun ChatScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "$statusLabel • ${modelConfig.provider.displayName}",
+                                text = "AI Mobile Center • $statusLabel",
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp)
                             )
                         }
@@ -198,7 +198,7 @@ fun ChatScreen(
                                 )
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Text(
-                                    text = "Aimovix KI-Agent bereit",
+                                    text = "AMC – AI Mobile Center bereit",
                                     style = MaterialTheme.typography.titleLarge.copy(fontSize = 18.sp)
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))

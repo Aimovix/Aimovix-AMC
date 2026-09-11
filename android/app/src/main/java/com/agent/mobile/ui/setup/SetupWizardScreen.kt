@@ -186,11 +186,11 @@ pkg update -y && pkg install -y python python-pip termux-api git curl jq && pip 
                 onClick = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     val clip = ClipData.newPlainText(
-                        "Aimovix Setup",
+                        "AMC Setup",
                         "curl -sL https://raw.githubusercontent.com/Aimovix/Aimovix/main/termux-bridge/setup.sh | bash"
                     )
                     clipboard.setPrimaryClip(clip)
-                    Toast.makeText(context, "Aimovix-Befehl kopiert! Jetzt in Termux einfügen.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "AMC-Befehl kopiert! Jetzt in Termux einfügen.", Toast.LENGTH_LONG).show()
                 },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary, contentColor = Color.Black),
