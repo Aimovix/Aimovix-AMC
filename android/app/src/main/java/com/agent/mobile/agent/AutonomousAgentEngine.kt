@@ -96,23 +96,54 @@ class AutonomousAgentEngine(
                 }
 
                 is LlmClient.LlmResponse.Action -> {
+                    val cmd = response.toolCall.arguments["command"] ?: ""
+                    val assessment = com.agent.mobile.security.CommandSecurityFilter.analyze(cmd)
+
+                    val securedToolCall = response.toolCall.copy(
+                        riskLevel = assessment.level.name,
+                        riskReason = assessment.reason
+                    )
+
+                    // 1. Catastrophic Blacklist Check
+                    if (assessment.isBlocked) {
+                        val blockedMsg = ChatMessage(
+                            role = MessageRole.ASSISTANT,
+                            text = "🛡️ Sicherheits-Sperre: Der Befehl `$cmd` wurde blockiert.\nGrund: ${assessment.reason}",
+                            status = MessageStatus.ERROR
+                        )
+                        _messages.value = _messages.value + blockedMsg
+
+                        val toolRejectedMsg = ChatMessage(
+                            role = MessageRole.TOOL,
+                            text = "Ausführung aus Sicherheitsgründen blockiert: ${assessment.reason}",
+                            toolResult = ToolResult(
+                                toolCallId = securedToolCall.id,
+                                command = cmd,
+                                stderr = "Sicherheits-Blockade aktiv.",
+                                isError = true
+                            )
+                        )
+                        _messages.value = _messages.value + toolRejectedMsg
+                        continue
+                    }
+
+                    val mustApprove = com.agent.mobile.security.CommandSecurityFilter.shouldRequireApproval(
+                        assessment, _executionMode.value
+                    )
+
                     val actionMessageId = UUID.randomUUID().toString()
                     val actionMsg = ChatMessage(
                         id = actionMessageId,
                         role = MessageRole.ASSISTANT,
                         text = response.thought,
-                        toolCall = response.toolCall,
-                        status = if (_executionMode.value == ExecutionMode.STEP_BY_STEP) {
-                            MessageStatus.WAITING_FOR_APPROVAL
-                        } else {
-                            MessageStatus.EXECUTING_TOOL
-                        }
+                        toolCall = securedToolCall,
+                        status = if (mustApprove) MessageStatus.WAITING_FOR_APPROVAL else MessageStatus.EXECUTING_TOOL
                     )
                     _messages.value = _messages.value + actionMsg
 
-                    // Step-by-Step Approval check
-                    if (_executionMode.value == ExecutionMode.STEP_BY_STEP) {
-                        _pendingApproval.value = Pair(actionMessageId, response.toolCall)
+                    // 2. Approval check (Step-by-Step OR High-Risk in Autopilot)
+                    if (mustApprove) {
+                        _pendingApproval.value = Pair(actionMessageId, securedToolCall)
                         val deferred = CompletableDeferred<Boolean>()
                         approvalContinuation = deferred
 
@@ -126,8 +157,8 @@ class AutonomousAgentEngine(
                                 role = MessageRole.TOOL,
                                 text = "Befehl wurde vom Nutzer abgelehnt.",
                                 toolResult = ToolResult(
-                                    toolCallId = response.toolCall.id,
-                                    command = response.toolCall.arguments["command"] ?: "",
+                                    toolCallId = securedToolCall.id,
+                                    command = cmd,
                                     stderr = "Ausführung vom Nutzer verweigert.",
                                     isError = true
                                 )
@@ -139,7 +170,6 @@ class AutonomousAgentEngine(
 
                     // Execute command
                     updateMessageStatus(actionMessageId, MessageStatus.EXECUTING_TOOL)
-                    val cmd = response.toolCall.arguments["command"] ?: ""
 
                     val result = bridgeClient.executeCommand(cmd) { chunk ->
                         // Live update streaming terminal output in the action message

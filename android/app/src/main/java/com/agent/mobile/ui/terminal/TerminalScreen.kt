@@ -1,0 +1,217 @@
+package com.agent.mobile.ui.terminal
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.agent.mobile.data.model.ConnectionStatus
+import com.agent.mobile.data.network.TermuxBridgeClient
+import com.agent.mobile.ui.theme.DarkBackground
+import com.agent.mobile.ui.theme.DarkCard
+import com.agent.mobile.ui.theme.GreenPrimary
+import com.agent.mobile.ui.theme.RedEmergency
+import com.agent.mobile.ui.theme.TerminalBg
+import com.agent.mobile.ui.theme.TerminalGreen
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TerminalScreen(
+    bridgeClient: TermuxBridgeClient,
+    modifier: Modifier = Modifier
+) {
+    val connectionStatus by bridgeClient.connectionStatus.collectAsState()
+    var terminalHistory by remember { mutableStateOf("Willkommen im AMC Terminal.\nVerbunden mit Termux localhost:8765\n$ ") }
+    var inputCmd by remember { mutableStateOf("") }
+    var isRunning by remember { mutableStateOf(false) }
+
+    val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
+
+    // Auto-scroll on new output
+    LaunchedEffect(terminalHistory) {
+        scrollState.animateScrollTo(scrollState.maxValue)
+    }
+
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        containerColor = DarkBackground,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Terminal,
+                            contentDescription = null,
+                            tint = GreenPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Termux Console", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { terminalHistory = "$ " }) {
+                        Icon(Icons.Default.ClearAll, contentDescription = "Clear", tint = Color.Gray)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            // Main Terminal Window
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(8.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(TerminalBg)
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = terminalHistory,
+                    color = TerminalGreen,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState)
+                )
+            }
+
+            // Quick Keys Toolbar for mobile terminal users
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(DarkCard)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf("TAB", "ESC", "CTRL-C", "|", "/", "-", "_", "~", "$", "clear").forEach { key ->
+                    Surface(
+                        onClick = {
+                            when (key) {
+                                "CTRL-C" -> {
+                                    bridgeClient.interruptCurrent()
+                                    terminalHistory += "^C\n$ "
+                                }
+                                "clear" -> terminalHistory = "$ "
+                                "TAB" -> inputCmd += "  "
+                                else -> inputCmd += key
+                            }
+                        },
+                        shape = RoundedCornerShape(4.dp),
+                        color = if (key == "CTRL-C") RedEmergency.copy(alpha = 0.2f) else Color.DarkGray.copy(alpha = 0.5f)
+                    ) {
+                        Text(
+                            text = key,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            color = if (key == "CTRL-C") RedEmergency else Color.White,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            // Input Bar
+            Surface(
+                color = DarkBackground,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "$ ",
+                        color = GreenPrimary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    TextField(
+                        value = inputCmd,
+                        onValueChange = { inputCmd = it },
+                        placeholder = { Text("Befehl eingeben...", fontSize = 13.sp, color = Color.DarkGray) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+
+                    if (isRunning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = GreenPrimary
+                        )
+                    } else {
+                        IconButton(
+                            onClick = {
+                                if (inputCmd.isNotBlank()) {
+                                    val toExec = inputCmd.trim()
+                                    inputCmd = ""
+                                    terminalHistory += "$toExec\n"
+                                    isRunning = true
+                                    scope.launch {
+                                        try {
+                                            val result = bridgeClient.executeCommand(toExec) { chunk ->
+                                                terminalHistory += chunk
+                                            }
+                                            if (result.isError && result.stderr.isNotEmpty()) {
+                                                terminalHistory += result.stderr + "\n"
+                                            }
+                                            terminalHistory += "$ "
+                                        } finally {
+                                            isRunning = false
+                                        }
+                                    }
+                                }
+                            },
+                            enabled = inputCmd.isNotBlank()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.KeyboardReturn,
+                                contentDescription = "Ausführen",
+                                tint = if (inputCmd.isNotBlank()) GreenPrimary else Color.DarkGray
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -40,7 +40,9 @@ data class ToolCall(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val arguments: Map<String, String> = emptyMap(),
-    val rawJson: String = ""
+    val rawJson: String = "",
+    val riskLevel: String = "LOW",
+    val riskReason: String = ""
 )
 
 @Serializable

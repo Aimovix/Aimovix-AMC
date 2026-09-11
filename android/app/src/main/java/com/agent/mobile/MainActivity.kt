@@ -9,6 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -76,8 +77,8 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 1,
                                 onClick = { selectedTab = 1 },
-                                icon = { Icon(Icons.Default.Build, contentDescription = "Setup") },
-                                label = { Text("Setup", fontSize = 11.sp) },
+                                icon = { Icon(Icons.Default.Terminal, contentDescription = "Terminal") },
+                                label = { Text("Terminal", fontSize = 11.sp) },
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = GreenPrimary,
                                     selectedTextColor = GreenPrimary,
@@ -89,6 +90,19 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 2,
                                 onClick = { selectedTab = 2 },
+                                icon = { Icon(Icons.Default.Build, contentDescription = "Setup") },
+                                label = { Text("Setup", fontSize = 11.sp) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = GreenPrimary,
+                                    selectedTextColor = GreenPrimary,
+                                    indicatorColor = GreenPrimary.copy(alpha = 0.15f),
+                                    unselectedIconColor = Color.Gray,
+                                    unselectedTextColor = Color.Gray
+                                )
+                            )
+                            NavigationBarItem(
+                                selected = selectedTab == 3,
+                                onClick = { selectedTab = 3 },
                                 icon = { Icon(Icons.Default.Settings, contentDescription = "Einstellungen") },
                                 label = { Text("Einstellungen", fontSize = 11.sp) },
                                 colors = NavigationBarItemDefaults.colors(
@@ -112,10 +126,13 @@ class MainActivity : ComponentActivity() {
                             0 -> ChatScreen(
                                 agentEngine = agentEngine,
                                 bridgeClient = bridgeClient,
-                                onNavigateSetup = { selectedTab = 1 },
-                                onNavigateSettings = { selectedTab = 2 }
+                                onNavigateSetup = { selectedTab = 2 },
+                                onNavigateSettings = { selectedTab = 3 }
                             )
-                            1 -> SetupWizardScreen(
+                            1 -> com.agent.mobile.ui.terminal.TerminalScreen(
+                                bridgeClient = bridgeClient
+                            )
+                            2 -> SetupWizardScreen(
                                 bridgeClient = bridgeClient,
                                 savedToken = currentToken,
                                 onTokenChanged = { newToken ->
@@ -124,7 +141,7 @@ class MainActivity : ComponentActivity() {
                                     bridgeClient.connect(newToken)
                                 }
                             )
-                            2 -> SettingsScreen(
+                            3 -> SettingsScreen(
                                 agentEngine = agentEngine
                             )
                         }

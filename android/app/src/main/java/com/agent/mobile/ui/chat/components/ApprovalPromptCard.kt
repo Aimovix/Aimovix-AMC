@@ -40,20 +40,54 @@ fun ApprovalPromptCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.Shield,
-                    contentDescription = "Sicherheit",
-                    tint = YellowWarning,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
+            val isHighRisk = toolCall.riskLevel == "HIGH"
+            val badgeColor = if (isHighRisk) RedEmergency else YellowWarning
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = "Sicherheit",
+                        tint = badgeColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (isHighRisk) "Sicherheits-Alarm" else "Freigabe erforderlich",
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = badgeColor
+                        )
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = badgeColor.copy(alpha = 0.2f)
+                ) {
+                    Text(
+                        text = if (isHighRisk) "Kritisch" else "Stufe: ${toolCall.riskLevel}",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = badgeColor
+                    )
+                }
+            }
+
+            if (toolCall.riskReason.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = "Freigabe erforderlich",
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontSize = 16.sp,
+                    text = "⚠️ ${toolCall.riskReason}",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = YellowWarning
+                        color = if (isHighRisk) RedEmergency else YellowWarning
                     )
                 )
             }

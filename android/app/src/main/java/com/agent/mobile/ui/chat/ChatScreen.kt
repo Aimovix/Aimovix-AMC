@@ -221,6 +221,15 @@ fun ChatScreen(
                 }
             }
 
+            // Quick Action Hardware Toolbar
+            com.agent.mobile.ui.chat.components.QuickActionToolbar(
+                onActionSelected = { prompt ->
+                    if (!isBusy) {
+                        agentEngine.startTask(prompt)
+                    }
+                }
+            )
+
             // Input Bar
             Surface(
                 color = DarkCard,
@@ -246,6 +255,13 @@ fun ChatScreen(
                             unfocusedTextColor = Color.White
                         ),
                         maxLines = 4
+                    )
+
+                    // Speech-to-Text Microphone
+                    com.agent.mobile.ui.chat.components.VoiceInputButton(
+                        onSpeechResult = { spokenText ->
+                            inputText = spokenText
+                        }
                     )
 
                     IconButton(
