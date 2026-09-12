@@ -34,6 +34,25 @@ class LlmClientTest {
     }
 
     @Test
+    fun testDnsFailureExplainsLocalBridgeIsSeparate() = runBlocking {
+        val client = okhttp3.OkHttpClient.Builder()
+            .dns(object : okhttp3.Dns {
+                override fun lookup(hostname: String): List<java.net.InetAddress> =
+                    throw java.net.UnknownHostException("test DNS failure")
+            })
+            .build()
+        val events = LlmClient(client).streamRequest(
+            ModelConfig(provider = ProviderType.OPENAI, modelName = "test", apiKey = "test",
+                baseUrl = "https://provider.invalid/v1"),
+            "Test", emptyList()
+        ).toList()
+        val error = events.filterIsInstance<LlmClient.LlmStreamEvent.Error>().single()
+        assertTrue(error.message.contains("DNS"))
+        assertTrue(error.message.contains("local bridge"))
+        assertTrue(error.isRetryable)
+    }
+
+    @Test
     fun testOpenAiSseStreamingTokens() = runBlocking {
         val sseBody = """
             data: {"choices":[{"delta":{"content":"Hello "}}]}

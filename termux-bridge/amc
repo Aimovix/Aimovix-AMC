@@ -17,12 +17,25 @@ if [ -z "$PYTHON_BIN" ]; then
     exit 1
 fi
 
+process_is_alive() {
+    local pid="$1" stat state
+    kill -0 "$pid" 2>/dev/null || return 1
+    # An exited child can remain visible until its parent reaps it.
+    if [ -r "/proc/$pid/stat" ]; then
+        stat="$(cat "/proc/$pid/stat" 2>/dev/null)"
+        state="${stat##*) }"
+        case "$state" in Z\ *|X\ *) return 1 ;; esac
+    fi
+    return 0
+}
+
 is_running() {
     [ -s "$PID_FILE" ] || return 1
     local pid
     pid="$(cat "$PID_FILE")"
     case "$pid" in ""|*[!0-9]*) return 1 ;; esac
-    kill -0 "$pid" 2>/dev/null
+    [ "$pid" -gt 1 ] || return 1
+    process_is_alive "$pid"
 }
 
 cmd_start() {
@@ -54,11 +67,13 @@ cmd_stop() {
         local pid
         pid="$(cat "$PID_FILE")"
         kill -TERM "$pid" 2>/dev/null || true
-        for attempt in {1..10}; do
-            kill -0 "$pid" 2>/dev/null || break
+        # WebSocket close handshake, command cancellation, and Termux:API
+        # cleanup can exceed five seconds. Allow graceful shutdown to finish.
+        for attempt in {1..60}; do
+            process_is_alive "$pid" || break
             sleep 0.5
         done
-        if kill -0 "$pid" 2>/dev/null; then
+        if process_is_alive "$pid"; then
             echo "Bridge did not stop. Inspect the process before restarting." >&2
             return 1
         fi

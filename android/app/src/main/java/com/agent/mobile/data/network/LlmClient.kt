@@ -2,6 +2,8 @@ package com.agent.mobile.data.network
 
 import android.util.Log
 import com.agent.mobile.data.model.*
+import kotlinx.coroutines.CancellationException
+import java.net.UnknownHostException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -84,6 +86,14 @@ class LlmClient(
                 ProviderType.OPENROUTER,
                 ProviderType.LOCAL -> streamOpenAiCompatible(config, systemPrompt, messages) { emit(it) }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: UnknownHostException) {
+            emit(LlmStreamEvent.Error(
+                "Cannot resolve the AI provider address (DNS). Check Wi-Fi/mobile data, " +
+                    "VPN or Private DNS, and the provider URL. " +
+                    "Termux Connected only confirms the local bridge connection.", 0, true
+            ))
         } catch (e: Exception) {
             Log.e(TAG, "Exception during SSE streaming: ${e.message}", e)
             emit(LlmStreamEvent.Error(e.localizedMessage ?: "Connection error during SSE streaming", 0, true))
@@ -142,6 +152,8 @@ class LlmClient(
             if (parsedTool != null) return@withContext parsedTool
 
             LlmResponse.Message(fallbackText)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             LlmResponse.Error(e.localizedMessage ?: "Communication with the LLM failed")
         }
