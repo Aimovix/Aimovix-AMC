@@ -553,17 +553,47 @@ class LlmClient(
         }
         root.put("tools", JSONArray().put(JSONObject().put("function_declarations", funcDecls)))
 
-        val url = "${config.baseUrl.trimEnd('/')}/models/${config.modelName}:streamGenerateContent?alt=sse&key=${config.apiKey}"
-        val req = Request.Builder()
+        val cleanKey = config.apiKey.removePrefix("Bearer ").removePrefix("bearer ").trim()
+        if (cleanKey.isEmpty()) {
+            emit(LlmStreamEvent.Error(
+                "No API key configured for Google Gemini. Please enter your Gemini API key in Settings (get a free key at aistudio.google.com/apikey).",
+                401, false
+            ))
+            return
+        }
+
+        val isOAuthToken = cleanKey.startsWith("ya29.")
+        val url = if (isOAuthToken) {
+            "${config.baseUrl.trimEnd('/')}/models/${config.modelName}:streamGenerateContent?alt=sse"
+        } else {
+            "${config.baseUrl.trimEnd('/')}/models/${config.modelName}:streamGenerateContent?alt=sse&key=$cleanKey"
+        }
+
+        val reqBuilder = Request.Builder()
             .url(url)
             .post(root.toString().toRequestBody("application/json".toMediaType()))
-            .build()
+
+        if (isOAuthToken) {
+            reqBuilder.addHeader("Authorization", "Bearer $cleanKey")
+        } else {
+            reqBuilder.addHeader("x-goog-api-key", cleanKey)
+        }
+
+        val req = reqBuilder.build()
 
         executeCancellableCall(req) { response ->
             if (!response.isSuccessful) {
                 val errBody = response.body?.string() ?: ""
                 val isRetryable = response.code == 429 || response.code >= 500
-                emit(LlmStreamEvent.Error("Gemini API error (${response.code}): $errBody", response.code, isRetryable))
+                val displayError = when {
+                    response.code == 401 && errBody.contains("ACCESS_TOKEN_TYPE_UNSUPPORTED") ->
+                        "Invalid Google credential type. Please use a Gemini API key from Google AI Studio (starts with 'AIzaSy...'), not a Google Cloud OAuth client or access token. Get a free key at aistudio.google.com/apikey."
+                    response.code == 400 && errBody.contains("API_KEY_INVALID") ->
+                        "Invalid Gemini API key. Please verify your API key in Settings (aistudio.google.com/apikey)."
+                    else ->
+                        "Gemini API error (${response.code}): $errBody"
+                }
+                emit(LlmStreamEvent.Error(displayError, response.code, isRetryable))
                 return@executeCancellableCall
             }
 
