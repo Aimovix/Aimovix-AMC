@@ -20,8 +20,11 @@ object CommandSecurityFilter {
 
     // Blacklist: Commands that cause catastrophic, irreversible damage or malicious remote execution
     private val BLACKLIST_PATTERNS = listOf(
-        Pattern.compile("rm\\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\\s+(/(?:\\s+|$)|/\\*|~)", Pattern.CASE_INSENSITIVE),
-        Pattern.compile("rm\\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\\s+\\*\\s*", Pattern.CASE_INSENSITIVE),
+        // Destructive recursive file deletion of root, home, or wildcards (combined flags like -rf or -fr)
+        Pattern.compile("(?:^|[;/&|\\s])(?:\\S+/)?rm\\s+.*(-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*)\\s+.*?(/(?:\\s+|$)|/\\*|~|\\*|\\\$HOME)", Pattern.CASE_INSENSITIVE),
+        // Destructive recursive file deletion (separated flags: -r ... -f ... or --recursive ... --force ...)
+        Pattern.compile("(?:^|[;/&|\\s])(?:\\S+/)?rm\\s+.*(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\\s+.*(-[a-zA-Z]*[fF][a-zA-Z]*|--force)\\s+.*?(/(?:\\s+|$)|/\\*|~|\\*|\\\$HOME)", Pattern.CASE_INSENSITIVE),
+        Pattern.compile("(?:^|[;/&|\\s])(?:\\S+/)?rm\\s+.*(-[a-zA-Z]*[fF][a-zA-Z]*|--force)\\s+.*(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\\s+.*?(/(?:\\s+|$)|/\\*|~|\\*|\\\$HOME)", Pattern.CASE_INSENSITIVE),
         Pattern.compile("mkfs(\\.[a-zA-Z0-9]+)?\\s+", Pattern.CASE_INSENSITIVE),
         Pattern.compile("dd\\s+if=/dev/(zero|urandom)\\s+of=/dev/", Pattern.CASE_INSENSITIVE),
         Pattern.compile(":\\(\\)\\s*\\{\\s*:\\|:&\\s*\\};:", Pattern.CASE_INSENSITIVE), // Fork bomb

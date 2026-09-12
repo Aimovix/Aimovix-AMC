@@ -183,7 +183,8 @@ class BridgeSession:
         if process is None:
             return
         # Signal the entire group, even if its shell has already exited.
-        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+        sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+        for sig in (signal.SIGINT, signal.SIGTERM, sigkill):
             try:
                 if sys.platform != "win32":
                     os.killpg(process.pid, sig)
@@ -193,7 +194,7 @@ class BridgeSession:
                     break
             except ProcessLookupError:
                 break
-            if sig != signal.SIGKILL:
+            if sig != sigkill:
                 await asyncio.sleep(0.25)
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(process.wait(), timeout=2)

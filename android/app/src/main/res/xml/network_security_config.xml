@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Cleartext is permitted for local loopback (127.0.0.1 Termux Bridge & llama-server) -->
-    <base-config cleartextTrafficPermitted="true" />
+    <!-- By default, disallow all cleartext traffic across the app -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Cleartext is permitted exclusively for local loopback (Termux Bridge & local llama-server) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+    </domain-config>
 </network-security-config>
