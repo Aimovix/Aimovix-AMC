@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.ui.theme.*
 import kotlinx.coroutines.launch
@@ -30,6 +31,7 @@ fun TerminalScreen(
     bridgeClient: TermuxBridgeClient,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var terminalHistory by remember { mutableStateOf("Welcome to the AMC terminal.\nTarget: Termux localhost:8765 (pair in Setup first)\n$ ") }
     var inputCmd by remember { mutableStateOf("") }
     var isRunning by remember { mutableStateOf(false) }
@@ -68,6 +70,9 @@ fun TerminalScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = { TermuxBridgeClient.openTermuxApp(context) }) {
+                            Icon(Icons.Default.Terminal, contentDescription = "Open Termux App", tint = AccentPrimary)
+                        }
                         IconButton(onClick = { terminalHistory = "$ " }) {
                             Icon(Icons.Default.ClearAll, contentDescription = "Clear", tint = TextMuted)
                         }

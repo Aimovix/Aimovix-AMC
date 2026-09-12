@@ -142,10 +142,7 @@ fun SetupWizardScreen(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                val launchIntent = context.packageManager.getLaunchIntentForPackage("com.termux")
-                                if (launchIntent != null) {
-                                    context.startActivity(launchIntent)
-                                }
+                                TermuxBridgeClient.openTermuxApp(context)
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(8.dp),

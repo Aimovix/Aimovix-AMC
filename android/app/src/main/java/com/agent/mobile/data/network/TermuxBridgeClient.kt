@@ -72,6 +72,22 @@ class TermuxBridgeClient(
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
         }
+
+        fun openTermuxApp(context: Context): Boolean {
+            return try {
+                val launchIntent = context.packageManager.getLaunchIntentForPackage("com.termux")
+                if (launchIntent != null) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(launchIntent)
+                    true
+                } else {
+                    false
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to launch Termux app: ${e.message}", e)
+                false
+            }
+        }
     }
 
     private val client = OkHttpClient.Builder()

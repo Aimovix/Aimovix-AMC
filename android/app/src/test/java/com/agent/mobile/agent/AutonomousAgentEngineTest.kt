@@ -107,4 +107,26 @@ class AutonomousAgentEngineTest {
         assertEquals("sess-123", engine.currentSession.value?.id)
         assertEquals("New Agent Session", engine.currentSession.value?.title)
     }
+
+    @Test
+    fun testCompactToolOutputShortTextUnchanged() {
+        val short = "Line 1: all good\nLine 2: finished."
+        val result = engine.compactToolOutput(short, maxChars = 4000)
+        assertEquals(short, result)
+    }
+
+    @Test
+    fun testCompactToolOutputLongTextTruncated() {
+        val head = "START_OF_OUTPUT: " + "A".repeat(2000)
+        val middle = "M".repeat(6000)
+        val tail = "Z".repeat(1500) + " :END_OF_OUTPUT"
+        val hugeText = head + middle + tail
+
+        val compacted = engine.compactToolOutput(hugeText, maxChars = 4000, headChars = 2000, tailChars = 1500)
+
+        assertTrue("Compacted output must be shorter than original", compacted.length < hugeText.length)
+        assertTrue("Compacted output must contain truncation notice", compacted.contains("... [Output truncated:"))
+        assertTrue("Compacted output must preserve head", compacted.startsWith("START_OF_OUTPUT"))
+        assertTrue("Compacted output must preserve tail", compacted.endsWith(":END_OF_OUTPUT"))
+    }
 }

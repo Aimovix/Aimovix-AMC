@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,11 +13,18 @@ from unittest.mock import patch
 
 import websockets
 
-TEST_HOME = tempfile.TemporaryDirectory()
+TEST_HOME = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
 with patch.dict(os.environ, {"HOME": TEST_HOME.name}):
     spec = importlib.util.spec_from_file_location("bridge", Path(__file__).with_name("bridge_daemon.py"))
     bridge = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bridge)
+
+
+def make_python_cmd(*args: str) -> str:
+    """Format cross-platform command invoking the active python interpreter."""
+    if sys.platform == "win32":
+        return subprocess.list2cmdline([sys.executable, *args])
+    return shlex.quote(sys.executable) + " " + " ".join(shlex.quote(a) for a in args)
 
 
 class BridgeTests(unittest.IsolatedAsyncioTestCase):
@@ -79,11 +87,13 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {"BRIDGE_NO_AUTH": "1"}), patch.object(sys, "argv", ["bridge", "--no-auth"]):
             self.assertTrue(bridge.load_or_generate_token())
         self.assertEqual(bridge.HOST, "127.0.0.1")
-        self.assertEqual(bridge.TOKEN_FILE.stat().st_mode & 0o777, 0o600)
+        if sys.platform != "win32":
+            self.assertEqual(bridge.TOKEN_FILE.stat().st_mode & 0o777, 0o600)
 
     async def test_ping_and_interrupt_work_during_execution(self):
         client = await self.connect()
-        await self.execute(client, "echo ready; sleep 30")
+        cmd = make_python_cmd("-u", "-c", "import time; print('ready', flush=True); time.sleep(30)")
+        await self.execute(client, cmd)
         self.assertIn("ready", (await self.receive(client))["data"])
         await client.send(json.dumps({"action": "ping", "timestamp": 123}))
         self.assertEqual((await self.receive(client))["type"], "pong")
@@ -91,16 +101,17 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         messages = await self.until(client, "completed")
         self.assertTrue(any(m["type"] == "interrupted" for m in messages))
         self.assertEqual(messages[-1]["exit_code"], 130)
-        await self.execute(client, "echo usable", execution_id="next")
+        await self.execute(client, make_python_cmd("-c", "print('usable')"), execution_id="next")
         messages = await self.until(client, "completed")
         self.assertIn("usable", "".join(m.get("data", "") for m in messages))
         self.assertEqual(messages[-1]["exit_code"], 0)
 
     async def test_busy_execution_is_rejected_without_replacing_process(self):
         client = await self.connect()
-        await self.execute(client, "echo ready; sleep 30")
+        cmd = make_python_cmd("-u", "-c", "import time; print('ready', flush=True); time.sleep(30)")
+        await self.execute(client, cmd)
         await self.receive(client)
-        await self.execute(client, "echo should-not-run", execution_id="second")
+        await self.execute(client, make_python_cmd("-c", "print('should-not-run')"), execution_id="second")
         message = await self.receive(client)
         self.assertEqual(message["type"], "error")
         self.assertEqual(message["execution_id"], "second")
@@ -113,28 +124,31 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         directory.mkdir(exist_ok=True)
         await self.execute(first, "cd " + shlex.quote(str(directory)))
         await self.until(first, "completed")
-        await self.execute(first, "echo first; sleep 30")
+        cmd = make_python_cmd("-u", "-c", "import time; print('first', flush=True); time.sleep(30)")
+        await self.execute(first, cmd)
         await self.receive(first)
         await second.send(json.dumps({"action": "interrupt"}))
         self.assertEqual((await self.receive(second))["type"], "interrupted")
-        await self.execute(second, "pwd")
+        await self.execute(second, make_python_cmd("-c", "import os; print(os.getcwd())"))
         result = await self.until(second, "completed")
-        self.assertEqual("".join(m.get("data", "") for m in result).strip(), TEST_HOME.name)
+        output = "".join(m.get("data", "") for m in result).strip()
+        self.assertEqual(os.path.normpath(output), os.path.normpath(TEST_HOME.name))
         await first.send(json.dumps({"action": "interrupt"}))
         result = await self.until(first, "completed")
         self.assertEqual(result[-1]["exit_code"], 130)
 
     async def test_timeout_stops_process(self):
         client = await self.connect()
-        await self.execute(client, "sleep 30", timeout_ms=50)
+        cmd = make_python_cmd("-c", "import time; time.sleep(30)")
+        await self.execute(client, cmd, timeout_ms=50)
         result = await self.until(client, "error")
         self.assertIn("timed out", result[-1]["error"])
-        await self.execute(client, "echo after-timeout")
+        await self.execute(client, make_python_cmd("-c", "print('after-timeout')"))
         self.assertEqual((await self.until(client, "completed"))[-1]["exit_code"], 0)
 
     async def test_long_output_without_newline_streams(self):
         client = await self.connect()
-        command = shlex.quote(sys.executable) + " -c " + shlex.quote("import sys; sys.stdout.write('x' * 100000)")
+        command = make_python_cmd("-c", "import sys; sys.stdout.write('x' * 100000)")
         await self.execute(client, command)
         result = await self.until(client, "completed")
         self.assertEqual(len("".join(m.get("data", "") for m in result)), 100000)
@@ -148,6 +162,46 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             "type": "file_content", "path": "sample.txt", "content": "hello"
         })
 
+    async def test_transfer_file_blocks_sensitive_files(self):
+        client = await self.connect()
+        # 1. Shell config files write protection
+        for bad_path in (".bashrc", "~/.bashrc", ".profile", ".zshrc"):
+            await client.send(json.dumps({"action": "write_file", "path": bad_path, "content": "malicious"}))
+            resp = await self.receive(client)
+            self.assertEqual(resp["type"], "error")
+            self.assertIn("Security block", resp["error"])
+
+        # 2. Sensitive directories write protection
+        for bad_dir_file in (".termux/boot/run.sh", ".ssh/authorized_keys", ".termux_agent/secret"):
+            await client.send(json.dumps({"action": "write_file", "path": bad_dir_file, "content": "malicious"}))
+            resp = await self.receive(client)
+            self.assertEqual(resp["type"], "error")
+            self.assertIn("Security block", resp["error"])
+
+        # 3. Path traversal outside HOME
+        await client.send(json.dumps({"action": "write_file", "path": "../../escaped.txt", "content": "malicious"}))
+        resp = await self.receive(client)
+        self.assertEqual(resp["type"], "error")
+        self.assertIn("Security block", resp["error"])
+
+        # 4. Sensitive directory read protection (.ssh)
+        await client.send(json.dumps({"action": "read_file", "path": ".ssh/id_rsa"}))
+        resp = await self.receive(client)
+        self.assertEqual(resp["type"], "error")
+        self.assertIn("Security block", resp["error"])
+
+        # 5. Normal file write and read inside HOME should succeed
+        await client.send(json.dumps({"action": "write_file", "path": "docs/safe.txt", "content": "safe content"}))
+        resp = await self.receive(client)
+        self.assertEqual(resp["type"], "file_written")
+        self.assertTrue(resp["success"])
+
+        await client.send(json.dumps({"action": "read_file", "path": "docs/safe.txt"}))
+        read_resp = await self.receive(client)
+        self.assertEqual(read_resp["type"], "file_content")
+        self.assertEqual(read_resp["content"], "safe content")
+
+    @unittest.skipIf(sys.platform == "win32", "Process /proc inspection is Linux-specific")
     async def test_disconnect_terminates_child(self):
         client = await self.connect()
         command = shlex.quote(sys.executable) + " -u -c " + shlex.quote(

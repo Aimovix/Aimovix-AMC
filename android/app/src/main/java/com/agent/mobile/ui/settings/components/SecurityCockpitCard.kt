@@ -73,7 +73,7 @@ fun SecurityCockpitCard(
                 ) {
                     Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(15.dp), tint = AccentPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Audit-Log", color = AccentPrimary, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                    Text("Audit log", color = AccentPrimary, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                 }
             }
 

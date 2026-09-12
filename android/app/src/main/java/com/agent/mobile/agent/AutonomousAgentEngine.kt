@@ -492,13 +492,14 @@ class AutonomousAgentEngine(
 
                 // 8. Add Tool Observation to Context
                 val rawOutput = if (result.stdout.isNotEmpty()) result.stdout else result.stderr
+                val compactedOutput = compactToolOutput(rawOutput)
                 val guardedResult = result.copy(
-                    stdout = if (result.stdout.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${result.stdout}\n[UNTRUSTED_OUTPUT_END]" else "",
-                    stderr = if (result.stderr.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${result.stderr}\n[UNTRUSTED_OUTPUT_END]" else ""
+                    stdout = if (result.stdout.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(result.stdout)}\n[UNTRUSTED_OUTPUT_END]" else "",
+                    stderr = if (result.stderr.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(result.stderr)}\n[UNTRUSTED_OUTPUT_END]" else ""
                 )
                 val toolMsg = ChatMessage(
                     role = MessageRole.TOOL,
-                    text = "[UNTRUSTED_OUTPUT_START]\n$rawOutput\n[UNTRUSTED_OUTPUT_END]",
+                    text = "[UNTRUSTED_OUTPUT_START]\n$compactedOutput\n[UNTRUSTED_OUTPUT_END]",
                     toolResult = guardedResult,
                     status = MessageStatus.COMPLETED
                 )
@@ -518,6 +519,24 @@ class AutonomousAgentEngine(
         if (iterations >= MAX_LOOP_ITERATIONS) {
             appendSystemMessage("ℹ️ Step limit of $MAX_LOOP_ITERATIONS reached. Execution ended.")
         }
+    }
+
+    internal fun compactToolOutput(
+        text: String,
+        maxChars: Int = 4000,
+        headChars: Int = 2000,
+        tailChars: Int = 1500
+    ): String {
+        if (text.length <= maxChars) {
+            return text
+        }
+        val omitted = text.length - (headChars + tailChars)
+        if (omitted <= 0) {
+            return text.take(maxChars)
+        }
+        val head = text.take(headChars)
+        val tail = text.takeLast(tailChars)
+        return "$head\n\n... [Output truncated: $omitted characters omitted to conserve context] ...\n\n$tail"
     }
 
     internal fun isRunawayOrLoopDetected(

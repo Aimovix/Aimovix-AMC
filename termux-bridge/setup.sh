@@ -8,10 +8,11 @@ PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PREFIX
 export PATH="$PREFIX/bin:$PREFIX/bin/applets:$PATH"
 TARGET_DIR="$HOME/.termux_agent"
-REPOSITORY_BASE="https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/main/termux-bridge"
+AMC_REF="${AMC_REF:-main}"
+REPOSITORY_BASE="https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/${AMC_REF}/termux-bridge"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
-echo "AMC - AI Mobile Center setup"
+echo "AMC - AI Mobile Center setup (ref: $AMC_REF)"
 echo "[1/5] Installing Python, Git, curl, jq, and Termux:API..."
 pkg update -y < /dev/null
 pkg install -y python git curl jq termux-api < /dev/null

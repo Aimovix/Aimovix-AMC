@@ -35,7 +35,13 @@ less setup-amc.sh
 bash setup-amc.sh
 ```
 
-The installer downloads from `main`. To test a development branch consistently, clone that branch and run its local installer:
+The installer downloads from `main` by default. To pin a specific release tag or branch:
+
+```bash
+AMC_REF=v1.2.0 bash setup-amc.sh
+```
+
+To test a development branch with local files, clone that branch and run its local installer:
 
 ```bash
 git clone --branch <branch-name> https://github.com/Aimovix/Aimovix-AMC.git

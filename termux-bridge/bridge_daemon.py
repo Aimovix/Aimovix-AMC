@@ -165,6 +165,58 @@ def get_system_info(cwd: str = DEFAULT_CWD) -> dict:
 
     return info
 
+def validate_file_path(target_path_str: str, base_cwd: str = DEFAULT_CWD, for_write: bool = True) -> tuple[Path, str | None]:
+    """
+    Validate target path against path traversal, sensitive configuration files, and system directories.
+    Returns a tuple of (resolved_path, error_message).
+    """
+    if not target_path_str or not target_path_str.strip():
+        return Path(), "A file path is required."
+
+    expanded = os.path.expanduser(target_path_str.strip())
+    if not os.path.isabs(expanded):
+        target = Path(base_cwd) / expanded
+    else:
+        target = Path(expanded)
+
+    try:
+        resolved = target.resolve()
+    except Exception as e:
+        return Path(), f"Invalid path: {e}"
+
+    home = Path(DEFAULT_CWD).resolve()
+
+    if for_write:
+        # Prevent writing outside HOME (or allowed user directory)
+        try:
+            resolved.relative_to(home)
+        except ValueError:
+            return resolved, f"Security block: Writing outside home directory ({home}) is forbidden."
+
+        # Prevent modification of shell initialization & profile files
+        sensitive_filenames = {
+            ".bashrc", ".bash_profile", ".bash_login", ".bash_logout",
+            ".profile", ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout",
+            ".login", ".cshrc", ".tcshrc", ".kshrc",
+            ".termux_agent_token"
+        }
+        if resolved.name.lower() in sensitive_filenames:
+            return resolved, f"Security block: Modifying sensitive configuration file '{resolved.name}' is forbidden."
+
+        # Prevent modification inside critical directories
+        sensitive_dirs = {".ssh", ".termux", ".termux_agent", ".gnupg"}
+        for part in resolved.parts:
+            if part.lower() in sensitive_dirs:
+                return resolved, f"Security block: Modifying files in sensitive directory '{part}' is forbidden."
+    else:
+        # Prevent reading sensitive key material directly via bridge
+        sensitive_read_dirs = {".ssh", ".gnupg"}
+        for part in resolved.parts:
+            if part.lower() in sensitive_read_dirs:
+                return resolved, f"Security block: Reading files in sensitive directory '{part}' is forbidden."
+
+    return resolved, None
+
 class BridgeSession:
     """Own execution state per authenticated connection."""
 
@@ -278,9 +330,14 @@ class BridgeSession:
             self.execution_id = None
 
     async def transfer_file(self, action, msg):
-        path = os.path.abspath(os.path.join(self.cwd, os.path.expanduser(msg.get("path", ""))))
-        # Return the original requested path as the client correlates responses by it.
         request_path = msg.get("path", "")
+        for_write = (action == "write_file")
+        resolved_path, err = validate_file_path(request_path, self.cwd, for_write=for_write)
+        if err:
+            await self.send("error", path=request_path, error=err)
+            return
+
+        path = str(resolved_path)
         try:
             if action == "write_file":
                 content = msg.get("content", "")
@@ -430,7 +487,7 @@ async def main():
         print(f"[WARN] Could not write PID file: {e}", file=sys.stderr)
 
     ensure_wake_lock()
-    update_termux_notification("AMC Bridge gestartet • Port " + str(PORT))
+    update_termux_notification("AMC Bridge started • Port " + str(PORT))
 
     print(f"==================================================")
     print(f" AMC - AI Mobile Center Bridge Daemon")
