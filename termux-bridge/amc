@@ -66,11 +66,6 @@ cmd_stop() {
     if is_running; then
         local pid
         pid="$(cat "$PID_FILE")"
-        if [ -r "/proc/$pid/cmdline" ] && ! grep -qa "bridge_daemon" "/proc/$pid/cmdline" 2>/dev/null; then
-            echo "Warning: PID $pid does not appear to be the bridge daemon (PID reused). Cleaning up stale PID file." >&2
-            rm -f "$PID_FILE"
-            return 0
-        fi
         kill -TERM "$pid" 2>/dev/null || true
         # WebSocket close handshake, command cancellation, and Termux:API
         # cleanup can exceed five seconds. Allow graceful shutdown to finish.
