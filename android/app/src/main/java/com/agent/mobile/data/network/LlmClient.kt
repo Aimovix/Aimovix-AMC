@@ -324,6 +324,8 @@ class LlmClient(
                                 if (fn.has("arguments")) toolCallArgs.append(fn.getString("arguments"))
                             }
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         // ignore chunk decode issue and continue
                     }
@@ -506,6 +508,8 @@ class LlmClient(
                             }
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     // Ignore single parse error in stream
                 }
@@ -629,6 +633,8 @@ class LlmClient(
                             completionTokens = usage?.optInt("output_tokens", completionTokens) ?: completionTokens
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     // Ignore single chunk decode issue
                 }

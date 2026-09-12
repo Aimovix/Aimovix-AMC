@@ -5,6 +5,7 @@ import com.agent.mobile.data.model.ProviderType
 import com.agent.mobile.data.model.MessageRole
 import com.agent.mobile.data.model.ModelConfig
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -31,6 +32,18 @@ class LlmClientTest {
     @After
     fun tearDown() {
         mockServer.shutdown()
+    }
+
+    @Test
+    fun testConsumerCanStopAfterFirstStreamToken() = runBlocking {
+        mockServer.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream")
+            .setBody("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n" +
+                "data: {\"choices\":[{\"delta\":{\"content\":\"second\"}}]}\n\n" +
+                "data: [DONE]\n\n"))
+        val config = ModelConfig(provider = ProviderType.OPENAI, modelName = "test", apiKey = "test",
+            baseUrl = mockServer.url("/v1").toString())
+        val events = llmClient.streamRequest(config, "Test", emptyList()).take(1).toList()
+        assertEquals(listOf(LlmClient.LlmStreamEvent.Token("first")), events)
     }
 
     @Test

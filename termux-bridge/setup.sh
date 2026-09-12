@@ -19,19 +19,25 @@ pkg install -y python git curl jq termux-api < /dev/null
 
 echo "[2/5] Installing the bridge and CLI..."
 mkdir -p "$TARGET_DIR" "$PREFIX/bin"
+STAGING_DIR="$(mktemp -d "$TARGET_DIR/.install.XXXXXX")"
+trap 'rm -rf "$STAGING_DIR"' EXIT
 for name in bridge_daemon.py amc requirements.txt local_model_manager.sh; do
     if [ -n "$SCRIPT_DIR" ] && [ -s "$SCRIPT_DIR/$name" ]; then
-        cp "$SCRIPT_DIR/$name" "$TARGET_DIR/$name"
+        cp "$SCRIPT_DIR/$name" "$STAGING_DIR/$name"
     else
-        curl --fail --show-error --location "$REPOSITORY_BASE/$name" -o "$TARGET_DIR/$name"
+        curl --fail --show-error --location "$REPOSITORY_BASE/$name" -o "$STAGING_DIR/$name"
     fi
 done
+echo "[3/5] Installing Python dependencies..."
+python -m pip install -r "$STAGING_DIR/requirements.txt"
+
+# Publish only after every download and dependency installation succeeds.
 chmod 700 "$TARGET_DIR"
+for name in bridge_daemon.py amc requirements.txt local_model_manager.sh; do
+    mv "$STAGING_DIR/$name" "$TARGET_DIR/$name"
+done
 cp "$TARGET_DIR/amc" "$PREFIX/bin/amc"
 chmod +x "$PREFIX/bin/amc" "$TARGET_DIR/local_model_manager.sh"
-
-echo "[3/5] Installing Python dependencies..."
-python -m pip install -r "$TARGET_DIR/requirements.txt"
 
 echo "[4/5] Enabling background startup..."
 amc autostart

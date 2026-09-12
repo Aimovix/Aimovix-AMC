@@ -479,61 +479,48 @@ async def main():
         except Exception:
             pass
 
-    # Ensure agent directory exists and write PID
-    AGENT_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        PID_FILE.write_text(str(os.getpid()))
-    except Exception as e:
-        print(f"[WARN] Could not write PID file: {e}", file=sys.stderr)
-
-    ensure_wake_lock()
-    update_termux_notification("AMC Bridge started • Port " + str(PORT))
-
-    print(f"==================================================")
-    print(f" AMC - AI Mobile Center Bridge Daemon")
-    print(f" Listening on ws://{HOST}:{PORT}")
-    print(f" PID: {os.getpid()}")
-    print(f" Authentication required. Token file: {TOKEN_FILE}")
-    print(" Use 'amc token' to display the pairing token in Termux.")
-    print("==================================================")
-
-    # Start background keep-alive watchdog
-    watchdog_task = asyncio.create_task(background_watchdog())
-
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for stop_signal in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(stop_signal, stop_event.set)
-    try:
-        # On loopback/localhost, disable server-side ping timeouts so mobile background scheduling doesn't drop connections
-        async with websockets.serve(
-            handle_connection,
-            HOST,
-            PORT,
-            max_size=10 * 1024 * 1024,
-            origins=[None],
-            ping_interval=None,
-            ping_timeout=None
-        ):
+
+    # Acquire the listening socket before publishing service state. A duplicate
+    # start must never overwrite or remove the running instance's PID file.
+    async with websockets.serve(
+        handle_connection, HOST, PORT, max_size=10 * 1024 * 1024,
+        origins=[None], ping_interval=None, ping_timeout=None
+    ):
+        AGENT_DIR.mkdir(parents=True, exist_ok=True)
+        PID_FILE.write_text(str(os.getpid()))
+        watchdog_task = None
+        try:
+            ensure_wake_lock()
+            update_termux_notification("AMC Bridge started • Port " + str(PORT))
+            print(f"AMC Bridge listening on ws://{HOST}:{PORT}; PID: {os.getpid()}")
+            print("Authentication required. Use 'amc token' to pair the app.")
+            watchdog_task = asyncio.create_task(background_watchdog())
             await stop_event.wait()
-    finally:
-        watchdog_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await watchdog_task
-        remove_termux_notification()
-        if PID_FILE.exists():
-            try:
-                PID_FILE.unlink()
-            except Exception:
-                pass
+        finally:
+            if watchdog_task is not None:
+                watchdog_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watchdog_task
+            remove_termux_notification()
+            remove_owned_pid_file()
+
+
+def remove_owned_pid_file():
+    """Only remove service state published by this process."""
+    try:
+        if PID_FILE.read_text().strip() == str(os.getpid()):
+            PID_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
 
 def cleanup_and_exit(signum, frame):
     remove_termux_notification()
-    if PID_FILE.exists():
-        try:
-            PID_FILE.unlink()
-        except Exception:
-            pass
+    remove_owned_pid_file()
     sys.exit(0)
 
 if __name__ == "__main__":

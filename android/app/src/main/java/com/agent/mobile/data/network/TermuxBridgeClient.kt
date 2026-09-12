@@ -410,6 +410,7 @@ class TermuxBridgeClient(
         if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
             listenerJob?.cancel()
             pendingExecutions.remove(execId)
+            executionOutputs.remove(execId)
             return@withContext ToolResult(
                 toolCallId = execId,
                 command = command,
@@ -423,6 +424,7 @@ class TermuxBridgeClient(
         if (!sent) {
             listenerJob?.cancel()
             pendingExecutions.remove(execId)
+            executionOutputs.remove(execId)
             return@withContext ToolResult(
                 toolCallId = execId,
                 command = command,

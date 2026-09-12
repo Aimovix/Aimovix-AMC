@@ -224,3 +224,33 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServiceOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_start_preserves_running_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / 'daemon.pid'
+            pid_file.write_text('12345')
+            server = await websockets.serve(bridge.handle_connection, bridge.HOST, 0)
+            port = server.sockets[0].getsockname()[1]
+            try:
+                with patch.object(bridge, 'PORT', port), patch.object(bridge, 'PID_FILE', pid_file):
+                    with self.assertRaises(OSError):
+                        await bridge.main()
+                self.assertEqual(pid_file.read_text(), '12345')
+            finally:
+                server.close()
+                await server.wait_closed()
+                for sig in (bridge.signal.SIGTERM, bridge.signal.SIGINT):
+                    asyncio.get_running_loop().remove_signal_handler(sig)
+
+    async def test_cleanup_only_removes_owned_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / 'daemon.pid'
+            with patch.object(bridge, 'PID_FILE', pid_file):
+                pid_file.write_text('12345')
+                bridge.remove_owned_pid_file()
+                self.assertTrue(pid_file.exists())
+                pid_file.write_text(str(os.getpid()))
+                bridge.remove_owned_pid_file()
+                self.assertFalse(pid_file.exists())
