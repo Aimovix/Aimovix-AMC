@@ -27,13 +27,13 @@ enum class ProviderType(
     GEMINI(
         displayName = "Google Gemini",
         defaultBaseUrl = "https://generativelanguage.googleapis.com/v1beta",
-        defaultModel = "gemini-2.0-flash",
+        defaultModel = "gemini-2.5-flash",
         suggestedModels = listOf(
-            "gemini-2.0-flash",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
             "gemini-1.5-flash",
             "gemini-1.5-pro",
-            "gemini-2.0-flash-lite-preview-02-05",
-            "gemini-2.0-pro-exp-02-05"
+            "gemini-2.0-flash-lite-preview-02-05"
         )
     ),
     OPENAI(
@@ -51,12 +51,13 @@ enum class ProviderType(
     CLAUDE(
         displayName = "Anthropic Claude",
         defaultBaseUrl = "https://api.anthropic.com/v1",
-        defaultModel = "claude-3-7-sonnet-20250219",
+        defaultModel = "claude-3-5-sonnet-latest",
         suggestedModels = listOf(
-            "claude-3-7-sonnet-20250219",
+            "claude-3-5-sonnet-latest",
+            "claude-3-5-haiku-latest",
             "claude-3-5-sonnet-20241022",
             "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229"
+            "claude-opus-latest"
         )
     ),
     GROQ(
@@ -117,7 +118,8 @@ data class ToolCall(
     val arguments: Map<String, String> = emptyMap(),
     val rawJson: String = "",
     val riskLevel: String = "LOW",
-    val riskReason: String = ""
+    val riskReason: String = "",
+    val thoughtSignature: String? = null
 )
 
 @Serializable
@@ -144,6 +146,7 @@ data class ChatMessage(
     val role: MessageRole,
     val text: String,
     val toolCall: ToolCall? = null,
+    val toolCalls: List<ToolCall> = if (toolCall != null) listOf(toolCall) else emptyList(),
     val toolResult: ToolResult? = null,
     val streamingTerminalOutput: String = "",
     val timestamp: Long = System.currentTimeMillis(),

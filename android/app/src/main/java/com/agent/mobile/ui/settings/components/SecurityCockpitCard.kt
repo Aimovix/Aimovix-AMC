@@ -15,6 +15,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.agent.mobile.security.CommandSecurityFilter
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
 import com.agent.mobile.agent.AutonomousAgentEngine
 import com.agent.mobile.data.repository.ChatRepository
 import com.agent.mobile.data.storage.PreferenceManager
@@ -27,6 +30,7 @@ fun SecurityCockpitCard(
     preferenceManager: PreferenceManager,
     chatRepository: ChatRepository?
 ) {
+    val context = LocalContext.current
     var whitelist by remember { mutableStateOf(preferenceManager.loadWhitelist()) }
     var blacklist by remember { mutableStateOf(preferenceManager.loadBlacklist()) }
     var isStrictMode by remember { mutableStateOf(preferenceManager.loadStrictMode()) }
@@ -136,12 +140,17 @@ fun SecurityCockpitCard(
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = {
-                            if (newWhitelistPattern.isNotBlank() && !whitelist.contains(newWhitelistPattern.trim())) {
-                                val updated = whitelist + newWhitelistPattern.trim()
-                                whitelist = updated
-                                preferenceManager.saveWhitelist(updated)
-                                agentEngine.reloadSecurityRules()
-                                newWhitelistPattern = ""
+                            val pattern = newWhitelistPattern.trim()
+                            if (pattern.isNotBlank() && !whitelist.contains(pattern)) {
+                                if (CommandSecurityFilter.isValidRegex(pattern)) {
+                                    val updated = whitelist + pattern
+                                    whitelist = updated
+                                    preferenceManager.saveWhitelist(updated)
+                                    agentEngine.reloadSecurityRules()
+                                    newWhitelistPattern = ""
+                                } else {
+                                    Toast.makeText(context, "Invalid regex pattern syntax", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         },
                         shape = RoundedCornerShape(8.dp),
@@ -157,10 +166,18 @@ fun SecurityCockpitCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     whitelist.forEach { pattern ->
+                        val isValid = CommandSecurityFilter.isValidRegex(pattern)
                         InputChip(
                             selected = false,
                             onClick = {},
-                            label = { Text(pattern, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = TextWhite) },
+                            label = {
+                                Text(
+                                    if (isValid) pattern else "$pattern (inactive)",
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (isValid) TextWhite else YellowWarning
+                                )
+                            },
                             trailingIcon = {
                                 Icon(
                                     Icons.Default.Close,
@@ -178,7 +195,7 @@ fun SecurityCockpitCard(
                             },
                             shape = RoundedCornerShape(6.dp),
                             colors = InputChipDefaults.inputChipColors(containerColor = DarkSurface),
-                            border = InputChipDefaults.inputChipBorder(enabled = true, selected = false, borderColor = BorderSubtle)
+                            border = InputChipDefaults.inputChipBorder(enabled = true, selected = false, borderColor = if (isValid) BorderSubtle else YellowWarning)
                         )
                     }
                 }
@@ -212,12 +229,17 @@ fun SecurityCockpitCard(
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = {
-                            if (newBlacklistPattern.isNotBlank() && !blacklist.contains(newBlacklistPattern.trim())) {
-                                val updated = blacklist + newBlacklistPattern.trim()
-                                blacklist = updated
-                                preferenceManager.saveBlacklist(updated)
-                                agentEngine.reloadSecurityRules()
-                                newBlacklistPattern = ""
+                            val pattern = newBlacklistPattern.trim()
+                            if (pattern.isNotBlank() && !blacklist.contains(pattern)) {
+                                if (CommandSecurityFilter.isValidRegex(pattern)) {
+                                    val updated = blacklist + pattern
+                                    blacklist = updated
+                                    preferenceManager.saveBlacklist(updated)
+                                    agentEngine.reloadSecurityRules()
+                                    newBlacklistPattern = ""
+                                } else {
+                                    Toast.makeText(context, "Invalid regex pattern syntax", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         },
                         shape = RoundedCornerShape(8.dp),
@@ -233,10 +255,18 @@ fun SecurityCockpitCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     blacklist.forEach { pattern ->
+                        val isValid = CommandSecurityFilter.isValidRegex(pattern)
                         InputChip(
                             selected = false,
                             onClick = {},
-                            label = { Text(pattern, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = TextWhite) },
+                            label = {
+                                Text(
+                                    if (isValid) pattern else "$pattern (inactive)",
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (isValid) TextWhite else RedEmergency
+                                )
+                            },
                             trailingIcon = {
                                 Icon(
                                     Icons.Default.Close,
@@ -254,7 +284,7 @@ fun SecurityCockpitCard(
                             },
                             shape = RoundedCornerShape(6.dp),
                             colors = InputChipDefaults.inputChipColors(containerColor = DarkSurface),
-                            border = InputChipDefaults.inputChipBorder(enabled = true, selected = false, borderColor = BorderSubtle)
+                            border = InputChipDefaults.inputChipBorder(enabled = true, selected = false, borderColor = if (isValid) BorderSubtle else RedEmergency)
                         )
                     }
                 }

@@ -123,4 +123,10 @@ class AgentForegroundService : Service {
             manager.createNotificationChannel(channel)
         }
     }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        super.onTimeout(startId, fgsType)
+        Log.w(TAG, "Foreground service timed out (startId: $startId, fgsType: $fgsType). Stopping cleanly.")
+        stopSelf(startId)
+    }
 }

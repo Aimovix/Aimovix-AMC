@@ -201,6 +201,59 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(read_resp["type"], "file_content")
         self.assertEqual(read_resp["content"], "safe content")
 
+    async def test_ping_with_ping_id(self):
+        client = await self.connect()
+        await client.send(json.dumps({"action": "ping", "timestamp": 456, "ping_id": "test-ping-123"}))
+        resp = await self.receive(client)
+        self.assertEqual(resp["type"], "pong")
+        self.assertEqual(resp.get("ping_id"), "test-ping-123")
+        self.assertEqual(resp.get("timestamp"), 456)
+
+    async def test_file_transfer_with_request_id_and_regular_file_check(self):
+        client = await self.connect()
+        # write with request_id
+        await client.send(json.dumps({
+            "action": "write_file", "path": "docs/req_test.txt", "content": "with-id", "request_id": "req-1"
+        }))
+        resp = await self.receive(client)
+        self.assertEqual(resp["type"], "file_written")
+        self.assertEqual(resp.get("request_id"), "req-1")
+
+        # read with request_id
+        await client.send(json.dumps({
+            "action": "read_file", "path": "docs/req_test.txt", "request_id": "req-2"
+        }))
+        resp = await self.receive(client)
+        self.assertEqual(resp["type"], "file_content")
+        self.assertEqual(resp.get("request_id"), "req-2")
+        self.assertEqual(resp.get("content"), "with-id")
+
+        # read directory should fail with error that it's not a regular file
+        await client.send(json.dumps({
+            "action": "read_file", "path": "docs", "request_id": "req-3"
+        }))
+        resp = await self.receive(client)
+        self.assertEqual(resp["type"], "error")
+        self.assertEqual(resp.get("request_id"), "req-3")
+        self.assertIn("not a regular file", resp["error"])
+
+    async def test_cd_with_variable_expansion(self):
+        client = await self.connect()
+        with patch.dict(os.environ, {"MY_TEST_DIR": "test_var_dir"}):
+            dir_path = Path(TEST_HOME.name) / "test_var_dir"
+            dir_path.mkdir(exist_ok=True)
+            await self.execute(client, "cd $MY_TEST_DIR")
+            messages = await self.until(client, "completed")
+            self.assertEqual(messages[-1]["exit_code"], 0)
+            self.assertEqual(os.path.normpath(messages[-1]["cwd"]), os.path.normpath(str(dir_path)))
+
+    async def test_unclosed_quotes_command_does_not_crash_daemon(self):
+        client = await self.connect()
+        # Command with unclosed quote passed to shell
+        await self.execute(client, "echo \"unclosed quote")
+        messages = await self.until(client, "completed")
+        self.assertIn("completed", [m["type"] for m in messages])
+
     @unittest.skipIf(sys.platform == "win32", "Process /proc inspection is Linux-specific")
     async def test_disconnect_terminates_child(self):
         client = await self.connect()
@@ -242,7 +295,10 @@ class ServiceOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 server.close()
                 await server.wait_closed()
                 for sig in (bridge.signal.SIGTERM, bridge.signal.SIGINT):
-                    asyncio.get_running_loop().remove_signal_handler(sig)
+                    try:
+                        asyncio.get_running_loop().remove_signal_handler(sig)
+                    except (NotImplementedError, AttributeError):
+                        pass
 
     async def test_cleanup_only_removes_owned_pid(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -30,6 +30,9 @@ interface ChatSessionDao {
     @Query("UPDATE chat_sessions SET title = :title, updatedAt = :updatedAt WHERE id = :sessionId")
     suspend fun updateTitle(sessionId: String, title: String, updatedAt: Long = System.currentTimeMillis())
 
+    @Query("UPDATE chat_sessions SET updatedAt = :updatedAt WHERE id = :sessionId")
+    suspend fun touchSession(sessionId: String, updatedAt: Long = System.currentTimeMillis())
+
     @Query("UPDATE chat_sessions SET totalPromptTokens = totalPromptTokens + :promptTokens, totalCompletionTokens = totalCompletionTokens + :completionTokens, estimatedCostUsd = estimatedCostUsd + :cost, updatedAt = :updatedAt WHERE id = :sessionId")
     suspend fun addMetrics(sessionId: String, promptTokens: Int, completionTokens: Int, cost: Double, updatedAt: Long = System.currentTimeMillis())
 }

@@ -29,20 +29,57 @@ import com.agent.mobile.ui.setup.SetupWizardScreen
 import com.agent.mobile.ui.theme.*
 
 
+class MainViewModel : androidx.lifecycle.ViewModel() {
+    lateinit var bridgeClient: TermuxBridgeClient
+    lateinit var agentEngine: AutonomousAgentEngine
+    lateinit var preferenceManager: PreferenceManager
+    lateinit var database: AppDatabase
+    lateinit var chatRepository: ChatRepository
+    var isInitialized = false
+        private set
+
+    fun init(context: android.content.Context) {
+        if (isInitialized) return
+        preferenceManager = PreferenceManager(context.applicationContext)
+        database = AppDatabase.getInstance(context.applicationContext)
+        chatRepository = ChatRepository(database)
+        val savedToken = preferenceManager.loadAuthToken()
+        bridgeClient = TermuxBridgeClient(token = savedToken)
+        agentEngine = AutonomousAgentEngine(
+            bridgeClient = bridgeClient,
+            preferenceManager = preferenceManager,
+            chatRepository = chatRepository
+        )
+        bridgeClient.connect(savedToken)
+        isInitialized = true
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        if (::bridgeClient.isInitialized) {
+            bridgeClient.disconnect()
+        }
+    }
+}
+
 class MainActivity : ComponentActivity() {
 
-    private lateinit var bridgeClient: TermuxBridgeClient
-    private lateinit var agentEngine: AutonomousAgentEngine
-    private lateinit var preferenceManager: PreferenceManager
-    private lateinit var database: AppDatabase
-    private lateinit var chatRepository: ChatRepository
+    private val viewModel: MainViewModel by lazy {
+        androidx.lifecycle.ViewModelProvider(this)[MainViewModel::class.java]
+    }
+
+    private val bridgeClient: TermuxBridgeClient get() = viewModel.bridgeClient
+    private val agentEngine: AutonomousAgentEngine get() = viewModel.agentEngine
+    private val preferenceManager: PreferenceManager get() = viewModel.preferenceManager
+    private val database: AppDatabase get() = viewModel.database
+    private val chatRepository: ChatRepository get() = viewModel.chatRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Read preferences & database
+        // Read preferences & database via ViewModel
         try {
-            preferenceManager = PreferenceManager(this)
+            viewModel.init(this)
         } catch (error: IllegalStateException) {
             setContent {
                 AutonomousAgentTheme {
@@ -57,20 +94,15 @@ class MainActivity : ComponentActivity() {
             }
             return
         }
-        database = com.agent.mobile.data.storage.db.AppDatabase.getInstance(this)
-        chatRepository = com.agent.mobile.data.repository.ChatRepository(database)
 
         val savedToken = preferenceManager.loadAuthToken()
 
-        bridgeClient = TermuxBridgeClient(token = savedToken)
-        agentEngine = AutonomousAgentEngine(
-            bridgeClient = bridgeClient,
-            preferenceManager = preferenceManager,
-            chatRepository = chatRepository
-        )
-
-        // Auto-connect to local Termux bridge
-        bridgeClient.connect(savedToken)
+        // Request notification permission on Android 13+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+        }
 
         // Start Foreground Service
         AgentForegroundService.start(this)
@@ -222,18 +254,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (::bridgeClient.isInitialized) bridgeClient.reconnectIfDisconnected(force = true)
+        if (viewModel.isInitialized) bridgeClient.reconnectIfDisconnected(force = true)
     }
 
     override fun onResume() {
         super.onResume()
         // Automatically reconnect the moment the user switches back from Termux to AMC
-        if (::bridgeClient.isInitialized) bridgeClient.reconnectIfDisconnected(force = true)
+        if (viewModel.isInitialized) bridgeClient.reconnectIfDisconnected(force = true)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (::bridgeClient.isInitialized) bridgeClient.disconnect()
     }
 }
 

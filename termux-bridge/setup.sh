@@ -13,9 +13,9 @@ REPOSITORY_BASE="https://raw.githubusercontent.com/Aimovix/Aimovix-AMC/${AMC_REF
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
 echo "AMC - AI Mobile Center setup (ref: $AMC_REF)"
-echo "[1/5] Installing Python, Git, curl, jq, and Termux:API..."
+echo "[1/5] Installing Python, Git, curl, jq, Termux:API, and cronie..."
 pkg update -y < /dev/null
-pkg install -y python git curl jq termux-api < /dev/null
+pkg install -y python git curl jq termux-api cronie < /dev/null
 
 echo "[2/5] Installing the bridge and CLI..."
 mkdir -p "$TARGET_DIR" "$PREFIX/bin"

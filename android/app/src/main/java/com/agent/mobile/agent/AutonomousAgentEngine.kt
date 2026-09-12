@@ -21,16 +21,19 @@ class AutonomousAgentEngine(
     val bridgeClient: TermuxBridgeClient,
     val llmClient: LlmClient = LlmClient(),
     val preferenceManager: PreferenceManager? = null,
-    val chatRepository: ChatRepository? = null
+    val chatRepository: ChatRepository? = null,
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 ) {
     companion object {
         private const val TAG = "AgentEngine"
         private const val MAX_LOOP_ITERATIONS = 15
     }
 
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeJob: Job? = null
     private var sessionCollectJob: Job? = null
+
+    private val _isStopping = MutableStateFlow(false)
+    val isStopping: StateFlow<Boolean> = _isStopping.asStateFlow()
 
     private val _currentSession = MutableStateFlow<ChatSession?>(null)
     val currentSession: StateFlow<ChatSession?> = _currentSession.asStateFlow()
@@ -194,7 +197,10 @@ class AutonomousAgentEngine(
     }
 
     fun startTask(userPrompt: String, imageBase64: String? = null, imageMimeType: String? = null) {
-        if (_isBusy.value || userPrompt.isBlank()) return
+        if (_isBusy.value || _isStopping.value || userPrompt.isBlank()) return
+
+        val targetSession = _currentSession.value
+        val executionSessionId = targetSession?.id ?: UUID.randomUUID().toString()
 
         val userMessage = ChatMessage(
             role = MessageRole.USER,
@@ -209,24 +215,21 @@ class AutonomousAgentEngine(
         activeJob = scope.launch {
             try {
                 // Auto-generate title on first message in session
-                val session = _currentSession.value
-                if (session != null && (session.title == "New chat" || session.title.isBlank())) {
+                if (targetSession != null && (targetSession.title == "New chat" || targetSession.title.isBlank())) {
                     val generatedTitle = chatRepository?.generateConciseTitle(userPrompt) ?: "Chat"
-                    _currentSession.value = session.copy(title = generatedTitle)
-                    chatRepository?.updateSessionTitle(session.id, generatedTitle)
+                    _currentSession.value = targetSession.copy(title = generatedTitle)
+                    chatRepository?.updateSessionTitle(executionSessionId, generatedTitle)
                 }
 
                 // Persist user message to DB
-                session?.let { s ->
-                    chatRepository?.saveMessage(s.id, userMessage)
-                }
+                chatRepository?.saveMessage(executionSessionId, userMessage)
 
-                runAgentLoop()
+                runAgentLoop(executionSessionId)
             } catch (e: CancellationException) {
-                appendSystemMessage("🛑 Execution canceled by the user.")
+                appendSystemMessage("🛑 Execution canceled by the user.", executionSessionId)
             } catch (e: Exception) {
                 Log.e(TAG, "Agent loop error: ${e.message}", e)
-                appendSystemMessage("⚠️ Agent loop error: ${e.localizedMessage}")
+                appendSystemMessage("⚠️ Agent loop error: ${e.localizedMessage}", executionSessionId)
             } finally {
                 _isBusy.value = false
                 _pendingApproval.value = null
@@ -234,7 +237,26 @@ class AutonomousAgentEngine(
         }
     }
 
-    private suspend fun runAgentLoop() {
+    internal fun prepareContextMessages(allMessages: List<ChatMessage>, maxMessages: Int = 14): List<ChatMessage> {
+        val nonSystem = allMessages.filter { it.role != MessageRole.SYSTEM }
+        if (nonSystem.size <= maxMessages) return nonSystem
+
+        val initialUserMsg = nonSystem.firstOrNull { it.role == MessageRole.USER }
+        val recentWindow = nonSystem.takeLast(maxMessages - 1).toMutableList()
+
+        // Ensure we do not start the window with an orphaned TOOL result
+        while (recentWindow.isNotEmpty() && recentWindow.first().role == MessageRole.TOOL) {
+            recentWindow.removeAt(0)
+        }
+
+        return if (initialUserMsg != null && !recentWindow.contains(initialUserMsg)) {
+            listOf(initialUserMsg) + recentWindow
+        } else {
+            recentWindow
+        }
+    }
+
+    private suspend fun runAgentLoop(executionSessionId: String) {
         var iterations = 0
         val commandHistory = mutableListOf<String>()
         var consecutiveErrors = 0
@@ -256,7 +278,8 @@ class AutonomousAgentEngine(
             _messages.value = _messages.value + assistantMsg
 
             var streamCompleted = false
-            var actionDetected: LlmResponse.Action? = null
+            var detectedTools: List<ToolCall> = emptyList()
+            var detectedThought: String = ""
             var errorEvent: LlmClient.LlmStreamEvent.Error? = null
             val textBuilder = StringBuilder()
 
@@ -265,10 +288,11 @@ class AutonomousAgentEngine(
             while (streamAttempt < 2 && !streamCompleted && currentCoroutineContext().isActive) {
                 streamAttempt++
                 try {
+                    val contextMessages = prepareContextMessages(_messages.value.filter { it.id != assistantMsgId })
                     llmClient.streamRequest(
                         config = activeConfig,
                         systemPrompt = AgentPrompts.SYSTEM_PROMPT,
-                        messages = _messages.value.filter { it.id != assistantMsgId }
+                        messages = contextMessages
                     ).collect { event ->
                         when (event) {
                             is LlmClient.LlmStreamEvent.Token -> {
@@ -276,16 +300,15 @@ class AutonomousAgentEngine(
                                 updateMessageText(assistantMsgId, textBuilder.toString(), MessageStatus.STREAMING)
                             }
                             is LlmClient.LlmStreamEvent.ToolCallDetected -> {
-                                actionDetected = LlmResponse.Action(
-                                    thought = event.thought.ifEmpty { textBuilder.toString() },
-                                    toolCall = event.toolCall
-                                )
+                                detectedTools = event.toolCalls.ifEmpty { listOf(event.toolCall) }
+                                detectedThought = event.thought.ifEmpty { textBuilder.toString() }
+                                recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd, executionSessionId)
                                 streamCompleted = true
                             }
                             is LlmClient.LlmStreamEvent.Completed -> {
                                 val full = event.fullText.ifEmpty { textBuilder.toString() }
                                 updateMessageText(assistantMsgId, full, MessageStatus.COMPLETED)
-                                recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd)
+                                recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd, executionSessionId)
                                 streamCompleted = true
                             }
                             is LlmClient.LlmStreamEvent.Error -> {
@@ -293,14 +316,16 @@ class AutonomousAgentEngine(
                             }
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     errorEvent = LlmClient.LlmStreamEvent.Error(e.localizedMessage ?: "Network error", 0, true)
                 }
 
-                // If error occurred and fallback provider is configured, failover seamlessly!
+                // If retryable error occurred and fallback provider is configured, failover seamlessly!
                 if (!streamCompleted && errorEvent != null) {
                     val fallback = primaryConfig.fallbackProvider
-                    if (fallback != null && !isUsingFallback) {
+                    if (fallback != null && !isUsingFallback && errorEvent!!.isRetryable) {
                         isUsingFallback = true
                         val fallbackModel = primaryConfig.fallbackModelName.ifEmpty { fallback.defaultModel }
                         val fallbackUrl = primaryConfig.fallbackBaseUrl.ifEmpty { fallback.defaultBaseUrl }
@@ -310,7 +335,7 @@ class AutonomousAgentEngine(
                             apiKey = primaryConfig.fallbackApiKey,
                             baseUrl = fallbackUrl
                         )
-                        appendSystemMessage("⚠️ Primary provider ${primaryConfig.provider.displayName} failed (${errorEvent.message}). Switching to fallback: ${fallback.displayName} ($fallbackModel)...")
+                        appendSystemMessage("⚠️ Primary provider ${primaryConfig.provider.displayName} failed (${errorEvent!!.message}). Switching to fallback: ${fallback.displayName} ($fallbackModel)...", executionSessionId)
                         textBuilder.clear()
                         errorEvent = null
                         continue
@@ -321,203 +346,239 @@ class AutonomousAgentEngine(
 
             if (!streamCompleted && errorEvent != null) {
                 updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
-                appendSystemMessage("⚠️ AI API error: ${errorEvent.message}")
+                val failedAssistantMsg = _messages.value.firstOrNull { it.id == assistantMsgId }
+                if (failedAssistantMsg != null) {
+                    chatRepository?.saveMessage(executionSessionId, failedAssistantMsg)
+                }
+                appendSystemMessage("⚠️ AI API error: ${errorEvent!!.message}", executionSessionId)
                 break
             }
 
-            // Persist the completed assistant text message
-            val finalAssistantMsg = _messages.value.firstOrNull { it.id == assistantMsgId }
-            if (finalAssistantMsg != null) {
-                _currentSession.value?.let { s -> chatRepository?.saveMessage(s.id, finalAssistantMsg) }
-            }
-
-            // If a tool call was detected, execute and process tool observations
-            if (actionDetected != null) {
-                val action = actionDetected!!
-                val cmd = action.toolCall.arguments["command"]?.trim() ?: ""
-
-                // 1. RUNAWAY & LOOP DETECTION GUARDRAILS
-                if (isRunawayOrLoopDetected(cmd, commandHistory, consecutiveErrors)) {
-                    val runawayMsg = "🛑 Loop protection: repeated execution or persistent failures detected for `$cmd` . Execution stopped."
-                    appendSystemMessage(runawayMsg)
-                    updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
-                    break
+            // If tool calls were detected, execute and process tool observations
+            if (detectedTools.isNotEmpty()) {
+                if (detectedThought.isNotEmpty()) {
+                    updateMessageText(assistantMsgId, detectedThought, MessageStatus.EXECUTING_TOOL)
                 }
-                commandHistory.add(cmd)
+                updateMessageToolCalls(assistantMsgId, detectedTools, MessageStatus.EXECUTING_TOOL)
+                val preMsg = _messages.value.firstOrNull { it.id == assistantMsgId }
+                if (preMsg != null) {
+                    chatRepository?.saveMessage(executionSessionId, preMsg)
+                }
 
-                val assessment = CommandSecurityFilter.analyze(cmd)
-                val securedToolCall = action.toolCall.copy(
-                    riskLevel = assessment.level.name,
-                    riskReason = assessment.reason
-                )
+                for (toolCall in detectedTools) {
+                    if (!currentCoroutineContext().isActive) break
+                    val cmd = toolCall.arguments["command"]?.trim() ?: ""
 
-                // 2. Blacklist Check
-                if (assessment.isBlocked) {
-                    val blockedMsg = "🛡️ Security block: command `$cmd` was blocked.\nReason: ${assessment.reason}"
-                    updateMessageText(assistantMsgId, "${action.thought}\n\n$blockedMsg", MessageStatus.ERROR)
+                    // 1. RUNAWAY & LOOP DETECTION GUARDRAILS
+                    if (isRunawayOrLoopDetected(cmd, commandHistory, consecutiveErrors)) {
+                        val runawayMsg = "🛑 Loop protection: repeated execution or persistent failures detected for `$cmd` . Execution stopped."
+                        appendSystemMessage(runawayMsg, executionSessionId)
+                        updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
+                        val stoppedMsg = _messages.value.firstOrNull { it.id == assistantMsgId }
+                        if (stoppedMsg != null) {
+                            chatRepository?.saveMessage(executionSessionId, stoppedMsg)
+                        }
+                        break
+                    }
+                    commandHistory.add(cmd)
 
-                    val toolRejectedMsg = ChatMessage(
-                        role = MessageRole.TOOL,
-                        text = "Execution blocked: ${assessment.reason}",
-                        toolResult = ToolResult(
+                    val assessment = CommandSecurityFilter.analyze(cmd)
+                    val securedToolCall = toolCall.copy(
+                        riskLevel = assessment.level.name,
+                        riskReason = assessment.reason
+                    )
+
+                    // 2. Blacklist Check
+                    if (assessment.isBlocked) {
+                        val blockedMsg = "🛡️ Security block: command `$cmd` was blocked.\nReason: ${assessment.reason}"
+                        appendSystemMessage(blockedMsg, executionSessionId)
+
+                        val blockedResult = ToolResult(
                             toolCallId = securedToolCall.id,
                             command = cmd,
                             stderr = "Security block active: ${assessment.reason}",
-                            isError = true
+                            isError = true,
+                            exitCode = -1
                         )
-                    )
-                    _messages.value = _messages.value + toolRejectedMsg
-                    _currentSession.value?.let { s -> chatRepository?.saveMessage(s.id, toolRejectedMsg) }
+                        updateMessageToolResult(assistantMsgId, blockedResult, MessageStatus.ERROR)
 
-                    // Record Audit Entity
-                    chatRepository?.recordAudit(
-                        CommandAuditEntity(
-                            sessionId = _currentSession.value?.id,
-                            command = cmd,
-                            riskLevel = RiskLevel.BLOCKED.name,
-                            riskReason = assessment.reason,
-                            exitCode = -1,
-                            stderr = "Security block active",
-                            wasApproved = false
-                        )
-                    )
-                    consecutiveErrors++
-                    continue
-                }
-
-                // 3. Approval Check (Step-by-step or High-Risk)
-                val mustApprove = CommandSecurityFilter.shouldRequireApproval(assessment, _executionMode.value)
-                updateMessageToolCall(assistantMsgId, securedToolCall, if (mustApprove) MessageStatus.WAITING_FOR_APPROVAL else MessageStatus.EXECUTING_TOOL)
-
-                if (mustApprove) {
-                    _pendingApproval.value = Pair(assistantMsgId, securedToolCall)
-                    val deferred = CompletableDeferred<Boolean>()
-                    approvalContinuation = deferred
-
-                    val approved = deferred.await()
-                    _pendingApproval.value = null
-                    approvalContinuation = null
-
-                    if (!approved) {
-                        updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
-                        val rejectedMsg = ChatMessage(
+                        val toolRejectedMsg = ChatMessage(
                             role = MessageRole.TOOL,
-                            text = "Command rejected by the user.",
-                            toolResult = ToolResult(
-                                toolCallId = securedToolCall.id,
-                                command = cmd,
-                                stderr = "Execution rejected by the user.",
-                                isError = true
-                            )
+                            text = "Execution blocked: ${assessment.reason}",
+                            toolResult = blockedResult,
+                            status = MessageStatus.ERROR
                         )
-                        _messages.value = _messages.value + rejectedMsg
-                        _currentSession.value?.let { s -> chatRepository?.saveMessage(s.id, rejectedMsg) }
+                        _messages.value = _messages.value + toolRejectedMsg
+                        chatRepository?.saveMessage(executionSessionId, toolRejectedMsg)
 
+                        // Record Audit Entity
                         chatRepository?.recordAudit(
                             CommandAuditEntity(
-                                sessionId = _currentSession.value?.id,
+                                sessionId = executionSessionId,
                                 command = cmd,
-                                riskLevel = assessment.level.name,
-                                riskReason = "Rejected by the user",
+                                riskLevel = RiskLevel.BLOCKED.name,
+                                riskReason = assessment.reason,
                                 exitCode = -1,
-                                stderr = "Rejected",
+                                stderr = "Security block active",
                                 wasApproved = false
                             )
                         )
+                        consecutiveErrors++
                         continue
                     }
-                }
 
-                // 4. Command Execution via Termux Bridge
-                updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
-                val startTime = System.currentTimeMillis()
+                    // 3. Approval Check (Step-by-step or High-Risk)
+                    val mustApprove = CommandSecurityFilter.shouldRequireApproval(assessment, _executionMode.value)
+                    if (mustApprove) {
+                        updateMessageStatus(assistantMsgId, MessageStatus.WAITING_FOR_APPROVAL)
+                        _pendingApproval.value = Pair(assistantMsgId, securedToolCall)
+                        val deferred = CompletableDeferred<Boolean>()
+                        approvalContinuation = deferred
 
-                val result = bridgeClient.executeCommand(cmd) { chunk ->
-                    updateStreamingOutput(assistantMsgId, chunk)
-                }
+                        val approved = deferred.await()
+                        _pendingApproval.value = null
+                        approvalContinuation = null
 
-                val duration = System.currentTimeMillis() - startTime
-                updateMessageStatus(assistantMsgId, MessageStatus.COMPLETED)
+                        if (!approved) {
+                            val rejectedResult = ToolResult(
+                                toolCallId = securedToolCall.id,
+                                command = cmd,
+                                stderr = "Execution rejected by the user.",
+                                isError = true,
+                                exitCode = -1
+                            )
+                            updateMessageToolResult(assistantMsgId, rejectedResult, MessageStatus.ERROR)
 
-                if (result.isError) consecutiveErrors++ else consecutiveErrors = 0
+                            val rejectedMsg = ChatMessage(
+                                role = MessageRole.TOOL,
+                                text = "Command rejected by the user.",
+                                toolResult = rejectedResult,
+                                status = MessageStatus.ERROR
+                            )
+                            _messages.value = _messages.value + rejectedMsg
+                            chatRepository?.saveMessage(executionSessionId, rejectedMsg)
 
-                // 5. Record Audit Entity in Room
-                chatRepository?.recordAudit(
-                    CommandAuditEntity(
-                        sessionId = _currentSession.value?.id,
-                        command = cmd,
-                        riskLevel = assessment.level.name,
-                        riskReason = assessment.reason,
-                        executionDurationMs = duration,
-                        exitCode = result.exitCode,
-                        stdout = result.stdout.take(500),
-                        stderr = result.stderr.take(500),
-                        timestamp = System.currentTimeMillis(),
-                        wasApproved = true
-                    )
-                )
-
-                // 6. Termux-Vision-Loop Detection
-                var visionObservation: ChatMessage? = null
-                if (cmd.contains("termux-camera-photo") && result.exitCode == 0) {
-                    val photoPath = extractPhotoPathFromCommand(cmd)
-                    if (photoPath != null) {
-                        try {
-                            val base64Img = bridgeClient.readFileBase64(photoPath)
-                            if (base64Img.isNotEmpty()) {
-                                visionObservation = ChatMessage(
-                                    role = MessageRole.USER,
-                                    text = "📸 Photo captured in Termux (`$photoPath`):",
-                                    imageBase64 = base64Img,
-                                    imageMimeType = "image/jpeg",
-                                    status = MessageStatus.COMPLETED
+                            chatRepository?.recordAudit(
+                                CommandAuditEntity(
+                                    sessionId = executionSessionId,
+                                    command = cmd,
+                                    riskLevel = assessment.level.name,
+                                    riskReason = "Rejected by the user",
+                                    exitCode = -1,
+                                    stderr = "Rejected",
+                                    wasApproved = false
                                 )
-                                appendArtifact(
-                                    ArtifactItem(
-                                        filename = photoPath.substringAfterLast('/'),
-                                        path = photoPath,
-                                        type = ArtifactType.IMAGE,
-                                        base64Data = base64Img
-                                    )
-                                )
-                            }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Termux vision: could not read photo: ${e.message}")
+                            )
+                            continue
                         }
+                    }
+
+                    // 4. Command Execution via Termux Bridge
+                    updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
+                    val startTime = System.currentTimeMillis()
+
+                    val result = bridgeClient.executeCommand(cmd) { chunk ->
+                        updateStreamingOutput(assistantMsgId, chunk)
+                    }
+
+                    val duration = System.currentTimeMillis() - startTime
+
+                    if (result.isError || result.exitCode != 0) consecutiveErrors++ else consecutiveErrors = 0
+
+                    // 5. Record Audit Entity in Room
+                    chatRepository?.recordAudit(
+                        CommandAuditEntity(
+                            sessionId = executionSessionId,
+                            command = cmd,
+                            riskLevel = assessment.level.name,
+                            riskReason = assessment.reason,
+                            executionDurationMs = duration,
+                            exitCode = result.exitCode,
+                            stdout = result.stdout.take(500),
+                            stderr = result.stderr.take(500),
+                            timestamp = System.currentTimeMillis(),
+                            wasApproved = true
+                        )
+                    )
+
+                    // 6. Termux-Vision-Loop Detection
+                    var visionObservation: ChatMessage? = null
+                    if (cmd.contains("termux-camera-photo") && result.exitCode == 0) {
+                        val photoPath = extractPhotoPathFromCommand(cmd)
+                        if (photoPath != null) {
+                            try {
+                                val base64Img = bridgeClient.readFileBase64(photoPath)
+                                if (base64Img.isNotEmpty()) {
+                                    visionObservation = ChatMessage(
+                                        role = MessageRole.USER,
+                                        text = "📸 Photo captured in Termux (`$photoPath`):",
+                                        imageBase64 = base64Img,
+                                        imageMimeType = "image/jpeg",
+                                        status = MessageStatus.COMPLETED
+                                    )
+                                    appendArtifact(
+                                        ArtifactItem(
+                                            filename = photoPath.substringAfterLast('/'),
+                                            path = photoPath,
+                                            type = ArtifactType.IMAGE,
+                                            base64Data = base64Img
+                                        )
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Termux vision: could not read photo: ${e.message}")
+                            }
+                        }
+                    }
+
+                    // 7. Generic Artifact Scanner
+                    detectAndRegisterArtifacts(cmd, result)
+
+                    // 8. Add Tool Observation to Context & Bind to Assistant Card
+                    val rawOutput = if (result.stdout.isNotEmpty()) result.stdout else result.stderr
+                    val compactedOutput = compactToolOutput(rawOutput)
+                    val guardedResult = result.copy(
+                        toolCallId = securedToolCall.id,
+                        command = cmd,
+                        stdout = if (result.stdout.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(result.stdout)}\n[UNTRUSTED_OUTPUT_END]" else "",
+                        stderr = if (result.stderr.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(result.stderr)}\n[UNTRUSTED_OUTPUT_END]" else ""
+                    )
+
+                    val execStatus = if (result.isError || result.exitCode != 0) MessageStatus.ERROR else MessageStatus.COMPLETED
+                    updateMessageToolResult(assistantMsgId, guardedResult, execStatus)
+
+                    val toolMsg = ChatMessage(
+                        role = MessageRole.TOOL,
+                        text = "[UNTRUSTED_OUTPUT_START]\n$compactedOutput\n[UNTRUSTED_OUTPUT_END]",
+                        toolResult = guardedResult,
+                        status = execStatus
+                    )
+                    _messages.value = _messages.value + toolMsg
+                    chatRepository?.saveMessage(executionSessionId, toolMsg)
+
+                    if (visionObservation != null) {
+                        _messages.value = _messages.value + visionObservation
+                        chatRepository?.saveMessage(executionSessionId, visionObservation)
                     }
                 }
 
-                // 7. Generic Artifact Scanner
-                detectAndRegisterArtifacts(cmd, result)
-
-                // 8. Add Tool Observation to Context
-                val rawOutput = if (result.stdout.isNotEmpty()) result.stdout else result.stderr
-                val compactedOutput = compactToolOutput(rawOutput)
-                val guardedResult = result.copy(
-                    stdout = if (result.stdout.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(result.stdout)}\n[UNTRUSTED_OUTPUT_END]" else "",
-                    stderr = if (result.stderr.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(result.stderr)}\n[UNTRUSTED_OUTPUT_END]" else ""
-                )
-                val toolMsg = ChatMessage(
-                    role = MessageRole.TOOL,
-                    text = "[UNTRUSTED_OUTPUT_START]\n$compactedOutput\n[UNTRUSTED_OUTPUT_END]",
-                    toolResult = guardedResult,
-                    status = MessageStatus.COMPLETED
-                )
-                _messages.value = _messages.value + toolMsg
-                _currentSession.value?.let { s -> chatRepository?.saveMessage(s.id, toolMsg) }
-
-                if (visionObservation != null) {
-                    _messages.value = _messages.value + visionObservation
-                    _currentSession.value?.let { s -> chatRepository?.saveMessage(s.id, visionObservation) }
+                val completedAssistant = _messages.value.firstOrNull { it.id == assistantMsgId }
+                if (completedAssistant != null) {
+                    chatRepository?.saveMessage(executionSessionId, completedAssistant)
                 }
             } else {
+                // Persist the completed assistant text message when no tool call
+                val finalAssistantMsg = _messages.value.firstOrNull { it.id == assistantMsgId }
+                if (finalAssistantMsg != null) {
+                    chatRepository?.saveMessage(executionSessionId, finalAssistantMsg)
+                }
                 // Normal message completion reached, end loop
                 break
             }
         }
 
         if (iterations >= MAX_LOOP_ITERATIONS) {
-            appendSystemMessage("ℹ️ Step limit of $MAX_LOOP_ITERATIONS reached. Execution ended.")
+            appendSystemMessage("ℹ️ Step limit of $MAX_LOOP_ITERATIONS reached. Execution ended.", executionSessionId)
         }
     }
 
@@ -566,18 +627,35 @@ class AutonomousAgentEngine(
     }
 
     internal fun extractPhotoPathFromCommand(cmd: String): String? {
-        val tokens = cmd.split("\\s+".toRegex())
+        val regex = Regex("""termux-camera-photo(?:\s+-[a-zA-Z0-9]+(?:\s+\S+)?)*\s+(?:["']([^"']+)["']|(\S+))""")
+        val match = regex.find(cmd)
+        if (match != null) {
+            return match.groups[1]?.value ?: match.groups[2]?.value
+        }
+
+        val tokens = mutableListOf<String>()
+        val tokenMatcher = java.util.regex.Pattern.compile(""""([^"]*)"|'([^']*)'|(\S+)""").matcher(cmd)
+        while (tokenMatcher.find()) {
+            tokens.add(tokenMatcher.group(1) ?: tokenMatcher.group(2) ?: tokenMatcher.group(3))
+        }
         val photoIndex = tokens.indexOfFirst { it.contains("termux-camera-photo") }
         if (photoIndex == -1) return null
 
-        // Find the last argument or token after flags
-        for (i in tokens.size - 1 downTo photoIndex + 1) {
+        var i = photoIndex + 1
+        var candidate: String? = null
+        while (i < tokens.size) {
             val t = tokens[i]
-            if (!t.startsWith("-") && t.isNotEmpty()) {
-                return t
+            if (t.startsWith("-")) {
+                if (t in listOf("-c", "--camera") && i + 1 < tokens.size) {
+                    i += 2
+                    continue
+                }
+            } else {
+                candidate = t
             }
+            i++
         }
-        return "photo.jpg"
+        return candidate ?: "photo.jpg"
     }
 
     private fun detectAndRegisterArtifacts(command: String, result: ToolResult) {
@@ -600,28 +678,55 @@ class AutonomousAgentEngine(
                         filename = clean.substringAfterLast('/'),
                         path = clean,
                         type = type,
-                        content = if (result.exitCode == 0 && result.stdout.isNotEmpty() && type != ArtifactType.IMAGE) result.stdout.take(4000) else null
+                        content = null
                     )
                 )
             }
         }
     }
 
+    suspend fun loadArtifactContent(artifact: ArtifactItem): String = withContext(Dispatchers.IO) {
+        if (artifact.content != null && artifact.type != ArtifactType.IMAGE) return@withContext artifact.content
+        if (artifact.base64Data != null && artifact.type == ArtifactType.IMAGE) return@withContext artifact.base64Data
+        try {
+            if (artifact.type == ArtifactType.IMAGE) {
+                val base64 = bridgeClient.readFileBase64(artifact.path)
+                val updated = artifact.copy(base64Data = base64)
+                _artifacts.value = _artifacts.value.map { if (it.path == artifact.path) updated else it }
+                base64
+            } else {
+                val text = bridgeClient.readFile(artifact.path)
+                val updated = artifact.copy(content = text)
+                _artifacts.value = _artifacts.value.map { if (it.path == artifact.path) updated else it }
+                text
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load artifact content: ${e.message}")
+            artifact.content ?: artifact.base64Data ?: ""
+        }
+    }
+
     private fun appendArtifact(item: ArtifactItem) {
-        if (_artifacts.value.none { it.path == item.path }) {
+        val existingIndex = _artifacts.value.indexOfFirst { it.path == item.path }
+        if (existingIndex >= 0) {
+            _artifacts.value = _artifacts.value.mapIndexed { idx, existing ->
+                if (idx == existingIndex) item else existing
+            }
+        } else {
             _artifacts.value = _artifacts.value + item
         }
     }
 
-    private fun recordMetrics(promptTokens: Int, completionTokens: Int, costUsd: Double) {
+    private fun recordMetrics(promptTokens: Int, completionTokens: Int, costUsd: Double, sessionId: String? = null) {
         _metrics.value = _metrics.value.copy(
             promptTokens = _metrics.value.promptTokens + promptTokens,
             completionTokens = _metrics.value.completionTokens + completionTokens,
             estimatedCostUsd = _metrics.value.estimatedCostUsd + costUsd
         )
-        _currentSession.value?.let { s ->
+        val targetId = sessionId ?: _currentSession.value?.id
+        if (targetId != null) {
             scope.launch {
-                chatRepository?.addMetrics(s.id, promptTokens, completionTokens, costUsd)
+                chatRepository?.addMetrics(targetId, promptTokens, completionTokens, costUsd)
             }
         }
     }
@@ -635,12 +740,29 @@ class AutonomousAgentEngine(
     }
 
     fun emergencyStop() {
-        activeJob?.cancel()
+        _isStopping.value = true
         approvalContinuation?.cancel()
         bridgeClient.interruptCurrent()
-        _isBusy.value = false
         _pendingApproval.value = null
-        appendSystemMessage("🛑 Emergency stop requested. Waiting for the bridge to stop execution.")
+        appendSystemMessage("🛑 Emergency stop requested. Waiting for the bridge to stop execution.", _currentSession.value?.id)
+        val jobToCancel = activeJob
+        activeJob = null
+        scope.launch {
+            try {
+                jobToCancel?.cancelAndJoin()
+            } finally {
+                _isBusy.value = false
+                _isStopping.value = false
+            }
+        }
+    }
+
+    private fun updateMessageToolCalls(messageId: String, toolCalls: List<ToolCall>, status: MessageStatus) {
+        _messages.value = _messages.value.map { msg ->
+            if (msg.id == messageId) {
+                msg.copy(toolCalls = toolCalls, toolCall = toolCalls.firstOrNull(), status = status)
+            } else msg
+        }
     }
 
     private fun updateMessageText(messageId: String, text: String, status: MessageStatus) {
@@ -659,10 +781,19 @@ class AutonomousAgentEngine(
         }
     }
 
+    private fun updateMessageToolResult(messageId: String, toolResult: ToolResult, status: MessageStatus) {
+        _messages.value = _messages.value.map { msg ->
+            if (msg.id == messageId) {
+                msg.copy(toolResult = toolResult, status = status)
+            } else msg
+        }
+    }
+
     private fun updateStreamingOutput(messageId: String, newChunk: String) {
         _messages.value = _messages.value.map { msg ->
             if (msg.id == messageId) {
-                msg.copy(streamingTerminalOutput = msg.streamingTerminalOutput + newChunk)
+                val updatedOutput = (msg.streamingTerminalOutput + newChunk).takeLast(50_000)
+                msg.copy(streamingTerminalOutput = updatedOutput)
             } else msg
         }
     }
@@ -675,15 +806,16 @@ class AutonomousAgentEngine(
         }
     }
 
-    private fun appendSystemMessage(text: String) {
+    private fun appendSystemMessage(text: String, sessionId: String? = null) {
         val sysMsg = ChatMessage(
             role = MessageRole.SYSTEM,
             text = text,
             status = MessageStatus.COMPLETED
         )
         _messages.value = _messages.value + sysMsg
-        _currentSession.value?.let { s ->
-            scope.launch { chatRepository?.saveMessage(s.id, sysMsg) }
+        val targetId = sessionId ?: _currentSession.value?.id
+        if (targetId != null) {
+            scope.launch { chatRepository?.saveMessage(targetId, sysMsg) }
         }
     }
 }

@@ -52,10 +52,25 @@ case $CHOICE in
 esac
 
 MODEL_PATH="$MODELS_DIR/$MODEL_NAME"
+PART_PATH="${MODEL_PATH}.part"
 
 if [ ! -f "$MODEL_PATH" ]; then
     echo "⬇️ Downloading $MODEL_NAME..."
-    curl -L "$MODEL_URL" -o "$MODEL_PATH"
+    rm -f "$PART_PATH"
+    if curl --fail --show-error -L "$MODEL_URL" -o "$PART_PATH"; then
+        if [ -s "$PART_PATH" ] && [ "$(wc -c < "$PART_PATH")" -ge 104857600 ]; then
+            mv "$PART_PATH" "$MODEL_PATH"
+            echo "✅ Model download complete: $MODEL_NAME"
+        else
+            echo "❌ Downloaded file is invalid or too small. Cleaning up..." >&2
+            rm -f "$PART_PATH"
+            exit 1
+        fi
+    else
+        echo "❌ Download failed." >&2
+        rm -f "$PART_PATH"
+        exit 1
+    fi
 else
     echo "✅ Model already downloaded: $MODEL_NAME"
 fi
@@ -68,6 +83,6 @@ exec llama-server \
     -m "$MODEL_PATH" \
     --host 127.0.0.1 \
     --port 8080 \
-    -c 2048 \
+    -c 4096 \
     --threads 4 \
     --metrics

@@ -2,8 +2,10 @@ package com.agent.mobile.ui.chat
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -48,8 +50,11 @@ import com.agent.mobile.ui.chat.components.MessageBubble
 import com.agent.mobile.ui.chat.components.QuickActionToolbar
 import com.agent.mobile.ui.chat.components.SessionDrawerContent
 import com.agent.mobile.ui.chat.components.VoiceInputButton
+import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 
@@ -73,7 +78,8 @@ fun ChatScreen(
 
     var inputText by remember { mutableStateOf("") }
     var showModelPickerDialog by remember { mutableStateOf(false) }
-    var viewingArtifact by remember { mutableStateOf<ArtifactItem?>(null) }
+    var viewingArtifactPath by remember { mutableStateOf<String?>(null) }
+    val viewingArtifact = artifacts.firstOrNull { it.path == viewingArtifactPath }
 
     // Multimodal image attachment states
     var pendingImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -90,20 +96,29 @@ fun ChatScreen(
     // Activity result launchers for camera and gallery
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
-            val res = readUriAsBase64(context, uri)
-            if (res != null) {
-                pendingImageBase64 = res.first
-                pendingImageMimeType = res.second
-                pendingImageBitmap = res.third
+            coroutineScope.launch {
+                val res = processImageUri(context, uri)
+                if (res != null) {
+                    pendingImageBase64 = res.first
+                    pendingImageMimeType = res.second
+                    pendingImageBitmap = res.third
+                }
             }
         }
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap: Bitmap? ->
         if (bitmap != null) {
-            pendingImageBitmap = bitmap
-            pendingImageBase64 = bitmapToBase64(bitmap)
-            pendingImageMimeType = "image/jpeg"
+            coroutineScope.launch {
+                val (b64, scaled) = withContext(Dispatchers.IO) {
+                    val stream = ByteArrayOutputStream()
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, stream)
+                    Pair(Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP), bitmap)
+                }
+                pendingImageBitmap = scaled
+                pendingImageBase64 = b64
+                pendingImageMimeType = "image/jpeg"
+            }
         }
     }
 
@@ -391,7 +406,12 @@ fun ChatScreen(
                                 else -> Icons.AutoMirrored.Filled.Article
                             }
                             AssistChip(
-                                onClick = { viewingArtifact = item },
+                                onClick = {
+                                    viewingArtifactPath = item.path
+                                    coroutineScope.launch {
+                                        agentEngine.loadArtifactContent(item)
+                                    }
+                                },
                                 label = { Text(item.filename, fontSize = 11.sp, maxLines = 1) },
                                 leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp), tint = AccentPrimary) },
                                 colors = AssistChipDefaults.assistChipColors(
@@ -592,11 +612,12 @@ fun ChatScreen(
                                             pendingImageBase64 = null
                                             focusManager.clearFocus()
 
-                                            if (prompt.startsWith("/boost", ignoreCase = true) || prompt.startsWith("amc boost", ignoreCase = true)) {
+                                             if (prompt.startsWith("/boost", ignoreCase = true) || prompt.startsWith("amc boost", ignoreCase = true)) {
                                                 coroutineScope.launch {
                                                     bridgeClient.forceReconnect()
+                                                    val connected = bridgeClient.awaitConnected(3000)
                                                     val isIgnoringBattery = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")
-                                                    if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) {
+                                                    if (connected) {
                                                         bridgeClient.triggerBoost()
                                                         android.widget.Toast.makeText(context, "🚀 Termux background boost requested.", android.widget.Toast.LENGTH_SHORT).show()
                                                     } else {
@@ -642,8 +663,9 @@ fun ChatScreen(
                                         if (prompt.startsWith("/boost", ignoreCase = true) || prompt.startsWith("amc boost", ignoreCase = true)) {
                                             coroutineScope.launch {
                                                 bridgeClient.forceReconnect()
+                                                val connected = bridgeClient.awaitConnected(3000)
                                                 val isIgnoringBattery = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")
-                                                if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) {
+                                                if (connected) {
                                                     bridgeClient.triggerBoost()
                                                     android.widget.Toast.makeText(context, "🚀 Termux background boost requested.", android.widget.Toast.LENGTH_SHORT).show()
                                                 } else {
@@ -685,8 +707,8 @@ fun ChatScreen(
     // Artifact Viewer Dialog
     if (viewingArtifact != null) {
         ArtifactViewerDialog(
-            artifact = viewingArtifact!!,
-            onDismiss = { viewingArtifact = null },
+            artifact = viewingArtifact,
+            onDismiss = { viewingArtifactPath = null },
             onExecuteInTermux = { cmd ->
                 agentEngine.startTask(cmd)
             }
@@ -697,6 +719,7 @@ fun ChatScreen(
     if (showModelPickerDialog) {
         QuickModelPickerDialog(
             currentConfig = modelConfig,
+            preferenceManager = agentEngine.preferenceManager,
             onDismiss = { showModelPickerDialog = false },
             onModelSelected = { newConfig ->
                 agentEngine.setModelConfig(newConfig)
@@ -712,16 +735,37 @@ private fun bitmapToBase64(bitmap: Bitmap): String {
     return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
 }
 
-private fun readUriAsBase64(context: Context, uri: Uri): Triple<String, String, Bitmap?>? {
-    return try {
+private suspend fun processImageUri(context: Context, uri: Uri): Triple<String, String, Bitmap?>? = withContext(Dispatchers.IO) {
+    try {
         val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-        val inputStream = context.contentResolver.openInputStream(uri)
-        val bytes = inputStream?.readBytes() ?: return null
-        inputStream.close()
-        val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        Triple(b64, mime, bitmap)
-    } catch (e: Exception) {
+        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, boundsOptions)
+        }
+
+        val maxDim = 1280
+        var inSampleSize = 1
+        if (boundsOptions.outHeight > maxDim || boundsOptions.outWidth > maxDim) {
+            val halfHeight = boundsOptions.outHeight / 2
+            val halfWidth = boundsOptions.outWidth / 2
+            while ((halfHeight / inSampleSize) >= maxDim || (halfWidth / inSampleSize) >= maxDim) {
+                inSampleSize *= 2
+            }
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            this.inSampleSize = inSampleSize
+        }
+        val bitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, decodeOptions)
+        } ?: return@withContext null
+
+        val byteStream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 85, byteStream)
+        val b64 = Base64.encodeToString(byteStream.toByteArray(), Base64.NO_WRAP)
+        Triple(b64, "image/jpeg", bitmap)
+    } catch (t: Throwable) {
+        Log.e("ChatScreen", "Error processing image: ${t.message}", t)
         null
     }
 }
@@ -729,6 +773,7 @@ private fun readUriAsBase64(context: Context, uri: Uri): Triple<String, String, 
 @Composable
 private fun QuickModelPickerDialog(
     currentConfig: ModelConfig,
+    preferenceManager: PreferenceManager? = null,
     onDismiss: () -> Unit,
     onModelSelected: (ModelConfig) -> Unit
 ) {
@@ -839,13 +884,24 @@ private fun QuickModelPickerDialog(
 
                 Button(
                     onClick = {
-                        onModelSelected(
+                        val newConfig = if (selectedProvider == currentConfig.provider) {
                             currentConfig.copy(
+                                modelName = selectedModel
+                            )
+                        } else {
+                            val profile = preferenceManager?.loadProviderProfile(selectedProvider)
+                            ModelConfig(
                                 provider = selectedProvider,
                                 modelName = selectedModel,
-                                baseUrl = selectedProvider.defaultBaseUrl
+                                apiKey = profile?.apiKey ?: "",
+                                baseUrl = profile?.baseUrl ?: selectedProvider.defaultBaseUrl,
+                                fallbackProvider = currentConfig.fallbackProvider,
+                                fallbackModelName = currentConfig.fallbackModelName,
+                                fallbackApiKey = currentConfig.fallbackApiKey,
+                                fallbackBaseUrl = currentConfig.fallbackBaseUrl
                             )
-                        )
+                        }
+                        onModelSelected(newConfig)
                     },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(8.dp),

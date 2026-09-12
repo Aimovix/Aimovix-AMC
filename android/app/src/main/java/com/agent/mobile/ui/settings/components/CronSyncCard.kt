@@ -31,6 +31,11 @@ fun CronSyncCard(
     var crontabContent by remember { mutableStateOf("") }
     var isLoadingCron by remember { mutableStateOf(false) }
     var isSavingCron by remember { mutableStateOf(false) }
+    var cronDaemonStatus by remember { mutableStateOf<String?>("UNKNOWN") }
+
+    LaunchedEffect(Unit) {
+        cronDaemonStatus = bridgeClient.checkCronStatus()
+    }
 
     var workflowTitle by remember { mutableStateOf("Morning routine") }
     var workflowCommand by remember { mutableStateOf("termux-battery-status") }
@@ -76,6 +81,7 @@ fun CronSyncCard(
                         coroutineScope.launch {
                             try {
                                 crontabContent = bridgeClient.getCrontab()
+                                cronDaemonStatus = bridgeClient.checkCronStatus()
                                 Toast.makeText(context, "Crontab loaded from Termux", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) {
                                 Toast.makeText(context, "Failed to load: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -96,10 +102,56 @@ fun CronSyncCard(
 
             // Section 1: Termux Crontab
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = "Termux Crontab (Linux Cron-Daemon)",
-                    style = MaterialTheme.typography.labelSmall.copy(color = TextMuted)
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Termux Crontab (Linux Cron-Daemon)",
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted)
+                    )
+                    val (statusColor, statusText) = when (cronDaemonStatus) {
+                        "RUNNING" -> Pair(AccentPrimary, "crond running")
+                        "STOPPED" -> Pair(YellowWarning, "crond stopped")
+                        "NOT_INSTALLED" -> Pair(RedEmergency, "crond not installed")
+                        else -> Pair(TextMuted, "crond unknown")
+                    }
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.labelSmall.copy(color = statusColor, fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                    )
+                }
+
+                if (cronDaemonStatus == "STOPPED") {
+                    Surface(
+                        color = YellowWarning.copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, YellowWarning.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "⚠️ The cron daemon 'crond' is not running in Termux. Start it with: crond",
+                            color = YellowWarning,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                } else if (cronDaemonStatus == "NOT_INSTALLED") {
+                    Surface(
+                        color = RedEmergency.copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, RedEmergency.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "⚠️ The 'cronie' package is not installed in Termux. Install with: pkg install cronie",
+                            color = RedEmergency,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                }
 
                 OutlinedTextField(
                     value = crontabContent,
@@ -272,6 +324,23 @@ fun CronSyncCard(
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                     }
+                }
+
+                Button(
+                    onClick = {
+                        schedulerManager.cancelAllWorkflowsByTag("amc_workflow")
+                        Toast.makeText(context, "All scheduled automations cancelled", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = RedEmergency.copy(alpha = 0.15f), contentColor = RedEmergency)
+                ) {
+                    Text(
+                        text = "Cancel all scheduled automations",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }

@@ -1,6 +1,9 @@
 package com.agent.mobile.ui.chat.components
 
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -41,9 +44,27 @@ fun SessionDrawerContent(
     var searchQuery by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var isSearching by remember { mutableStateOf(false) }
+    var searchJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     var sessionToExport by remember { mutableStateOf<ChatSession?>(null) }
     var showExportDialog by remember { mutableStateOf(false) }
+    var pendingExportContent by remember { mutableStateOf<String?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*")
+    ) { uri: Uri? ->
+        if (uri != null && pendingExportContent != null) {
+            coroutineScope.launch {
+                val success = chatRepository?.saveExportToUri(context, uri, pendingExportContent!!) ?: false
+                if (success) {
+                    Toast.makeText(context, "Export saved successfully.", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Failed to save export.", Toast.LENGTH_SHORT).show()
+                }
+                pendingExportContent = null
+            }
+        }
+    }
 
     val dateFormat = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.ENGLISH) }
 
@@ -102,21 +123,29 @@ fun SessionDrawerContent(
                 value = searchQuery,
                 onValueChange = { q ->
                     searchQuery = q
+                    searchJob?.cancel()
                     if (q.isNotBlank()) {
                         isSearching = true
-                        coroutineScope.launch {
+                        searchJob = coroutineScope.launch {
+                            kotlinx.coroutines.delay(300L)
                             searchResults = chatRepository?.searchMessages(q) ?: emptyList()
                             isSearching = false
                         }
                     } else {
                         searchResults = emptyList()
+                        isSearching = false
                     }
                 },
                 placeholder = { Text("Search history and terminal...", fontSize = 12.sp, color = TextMuted) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp)) },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = ""; searchResults = emptyList() }) {
+                        IconButton(onClick = {
+                            searchJob?.cancel()
+                            searchQuery = ""
+                            searchResults = emptyList()
+                            isSearching = false
+                        }) {
                             Icon(Icons.Default.Clear, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
                         }
                     }
@@ -286,8 +315,8 @@ fun SessionDrawerContent(
                             coroutineScope.launch {
                                 val messages = chatRepository?.getMessagesForSessionSync(session.id) ?: emptyList()
                                 val md = chatRepository?.exportToMarkdown(session, messages) ?: ""
-                                val file = chatRepository?.saveExportFile(context, "chat_${session.id.take(8)}.md", md)
-                                Toast.makeText(context, "Saved to: ${file?.name}", Toast.LENGTH_LONG).show()
+                                pendingExportContent = md
+                                exportLauncher.launch("chat_${session.id.take(8)}.md")
                                 showExportDialog = false
                             }
                         },
@@ -303,8 +332,8 @@ fun SessionDrawerContent(
                             coroutineScope.launch {
                                 val messages = chatRepository?.getMessagesForSessionSync(session.id) ?: emptyList()
                                 val json = chatRepository?.exportToJson(session, messages) ?: ""
-                                val file = chatRepository?.saveExportFile(context, "chat_${session.id.take(8)}.json", json)
-                                Toast.makeText(context, "Saved to: ${file?.name}", Toast.LENGTH_LONG).show()
+                                pendingExportContent = json
+                                exportLauncher.launch("chat_${session.id.take(8)}.json")
                                 showExportDialog = false
                             }
                         },

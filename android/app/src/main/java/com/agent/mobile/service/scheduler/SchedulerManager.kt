@@ -75,6 +75,7 @@ class SchedulerManager(private val context: Context) {
         )
             .setConstraints(constraints)
             .setInputData(data)
+            .addTag("amc_workflow")
             .build()
 
         workManager.enqueueUniquePeriodicWork(
@@ -83,6 +84,10 @@ class SchedulerManager(private val context: Context) {
             request
         )
         return request.id.toString()
+    }
+
+    fun getActiveWorkflowsFlow(): kotlinx.coroutines.flow.Flow<List<WorkInfo>> {
+        return workManager.getWorkInfosByTagFlow("amc_workflow")
     }
 
     fun cancelWorkflowById(workId: String) {

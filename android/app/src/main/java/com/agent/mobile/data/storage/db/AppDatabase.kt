@@ -28,6 +28,7 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
+        val MIGRATIONS = arrayOf<androidx.room.migration.Migration>()
 
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -36,7 +37,8 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "aimovix_amc.db"
                 )
-                .fallbackToDestructiveMigration()
+                .addMigrations(*MIGRATIONS)
+                .fallbackToDestructiveMigrationOnDowngrade()
                 .build()
                 .also { INSTANCE = it }
             }

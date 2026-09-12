@@ -202,4 +202,70 @@ class LlmClientTest {
         assertTrue("Request body must contain image_url for multimodal OpenAI", requestBody.contains("image_url"))
         assertTrue("Request body must contain base64 data", requestBody.contains(fakeBase64))
     }
+
+    @Test
+    fun testOpenAiMultipleToolCallsDetected() = runBlocking {
+        val sseBody = """
+            data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"execute_command","arguments":"{\"command\":\"pwd\"}"}}]}}]}
+            
+            data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","function":{"name":"execute_command","arguments":"{\"command\":\"whoami\"}"}}]}}]}
+            
+            data: [DONE]
+            
+        """.trimIndent()
+
+        mockServer.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(sseBody)
+        )
+
+        val config = ModelConfig(
+            provider = ProviderType.OPENAI,
+            modelName = "gpt-4o",
+            apiKey = "test-key",
+            baseUrl = mockServer.url("/v1/chat/completions").toString()
+        )
+
+        val events = llmClient.streamRequest(
+            config = config,
+            systemPrompt = "Execute commands",
+            messages = listOf(ChatMessage(role = MessageRole.USER, text = "pwd and whoami"))
+        ).toList()
+
+        val toolEvent = events.filterIsInstance<LlmClient.LlmStreamEvent.ToolCallDetected>().firstOrNull()
+        assertNotNull("Tool call event should be detected", toolEvent)
+        assertEquals(2, toolEvent?.toolCalls?.size)
+        assertEquals("pwd", toolEvent?.toolCalls?.get(0)?.arguments?.get("command"))
+        assertEquals("whoami", toolEvent?.toolCalls?.get(1)?.arguments?.get("command"))
+    }
+
+    @Test
+    fun testOpenAiPrematureStreamTerminationReportsError() = runBlocking {
+        // Stream ends without [DONE] and without content
+        mockServer.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody("")
+        )
+
+        val config = ModelConfig(
+            provider = ProviderType.OPENAI,
+            modelName = "gpt-4o",
+            apiKey = "test-key",
+            baseUrl = mockServer.url("/v1/chat/completions").toString()
+        )
+
+        val events = llmClient.streamRequest(
+            config = config,
+            systemPrompt = "System",
+            messages = listOf(ChatMessage(role = MessageRole.USER, text = "Hello"))
+        ).toList()
+
+        val errorEvent = events.filterIsInstance<LlmClient.LlmStreamEvent.Error>().firstOrNull()
+        assertNotNull("Premature stream closure should produce Error event", errorEvent)
+        assertTrue(errorEvent?.message?.contains("prematurely") == true)
+    }
 }

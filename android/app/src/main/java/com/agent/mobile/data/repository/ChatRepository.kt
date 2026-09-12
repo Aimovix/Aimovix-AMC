@@ -1,7 +1,9 @@
 package com.agent.mobile.data.repository
 
 import android.content.Context
+import android.net.Uri
 import android.os.Environment
+import android.util.Log
 import com.agent.mobile.data.model.*
 import com.agent.mobile.data.storage.db.AppDatabase
 import com.agent.mobile.data.storage.db.entity.ChatMessageEntity
@@ -64,11 +66,12 @@ class ChatRepository(
 
     suspend fun saveMessage(sessionId: String, message: ChatMessage) = withContext(Dispatchers.IO) {
         database.chatMessageDao().insertMessage(message.toEntity(sessionId))
-        database.chatSessionDao().updateTitle(sessionId = sessionId, title = "", updatedAt = System.currentTimeMillis())
+        database.chatSessionDao().touchSession(sessionId = sessionId, updatedAt = System.currentTimeMillis())
     }
 
     suspend fun saveMessages(sessionId: String, messages: List<ChatMessage>) = withContext(Dispatchers.IO) {
         database.chatMessageDao().insertMessages(messages.map { it.toEntity(sessionId) })
+        database.chatSessionDao().touchSession(sessionId = sessionId, updatedAt = System.currentTimeMillis())
     }
 
     suspend fun addMetrics(
@@ -138,12 +141,23 @@ class ChatRepository(
                 }
                 MessageRole.TOOL -> {
                     sb.append("### 💻 Terminal output ($time)\n\n")
-                    val out = m.toolResult?.stdout ?: m.text
-                    sb.append("```bash\n$out\n```\n\n")
+                    val out = m.toolResult?.stdout?.ifEmpty { null } ?: m.text
+                    if (out.isNotEmpty()) {
+                        sb.append("```bash\n$out\n```\n\n")
+                    }
+                    if (!m.toolResult?.stderr.isNullOrEmpty()) {
+                        sb.append("**Error / stderr:**\n```bash\n${m.toolResult?.stderr}\n```\n\n")
+                    }
+                    if (m.toolResult != null && m.toolResult.exitCode != 0) {
+                        sb.append("**Exit code:** `${m.toolResult.exitCode}`\n\n")
+                    }
                 }
                 MessageRole.SYSTEM -> {
                     sb.append("### ℹ️ System ($time)\n\n${m.text}\n\n")
                 }
+            }
+            if (m.imageBase64 != null) {
+                sb.append("🖼️ *[Attached image: ${m.imageMimeType ?: "image/jpeg"}]*\n\n")
             }
         }
         return sb.toString()
@@ -176,15 +190,24 @@ class ChatRepository(
                     put("command", m.toolCall.arguments["command"] ?: "")
                     put("risk_level", m.toolCall.riskLevel)
                     put("risk_reason", m.toolCall.riskReason)
+                    if (m.toolCall.thoughtSignature != null) {
+                        put("thought_signature", m.toolCall.thoughtSignature)
+                    }
                 })
             }
             if (m.toolResult != null) {
                 mObj.put("tool_result", JSONObject().apply {
+                    put("tool_call_id", m.toolResult.toolCallId)
+                    put("command", m.toolResult.command)
                     put("stdout", m.toolResult.stdout)
                     put("stderr", m.toolResult.stderr)
                     put("exit_code", m.toolResult.exitCode)
                     put("is_error", m.toolResult.isError)
                 })
+            }
+            if (m.imageBase64 != null) {
+                mObj.put("image_base64", m.imageBase64)
+                mObj.put("image_mime_type", m.imageMimeType)
             }
             if (m.streamingTerminalOutput.isNotEmpty()) {
                 mObj.put("streaming_output", m.streamingTerminalOutput)
@@ -193,6 +216,23 @@ class ChatRepository(
         }
         root.put("messages", msgsArr)
         return root.toString(2)
+    }
+
+    suspend fun saveExportToUri(
+        context: Context,
+        uri: Uri,
+        content: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            context.contentResolver.openOutputStream(uri)?.use { os ->
+                os.write(content.toByteArray(Charsets.UTF_8))
+                os.flush()
+            }
+            true
+        } catch (e: Exception) {
+            Log.e("ChatRepository", "Failed to write export to URI: ${e.message}", e)
+            false
+        }
     }
 
     suspend fun saveExportFile(
@@ -217,6 +257,9 @@ class ChatRepository(
                 put("rawJson", tc.rawJson)
                 put("riskLevel", tc.riskLevel)
                 put("riskReason", tc.riskReason)
+                if (tc.thoughtSignature != null) {
+                    put("thoughtSignature", tc.thoughtSignature)
+                }
             }.toString()
         }
 
@@ -267,13 +310,17 @@ class ChatRepository(
                 argsObj?.keys()?.forEach { k ->
                     argsMap[k] = argsObj.optString(k, "")
                 }
+                val sig = if (obj.has("thoughtSignature") && !obj.isNull("thoughtSignature")) {
+                    obj.getString("thoughtSignature")
+                } else null
                 ToolCall(
                     id = obj.optString("id", UUID.randomUUID().toString()),
                     name = obj.optString("name", "execute_command"),
                     arguments = argsMap,
                     rawJson = obj.optString("rawJson", ""),
                     riskLevel = obj.optString("riskLevel", "LOW"),
-                    riskReason = obj.optString("riskReason", "")
+                    riskReason = obj.optString("riskReason", ""),
+                    thoughtSignature = sig
                 )
             } catch (e: Exception) {
                 null

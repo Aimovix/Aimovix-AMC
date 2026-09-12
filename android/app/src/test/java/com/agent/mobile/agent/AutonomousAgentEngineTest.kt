@@ -1,10 +1,14 @@
 package com.agent.mobile.agent
 
+import com.agent.mobile.data.model.ChatMessage
 import com.agent.mobile.data.model.ExecutionMode
+import com.agent.mobile.data.model.MessageRole
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.data.storage.db.entity.ChatSession
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -128,5 +132,45 @@ class AutonomousAgentEngineTest {
         assertTrue("Compacted output must contain truncation notice", compacted.contains("... [Output truncated:"))
         assertTrue("Compacted output must preserve head", compacted.startsWith("START_OF_OUTPUT"))
         assertTrue("Compacted output must preserve tail", compacted.endsWith(":END_OF_OUTPUT"))
+    }
+
+    @Test
+    fun testPrepareContextMessagesPrunesOrphanedToolResult() {
+        val msgs = listOf(
+            ChatMessage(role = MessageRole.USER, text = "Initial task"),
+            ChatMessage(role = MessageRole.TOOL, text = "Orphaned output"),
+            ChatMessage(role = MessageRole.ASSISTANT, text = "Working on it"),
+            ChatMessage(role = MessageRole.USER, text = "Follow up")
+        )
+        val window = engine.prepareContextMessages(msgs, maxMessages = 3)
+        assertFalse("Window must not start with an orphaned TOOL result", window.first().role == com.agent.mobile.data.model.MessageRole.TOOL)
+    }
+
+    @Test
+    fun testLoadArtifactContentImageVsText() = kotlinx.coroutines.test.runTest {
+        val textItem = com.agent.mobile.data.model.ArtifactItem(
+            filename = "report.txt",
+            path = "/sdcard/report.txt",
+            type = com.agent.mobile.data.model.ArtifactType.TEXT,
+            content = "Hello Report"
+        )
+        val content = engine.loadArtifactContent(textItem)
+        assertEquals("Hello Report", content)
+    }
+
+    @Test
+    fun testEmergencyStopPreventsImmediateStartTask() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher()
+        val customScope = CoroutineScope(testDispatcher + SupervisorJob())
+        val testEngine = AutonomousAgentEngine(
+            bridgeClient = TermuxBridgeClient(token = "dummy-token"),
+            scope = customScope
+        )
+        testEngine.emergencyStop()
+        assertTrue("Engine must be stopping immediately after emergencyStop", testEngine.isStopping.value)
+        testEngine.startTask("echo should_not_run")
+        assertFalse("Task should not run while engine is stopping", testEngine.isBusy.value)
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertFalse("Engine should no longer be stopping after cancellation finishes", testEngine.isStopping.value)
     }
 }

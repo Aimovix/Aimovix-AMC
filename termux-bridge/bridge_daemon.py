@@ -18,6 +18,7 @@ import secrets
 import hmac
 import base64
 import codecs
+import stat
 from contextlib import suppress
 from pathlib import Path
 
@@ -262,19 +263,27 @@ class BridgeSession:
     async def run(self, command, execution_id, cwd, timeout_seconds):
         readers = []
         try:
-            tokens = shlex.split(command)
-            # Only intercept a plain cd; let the shell handle compound commands.
-            if tokens and tokens[0] == "cd" and len(tokens) <= 2 and not any(
-                char in command for char in ";&|<>$\n\x60"
-            ):
-                target = os.path.expanduser(tokens[1] if len(tokens) == 2 else DEFAULT_CWD)
-                target = os.path.abspath(os.path.join(cwd, target))
-                if not os.path.isdir(target):
-                    raise ValueError(f"Directory not found: {target}")
-                self.cwd = target
-                await self.send("stdout", execution_id=execution_id, data=f"Directory changed to: {target}\n")
-                await self.send("completed", execution_id=execution_id, exit_code=0, cwd=self.cwd)
-                return
+            trimmed = command.strip()
+            if trimmed.startswith("cd ") or trimmed == "cd":
+                try:
+                    tokens = shlex.split(trimmed)
+                    # Only intercept a plain cd; let the shell handle compound commands.
+                    if tokens and tokens[0] == "cd" and len(tokens) <= 2 and not any(
+                        char in trimmed for char in ";&|<>\n\x60"
+                    ):
+                        raw_target = tokens[1] if len(tokens) == 2 else DEFAULT_CWD
+                        target = os.path.expandvars(os.path.expanduser(raw_target))
+                        target = os.path.abspath(os.path.join(cwd, target))
+                        if not os.path.isdir(target):
+                            raise ValueError(f"Directory not found: {target}")
+                        self.cwd = target
+                        await self.send("stdout", execution_id=execution_id, data=f"Directory changed to: {target}\n")
+                        await self.send("completed", execution_id=execution_id, exit_code=0, cwd=self.cwd)
+                        return
+                except ValueError as err:
+                    if str(err).startswith("Directory not found:"):
+                        raise
+                    pass
 
             shell = shutil.which("bash", path=ENV.get("PATH")) or shutil.which("sh") or "sh"
             # Shield spawn so cancellation cannot orphan a process created concurrently.
@@ -331,10 +340,12 @@ class BridgeSession:
 
     async def transfer_file(self, action, msg):
         request_path = msg.get("path", "")
+        request_id = msg.get("request_id")
+        extra = {"request_id": request_id} if request_id is not None else {}
         for_write = (action == "write_file")
         resolved_path, err = validate_file_path(request_path, self.cwd, for_write=for_write)
         if err:
-            await self.send("error", path=request_path, error=err)
+            await self.send("error", path=request_path, error=err, **extra)
             return
 
         path = str(resolved_path)
@@ -344,24 +355,43 @@ class BridgeSession:
                 if not isinstance(content, str):
                     raise ValueError("File content must be a string.")
                 def write():
+                    if os.path.exists(path) and not stat.S_ISREG(os.stat(path).st_mode):
+                        raise ValueError("Target exists and is not a regular file.")
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     Path(path).write_text(content, encoding="utf-8")
                 await asyncio.to_thread(write)
-                await self.send("file_written", path=request_path, success=True)
+                await self.send("file_written", path=request_path, success=True, **extra)
             else:
                 def read():
-                    with open(path, "rb") as source:
-                        data = source.read(5 * 1024 * 1024 + 1)
+                    if not os.path.exists(path):
+                        raise FileNotFoundError(f"No such file: {request_path}")
+                    st = os.stat(path)
+                    if not stat.S_ISREG(st.st_mode):
+                        raise ValueError(f"Path is not a regular file: {request_path}")
+                    flags = os.O_RDONLY
+                    if hasattr(os, "O_NONBLOCK"):
+                        flags |= os.O_NONBLOCK
+                    fd = os.open(path, flags)
+                    try:
+                        f_st = os.fstat(fd)
+                        if not stat.S_ISREG(f_st.st_mode):
+                            raise ValueError(f"Path is not a regular file: {request_path}")
+                        with os.fdopen(fd, "rb") as source:
+                            data = source.read(5 * 1024 * 1024 + 1)
+                            fd = None
+                    finally:
+                        if fd is not None:
+                            os.close(fd)
                     if len(data) > 5 * 1024 * 1024:
                         raise ValueError("File exceeds the 5 MiB transfer limit.")
                     return data
                 data = await asyncio.to_thread(read)
                 if action == "read_file_base64":
-                    await self.send("file_base64", path=request_path, data=base64.b64encode(data).decode("ascii"))
+                    await self.send("file_base64", path=request_path, data=base64.b64encode(data).decode("ascii"), **extra)
                 else:
-                    await self.send("file_content", path=request_path, content=data.decode("utf-8", errors="replace"))
+                    await self.send("file_content", path=request_path, content=data.decode("utf-8", errors="replace"), **extra)
         except Exception as error:
-            await self.send("error", path=request_path, error=str(error))
+            await self.send("error", path=request_path, error=str(error), **extra)
 
 
 async def handle_connection(websocket):
@@ -396,9 +426,13 @@ async def handle_connection(websocket):
                                    execution_id=msg.get("execution_id", ""))
                 continue
             if action == "ping":
-                await session.send("pong", timestamp=msg.get("timestamp", 0))
+                resp = {"timestamp": msg.get("timestamp", 0)}
+                if "ping_id" in msg:
+                    resp["ping_id"] = msg["ping_id"]
+                await session.send("pong", **resp)
             elif action == "sys_info":
-                await session.send("sys_info", data=await asyncio.to_thread(get_system_info, session.cwd))
+                sys_data = await asyncio.to_thread(get_system_info, session.cwd)
+                await session.send("sys_info", data=sys_data, system=sys_data, cwd=session.cwd)
             elif action == "execute":
                 command = msg.get("command")
                 execution_id = msg.get("execution_id", "default")
@@ -429,10 +463,12 @@ async def handle_connection(websocket):
                 if execution_id:
                     await session.send("completed", execution_id=execution_id, exit_code=130, cwd=session.cwd)
             elif action in ("read_file", "read_file_base64", "write_file"):
+                request_id = msg.get("request_id")
+                extra = {"request_id": request_id} if request_id is not None else {}
                 if not isinstance(msg.get("path"), str) or not msg["path"]:
-                    await session.send("error", error="A file path is required.")
+                    await session.send("error", error="A file path is required.", **extra)
                     continue
-                await session.transfer_file(action, msg)
+                asyncio.create_task(session.transfer_file(action, msg))
             else:
                 await session.send("error", error="Unknown action.")
     except websockets.exceptions.ConnectionClosed:
@@ -482,7 +518,10 @@ async def main():
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for stop_signal in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(stop_signal, stop_event.set)
+        try:
+            loop.add_signal_handler(stop_signal, stop_event.set)
+        except (NotImplementedError, AttributeError):
+            pass
 
     # Acquire the listening socket before publishing service state. A duplicate
     # start must never overwrite or remove the running instance's PID file.

@@ -32,6 +32,9 @@ class PreferenceManager(context: Context) {
         private const val KEY_MODEL = "key_model"
         private const val KEY_API_KEY = "key_api_key"
         private const val KEY_BASE_URL = "key_base_url"
+        private const val KEY_API_KEY_PREFIX = "pref_api_key_"
+        private const val KEY_BASE_URL_PREFIX = "pref_base_url_"
+        private const val KEY_MODEL_PREFIX = "pref_model_"
         private const val KEY_FALLBACK_PROVIDER = "key_fallback_provider"
         private const val KEY_FALLBACK_MODEL = "key_fallback_model"
         private const val KEY_FALLBACK_API_KEY = "key_fallback_api_key"
@@ -43,6 +46,12 @@ class PreferenceManager(context: Context) {
         private const val KEY_STRICT_MODE = "key_strict_mode"
         private const val KEY_ACTIVE_SESSION_ID = "key_active_session_id"
     }
+
+    data class ProviderProfile(
+        val apiKey: String,
+        val baseUrl: String,
+        val modelName: String
+    )
 
     init {
         migrateOldPrefs(context)
@@ -62,15 +71,38 @@ class PreferenceManager(context: Context) {
                         is Float -> editor.putFloat(key, value)
                     }
                 }
-                check(editor.commit()) { "Could not migrate credentials to encrypted storage." }
-                oldPrefs.edit().clear().commit()
+                editor.apply()
+                oldPrefs.edit().clear().apply()
             }
         } catch (e: Exception) {
-            Log.w("PreferenceManager", "Migration from legacy preferences failed: ${e.message}")
+            // Ignore migration failure if old prefs inaccessible
         }
     }
 
+    fun saveProviderProfile(provider: ProviderType, apiKey: String, baseUrl: String, modelName: String) {
+        prefs.edit().apply {
+            putString("${KEY_API_KEY_PREFIX}${provider.name}", apiKey)
+            putString("${KEY_BASE_URL_PREFIX}${provider.name}", baseUrl)
+            putString("${KEY_MODEL_PREFIX}${provider.name}", modelName)
+            apply()
+        }
+    }
+
+    fun loadProviderProfile(provider: ProviderType): ProviderProfile {
+        val apiKey = prefs.getString("${KEY_API_KEY_PREFIX}${provider.name}", "") ?: ""
+        val baseUrl = prefs.getString("${KEY_BASE_URL_PREFIX}${provider.name}", provider.defaultBaseUrl) ?: provider.defaultBaseUrl
+        var model = prefs.getString("${KEY_MODEL_PREFIX}${provider.name}", provider.defaultModel) ?: provider.defaultModel
+        // Migrate deprecated defaults
+        if (provider == ProviderType.GEMINI && model == "gemini-2.0-flash") {
+            model = provider.defaultModel
+        } else if (provider == ProviderType.CLAUDE && model == "claude-3-7-sonnet-20250219") {
+            model = provider.defaultModel
+        }
+        return ProviderProfile(apiKey = apiKey, baseUrl = baseUrl, modelName = model)
+    }
+
     fun saveModelConfig(config: ModelConfig) {
+        saveProviderProfile(config.provider, config.apiKey, config.baseUrl, config.modelName)
         prefs.edit().apply {
             putString(KEY_PROVIDER, config.provider.name)
             putString(KEY_MODEL, config.modelName)
@@ -91,9 +123,16 @@ class PreferenceManager(context: Context) {
         } catch (e: Exception) {
             ProviderType.GEMINI
         }
-        val modelName = prefs.getString(KEY_MODEL, provider.defaultModel) ?: provider.defaultModel
-        val apiKey = prefs.getString(KEY_API_KEY, "") ?: ""
-        val baseUrl = prefs.getString(KEY_BASE_URL, provider.defaultBaseUrl) ?: provider.defaultBaseUrl
+        val profile = loadProviderProfile(provider)
+        // Check if legacy key needs one-time migration for this provider
+        val effectiveApiKey = profile.apiKey.ifEmpty {
+            val legacyKey = prefs.getString(KEY_API_KEY, "") ?: ""
+            val legacyProvider = prefs.getString(KEY_PROVIDER, "")
+            if (legacyKey.isNotEmpty() && legacyProvider == provider.name) {
+                saveProviderProfile(provider, legacyKey, profile.baseUrl, profile.modelName)
+                legacyKey
+            } else ""
+        }
 
         val fallbackProviderName = prefs.getString(KEY_FALLBACK_PROVIDER, "") ?: ""
         val fallbackProvider = if (fallbackProviderName.isNotEmpty()) {
@@ -105,9 +144,9 @@ class PreferenceManager(context: Context) {
 
         return ModelConfig(
             provider = provider,
-            modelName = modelName,
-            apiKey = apiKey,
-            baseUrl = baseUrl,
+            modelName = profile.modelName,
+            apiKey = effectiveApiKey,
+            baseUrl = profile.baseUrl,
             fallbackProvider = fallbackProvider,
             fallbackModelName = fallbackModelName,
             fallbackApiKey = fallbackApiKey,

@@ -201,4 +201,18 @@ class RoomDaoTest {
         assertTrue(json.contains("\"title\": \"Export Test Session\""))
         assertTrue(json.contains("\"text\": \"Hello Agent!\""))
     }
+
+    @Test
+    fun testSaveMessagePreservesSessionTitle() = runBlocking {
+        val session = repository.createNewSession("Reiseplanung")
+        assertEquals("Reiseplanung", sessionDao.getSessionById(session.id)?.title)
+
+        repository.saveMessage(
+            sessionId = session.id,
+            message = ChatMessage(role = MessageRole.USER, text = "Packliste erstellen")
+        )
+
+        val afterSave = sessionDao.getSessionById(session.id)
+        assertEquals("Reiseplanung", afterSave?.title)
+    }
 }

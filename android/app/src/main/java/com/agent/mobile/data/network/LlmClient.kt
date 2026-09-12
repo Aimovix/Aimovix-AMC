@@ -3,7 +3,10 @@ package com.agent.mobile.data.network
 import android.util.Log
 import com.agent.mobile.data.model.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import java.net.UnknownHostException
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -55,7 +58,14 @@ class LlmClient(
 
     sealed class LlmStreamEvent {
         data class Token(val textChunk: String) : LlmStreamEvent()
-        data class ToolCallDetected(val thought: String, val toolCall: ToolCall) : LlmStreamEvent()
+        data class ToolCallDetected(
+            val thought: String,
+            val toolCall: ToolCall,
+            val toolCalls: List<ToolCall> = listOf(toolCall),
+            val promptTokens: Int = 0,
+            val completionTokens: Int = 0,
+            val estimatedCostUsd: Double = 0.0
+        ) : LlmStreamEvent()
         data class Completed(
             val fullText: String,
             val promptTokens: Int = 0,
@@ -77,14 +87,15 @@ class LlmClient(
         systemPrompt: String,
         messages: List<ChatMessage>
     ): Flow<LlmStreamEvent> = flow {
+        val providerMessages = messages.filter { it.role != MessageRole.SYSTEM }
         try {
             when (config.provider) {
-                ProviderType.GEMINI -> streamGemini(config, systemPrompt, messages) { emit(it) }
-                ProviderType.CLAUDE -> streamClaude(config, systemPrompt, messages) { emit(it) }
+                ProviderType.GEMINI -> streamGemini(config, systemPrompt, providerMessages) { emit(it) }
+                ProviderType.CLAUDE -> streamClaude(config, systemPrompt, providerMessages) { emit(it) }
                 ProviderType.OPENAI,
                 ProviderType.GROQ,
                 ProviderType.OPENROUTER,
-                ProviderType.LOCAL -> streamOpenAiCompatible(config, systemPrompt, messages) { emit(it) }
+                ProviderType.LOCAL -> streamOpenAiCompatible(config, systemPrompt, providerMessages) { emit(it) }
             }
         } catch (e: CancellationException) {
             throw e
@@ -122,7 +133,10 @@ class LlmClient(
                     is LlmStreamEvent.ToolCallDetected -> {
                         lastAction = LlmResponse.Action(
                             thought = event.thought,
-                            toolCall = event.toolCall
+                            toolCall = event.toolCall,
+                            promptTokens = event.promptTokens,
+                            completionTokens = event.completionTokens,
+                            costUsd = event.estimatedCostUsd
                         )
                     }
                     is LlmStreamEvent.Completed -> {
@@ -159,6 +173,36 @@ class LlmClient(
         }
     }
 
+
+    private suspend inline fun <T> executeCancellableCall(
+        request: Request,
+        crossinline block: suspend (Response) -> T
+    ): T {
+        val call = client.newCall(request)
+        val job = currentCoroutineContext().job
+        val completionHandle = job.invokeOnCompletion {
+            call.cancel()
+        }
+        return try {
+            call.execute().use { response ->
+                block(response)
+            }
+        } catch (e: IOException) {
+            if (!currentCoroutineContext().job.isActive) {
+                throw CancellationException("Network call cancelled by coroutine", e)
+            }
+            throw e
+        } finally {
+            completionHandle.dispose()
+        }
+    }
+
+    private class ToolCallAccumulator(
+        var id: String = "",
+        var name: String = "",
+        val arguments: StringBuilder = StringBuilder()
+    )
+
     /**
      * 1. OpenAI-Compatible SSE Streaming (OpenAI, Groq, OpenRouter, Local llama-server)
      */
@@ -172,6 +216,7 @@ class LlmClient(
         root.put("model", config.modelName)
         root.put("temperature", 0.3)
         root.put("stream", true)
+        root.put("parallel_tool_calls", false)
         root.put("stream_options", JSONObject().apply { put("include_usage", true) })
 
         val msgs = JSONArray()
@@ -207,17 +252,20 @@ class LlmClient(
                 }
                 MessageRole.ASSISTANT -> {
                     mObj.put("role", "assistant")
-                    if (m.toolCall != null) {
+                    val calls = if (m.toolCalls.isNotEmpty()) m.toolCalls else if (m.toolCall != null) listOf(m.toolCall) else emptyList()
+                    if (calls.isNotEmpty()) {
                         mObj.put("content", if (m.text.isNotEmpty()) m.text else null)
                         val toolCallsArr = JSONArray()
-                        toolCallsArr.put(JSONObject().apply {
-                            put("id", m.toolCall.id)
-                            put("type", "function")
-                            put("function", JSONObject().apply {
-                                put("name", m.toolCall.name)
-                                put("arguments", JSONObject(m.toolCall.arguments).toString())
+                        for (tc in calls) {
+                            toolCallsArr.put(JSONObject().apply {
+                                put("id", tc.id)
+                                put("type", "function")
+                                put("function", JSONObject().apply {
+                                    put("name", tc.name)
+                                    put("arguments", JSONObject(tc.arguments).toString())
+                                })
                             })
-                        })
+                        }
                         mObj.put("tool_calls", toolCallsArr)
                     } else {
                         mObj.put("content", m.text)
@@ -260,24 +308,22 @@ class LlmClient(
             reqBuilder.addHeader("X-Title", "AMC - AI Mobile Center")
         }
 
-        client.newCall(reqBuilder.build()).execute().use { response ->
+        executeCancellableCall(reqBuilder.build()) { response ->
             if (!response.isSuccessful) {
                 val errBody = response.body?.string() ?: ""
                 val isRetryable = response.code == 429 || response.code >= 500
                 emit(LlmStreamEvent.Error("OpenAI API error (${response.code}): $errBody", response.code, isRetryable))
-                return
+                return@executeCancellableCall
             }
 
-            val body = response.body ?: return
+            val body = response.body ?: return@executeCancellableCall
             val reader = BufferedReader(InputStreamReader(body.byteStream(), Charsets.UTF_8))
 
             val accumulatedText = StringBuilder()
-            val toolCallId = StringBuilder()
-            val toolCallName = StringBuilder()
-            val toolCallArgs = StringBuilder()
-            var hasToolCall = false
+            val toolCallsMap = sortedMapOf<Int, ToolCallAccumulator>()
             var promptTokens = 0
             var completionTokens = 0
+            var streamDone = false
 
             var line: String?
             while (reader.readLine().also { line = it } != null) {
@@ -286,10 +332,21 @@ class LlmClient(
 
                 if (l.startsWith("data:")) {
                     val data = l.substring(5).trim()
-                    if (data == "[DONE]") break
+                    if (data == "[DONE]") {
+                        streamDone = true
+                        break
+                    }
 
                     try {
                         val json = JSONObject(data)
+
+                        if (json.has("error")) {
+                            val errObj = json.getJSONObject("error")
+                            val errMsg = errObj.optString("message", "OpenAI stream error")
+                            val isRetryable = errObj.optString("type") == "rate_limit_error"
+                            emit(LlmStreamEvent.Error("OpenAI stream error: $errMsg", 0, isRetryable))
+                            return@executeCancellableCall
+                        }
 
                         if (json.has("usage") && !json.isNull("usage")) {
                             val u = json.getJSONObject("usage")
@@ -315,13 +372,16 @@ class LlmClient(
                         // Tool call streaming chunk
                         val toolCalls = delta.optJSONArray("tool_calls")
                         if (toolCalls != null && toolCalls.length() > 0) {
-                            hasToolCall = true
-                            val tc = toolCalls.getJSONObject(0)
-                            if (tc.has("id")) toolCallId.append(tc.getString("id"))
-                            val fn = tc.optJSONObject("function")
-                            if (fn != null) {
-                                if (fn.has("name")) toolCallName.append(fn.getString("name"))
-                                if (fn.has("arguments")) toolCallArgs.append(fn.getString("arguments"))
+                            for (i in 0 until toolCalls.length()) {
+                                val tc = toolCalls.getJSONObject(i)
+                                val idx = tc.optInt("index", i)
+                                val acc = toolCallsMap.getOrPut(idx) { ToolCallAccumulator() }
+                                if (tc.has("id")) acc.id += tc.getString("id")
+                                val fn = tc.optJSONObject("function")
+                                if (fn != null) {
+                                    if (fn.has("name")) acc.name += fn.getString("name")
+                                    if (fn.has("arguments")) acc.arguments.append(fn.getString("arguments"))
+                                }
                             }
                         }
                     } catch (e: CancellationException) {
@@ -332,28 +392,69 @@ class LlmClient(
                 }
             }
 
+            if (!streamDone && accumulatedText.isEmpty() && toolCallsMap.isEmpty()) {
+                emit(LlmStreamEvent.Error("OpenAI stream closed prematurely without completion", 0, true))
+                return@executeCancellableCall
+            }
+
             val fullText = accumulatedText.toString()
             if (promptTokens == 0) promptTokens = estimateTokens(fullText)
             if (completionTokens == 0) completionTokens = estimateTokens(fullText)
             val cost = calculateEstimatedCost(config.provider, config.modelName, promptTokens, completionTokens)
 
-            if (hasToolCall && toolCallName.isNotEmpty()) {
-                val argsMap = parseArgumentsJson(toolCallArgs.toString())
-                val idStr = toolCallId.toString().ifEmpty { UUID.randomUUID().toString() }
-                emit(
-                    LlmStreamEvent.ToolCallDetected(
-                        thought = fullText,
-                        toolCall = ToolCall(id = idStr, name = toolCallName.toString(), arguments = argsMap, rawJson = toolCallArgs.toString())
+            if (toolCallsMap.isNotEmpty()) {
+                val detectedTools = mutableListOf<ToolCall>()
+                var hasInvalidArgs = false
+
+                for ((_, acc) in toolCallsMap) {
+                    if (acc.name.isNotEmpty()) {
+                        val parsed = parseArgumentsJson(acc.arguments.toString())
+                        if (parsed != null) {
+                            val idStr = acc.id.ifEmpty { UUID.randomUUID().toString() }
+                            detectedTools.add(ToolCall(id = idStr, name = acc.name, arguments = parsed, rawJson = acc.arguments.toString()))
+                        } else {
+                            hasInvalidArgs = true
+                        }
+                    }
+                }
+
+                if (detectedTools.isNotEmpty()) {
+                    val primaryTool = detectedTools.first()
+                    emit(
+                        LlmStreamEvent.ToolCallDetected(
+                            thought = fullText,
+                            toolCall = primaryTool,
+                            toolCalls = detectedTools,
+                            promptTokens = promptTokens,
+                            completionTokens = completionTokens,
+                            estimatedCostUsd = cost
+                        )
                     )
-                )
-                return
+                    return@executeCancellableCall
+                } else if (hasInvalidArgs) {
+                    emit(LlmStreamEvent.Error("Received malformed JSON arguments for tool call from model", 0, false))
+                    return@executeCancellableCall
+                }
             }
 
             // Fallback markdown tool block parsing
             val parsedBlock = extractToolCallFromText(fullText)
             if (parsedBlock != null) {
-                emit(LlmStreamEvent.ToolCallDetected(thought = parsedBlock.thought, toolCall = parsedBlock.toolCall))
-                return
+                emit(
+                    LlmStreamEvent.ToolCallDetected(
+                        thought = parsedBlock.thought,
+                        toolCall = parsedBlock.toolCall,
+                        promptTokens = promptTokens,
+                        completionTokens = completionTokens,
+                        estimatedCostUsd = cost
+                    )
+                )
+                return@executeCancellableCall
+            }
+
+            if (!streamDone && fullText.isEmpty() && toolCallsMap.isEmpty()) {
+                emit(LlmStreamEvent.Error("OpenAI stream ended prematurely without [DONE]", 0, true))
+                return@executeCancellableCall
             }
 
             emit(LlmStreamEvent.Completed(fullText = fullText, promptTokens = promptTokens, completionTokens = completionTokens, estimatedCostUsd = cost))
@@ -388,14 +489,23 @@ class LlmClient(
                 })
             }
 
+            val calls = if (m.toolCalls.isNotEmpty()) m.toolCalls else if (m.toolCall != null) listOf(m.toolCall) else emptyList()
             when {
-                m.toolCall != null -> {
-                    partsArr.put(JSONObject().apply {
-                        put("functionCall", JSONObject().apply {
-                            put("name", m.toolCall.name)
-                            put("args", JSONObject(m.toolCall.arguments))
+                calls.isNotEmpty() -> {
+                    for (tc in calls) {
+                        partsArr.put(JSONObject().apply {
+                            put("functionCall", JSONObject().apply {
+                                put("name", tc.name)
+                                put("args", JSONObject(tc.arguments))
+                                if (tc.thoughtSignature != null) {
+                                    put("thoughtSignature", tc.thoughtSignature)
+                                }
+                            })
+                            if (tc.thoughtSignature != null) {
+                                put("thoughtSignature", tc.thoughtSignature)
+                            }
                         })
-                    })
+                    }
                 }
                 m.toolResult != null -> {
                     partsArr.put(JSONObject().apply {
@@ -449,19 +559,19 @@ class LlmClient(
             .post(root.toString().toRequestBody("application/json".toMediaType()))
             .build()
 
-        client.newCall(req).execute().use { response ->
+        executeCancellableCall(req) { response ->
             if (!response.isSuccessful) {
                 val errBody = response.body?.string() ?: ""
                 val isRetryable = response.code == 429 || response.code >= 500
                 emit(LlmStreamEvent.Error("Gemini API error (${response.code}): $errBody", response.code, isRetryable))
-                return
+                return@executeCancellableCall
             }
 
-            val body = response.body ?: return
+            val body = response.body ?: return@executeCancellableCall
             val reader = BufferedReader(InputStreamReader(body.byteStream(), Charsets.UTF_8))
 
             val accumulatedText = StringBuilder()
-            var detectedAction: LlmResponse.Action? = null
+            val detectedTools = mutableListOf<ToolCall>()
             var promptTokens = 0
             var completionTokens = 0
 
@@ -500,9 +610,16 @@ class LlmClient(
                                     val argsObj = fc.optJSONObject("args")
                                     val argsMap = mutableMapOf<String, String>()
                                     argsObj?.keys()?.forEach { k -> argsMap[k] = argsObj.optString(k, "") }
-                                    detectedAction = LlmResponse.Action(
-                                        thought = accumulatedText.toString(),
-                                        toolCall = ToolCall(name = name, arguments = argsMap)
+                                    val signature = if (fc.has("thoughtSignature")) fc.getString("thoughtSignature")
+                                        else if (p.has("thoughtSignature")) p.getString("thoughtSignature")
+                                        else null
+                                    detectedTools.add(
+                                        ToolCall(
+                                            id = UUID.randomUUID().toString(),
+                                            name = name,
+                                            arguments = argsMap,
+                                            thoughtSignature = signature
+                                        )
                                     )
                                 }
                             }
@@ -520,15 +637,32 @@ class LlmClient(
             if (completionTokens == 0) completionTokens = estimateTokens(fullText)
             val cost = calculateEstimatedCost(config.provider, config.modelName, promptTokens, completionTokens)
 
-            if (detectedAction != null) {
-                emit(LlmStreamEvent.ToolCallDetected(thought = detectedAction!!.thought, toolCall = detectedAction!!.toolCall))
-                return
+            if (detectedTools.isNotEmpty()) {
+                emit(
+                    LlmStreamEvent.ToolCallDetected(
+                        thought = fullText,
+                        toolCall = detectedTools.first(),
+                        toolCalls = detectedTools,
+                        promptTokens = promptTokens,
+                        completionTokens = completionTokens,
+                        estimatedCostUsd = cost
+                    )
+                )
+                return@executeCancellableCall
             }
 
             val fallbackParsed = extractToolCallFromText(fullText)
             if (fallbackParsed != null) {
-                emit(LlmStreamEvent.ToolCallDetected(thought = fallbackParsed.thought, toolCall = fallbackParsed.toolCall))
-                return
+                emit(
+                    LlmStreamEvent.ToolCallDetected(
+                        thought = fallbackParsed.thought,
+                        toolCall = fallbackParsed.toolCall,
+                        promptTokens = promptTokens,
+                        completionTokens = completionTokens,
+                        estimatedCostUsd = cost
+                    )
+                )
+                return@executeCancellableCall
             }
 
             emit(LlmStreamEvent.Completed(fullText = fullText, promptTokens = promptTokens, completionTokens = completionTokens, estimatedCostUsd = cost))
@@ -550,33 +684,121 @@ class LlmClient(
         root.put("system", systemPrompt)
         root.put("stream", true)
 
+        val toolsArr = JSONArray().apply {
+            put(JSONObject().apply {
+                put("name", "execute_command")
+                put("description", "Executes a shell or Termux:API command on the phone and streams terminal output.")
+                put("input_schema", JSONObject().apply {
+                    put("type", "object")
+                    put("properties", JSONObject().apply {
+                        put("command", JSONObject().apply {
+                            put("type", "string")
+                            put("description", "The exact Bash command to execute (e.g. 'termux-battery-status', 'ls -la')")
+                        })
+                    })
+                    put("required", JSONArray().put("command"))
+                })
+            })
+        }
+        root.put("tools", toolsArr)
+
         val msgs = JSONArray()
         for (m in messages) {
-            val role = if (m.role == MessageRole.USER) "user" else "assistant"
-            val mObj = JSONObject()
-            mObj.put("role", role)
-
-            if (m.imageBase64 != null) {
-                val contentArr = JSONArray()
-                if (m.text.isNotEmpty()) {
-                    contentArr.put(JSONObject().apply {
-                        put("type", "text")
-                        put("text", m.text)
-                    })
+            when (m.role) {
+                MessageRole.USER -> {
+                    val contentArr = JSONArray()
+                    if (m.text.isNotEmpty()) {
+                        contentArr.put(JSONObject().apply {
+                            put("type", "text")
+                            put("text", m.text)
+                        })
+                    }
+                    if (m.imageBase64 != null) {
+                        contentArr.put(JSONObject().apply {
+                            put("type", "image")
+                            put("source", JSONObject().apply {
+                                put("type", "base64")
+                                put("media_type", m.imageMimeType ?: "image/jpeg")
+                                put("data", m.imageBase64)
+                            })
+                        })
+                    }
+                    if (msgs.length() > 0 && msgs.getJSONObject(msgs.length() - 1).getString("role") == "user") {
+                        val prevContent = msgs.getJSONObject(msgs.length() - 1).getJSONArray("content")
+                        for (idx in 0 until contentArr.length()) {
+                            prevContent.put(contentArr.get(idx))
+                        }
+                    } else {
+                        msgs.put(JSONObject().apply {
+                            put("role", "user")
+                            put("content", contentArr)
+                        })
+                    }
                 }
-                contentArr.put(JSONObject().apply {
-                    put("type", "image")
-                    put("source", JSONObject().apply {
-                        put("type", "base64")
-                        put("media_type", m.imageMimeType ?: "image/jpeg")
-                        put("data", m.imageBase64)
-                    })
-                })
-                mObj.put("content", contentArr)
-            } else {
-                mObj.put("content", m.text)
+                MessageRole.ASSISTANT -> {
+                    val contentArr = JSONArray()
+                    if (m.text.isNotEmpty()) {
+                        contentArr.put(JSONObject().apply {
+                            put("type", "text")
+                            put("text", m.text)
+                        })
+                    }
+                    val calls = if (m.toolCalls.isNotEmpty()) m.toolCalls else if (m.toolCall != null) listOf(m.toolCall) else emptyList()
+                    if (calls.isNotEmpty()) {
+                        for (tc in calls) {
+                            contentArr.put(JSONObject().apply {
+                                put("type", "tool_use")
+                                put("id", tc.id)
+                                put("name", tc.name)
+                                put("input", JSONObject(tc.arguments))
+                            })
+                        }
+                    }
+                    if (contentArr.length() == 0) {
+                        contentArr.put(JSONObject().apply {
+                            put("type", "text")
+                            put("text", "...")
+                        })
+                    }
+                    if (msgs.length() > 0 && msgs.getJSONObject(msgs.length() - 1).getString("role") == "assistant") {
+                        val prevContent = msgs.getJSONObject(msgs.length() - 1).getJSONArray("content")
+                        for (idx in 0 until contentArr.length()) {
+                            prevContent.put(contentArr.get(idx))
+                        }
+                    } else {
+                        msgs.put(JSONObject().apply {
+                            put("role", "assistant")
+                            put("content", contentArr)
+                        })
+                    }
+                }
+                MessageRole.TOOL -> {
+                    val toolResultBlock = JSONObject().apply {
+                        put("type", "tool_result")
+                        put("tool_use_id", m.toolResult?.toolCallId ?: "default")
+                        val resContent = JSONObject().apply {
+                            put("command", m.toolResult?.command ?: "")
+                            put("stdout", m.toolResult?.stdout ?: "")
+                            put("stderr", m.toolResult?.stderr ?: "")
+                            put("exit_code", m.toolResult?.exitCode ?: 0)
+                        }
+                        put("content", resContent.toString())
+                        if (m.toolResult?.isError == true) {
+                            put("is_error", true)
+                        }
+                    }
+                    if (msgs.length() > 0 && msgs.getJSONObject(msgs.length() - 1).getString("role") == "user") {
+                        val prevContent = msgs.getJSONObject(msgs.length() - 1).getJSONArray("content")
+                        prevContent.put(toolResultBlock)
+                    } else {
+                        msgs.put(JSONObject().apply {
+                            put("role", "user")
+                            put("content", JSONArray().put(toolResultBlock))
+                        })
+                    }
+                }
+                else -> {}
             }
-            msgs.put(mObj)
         }
         root.put("messages", msgs)
 
@@ -587,20 +809,23 @@ class LlmClient(
             .post(root.toString().toRequestBody("application/json".toMediaType()))
             .build()
 
-        client.newCall(req).execute().use { response ->
+        executeCancellableCall(req) { response ->
             if (!response.isSuccessful) {
                 val errBody = response.body?.string() ?: ""
                 val isRetryable = response.code == 429 || response.code >= 500
                 emit(LlmStreamEvent.Error("Claude API error (${response.code}): $errBody", response.code, isRetryable))
-                return
+                return@executeCancellableCall
             }
 
-            val body = response.body ?: return
+            val body = response.body ?: return@executeCancellableCall
             val reader = BufferedReader(InputStreamReader(body.byteStream(), Charsets.UTF_8))
 
             val accumulatedText = StringBuilder()
             var promptTokens = 0
             var completionTokens = 0
+            val toolCallsMap = mutableMapOf<Int, ToolCallAccumulator>()
+            var currentBlockIndex = -1
+            var streamDone = false
 
             var line: String?
             while (reader.readLine().also { line = it } != null) {
@@ -613,24 +838,51 @@ class LlmClient(
                     val type = json.optString("type")
 
                     when (type) {
+                        "error" -> {
+                            val err = json.optJSONObject("error")
+                            val errMsg = err?.optString("message", "Claude stream error") ?: "Claude stream error"
+                            val isRetryable = err?.optString("type") == "rate_limit_error"
+                            emit(LlmStreamEvent.Error(errMsg, 0, isRetryable))
+                            return@executeCancellableCall
+                        }
                         "message_start" -> {
                             val msgObj = json.optJSONObject("message")
                             val usage = msgObj?.optJSONObject("usage")
                             promptTokens = usage?.optInt("input_tokens", promptTokens) ?: promptTokens
                         }
+                        "content_block_start" -> {
+                            val idx = json.optInt("index", currentBlockIndex + 1)
+                            currentBlockIndex = idx
+                            val block = json.optJSONObject("content_block")
+                            if (block != null && block.optString("type") == "tool_use") {
+                                val id = block.optString("id", UUID.randomUUID().toString())
+                                val name = block.optString("name", "execute_command")
+                                toolCallsMap[idx] = ToolCallAccumulator(id = id, name = name)
+                            }
+                        }
                         "content_block_delta" -> {
+                            val idx = json.optInt("index", currentBlockIndex)
                             val delta = json.optJSONObject("delta")
-                            if (delta != null && delta.optString("type") == "text_delta") {
-                                val chunk = delta.optString("text", "")
-                                if (chunk.isNotEmpty()) {
-                                    accumulatedText.append(chunk)
-                                    emit(LlmStreamEvent.Token(chunk))
+                            if (delta != null) {
+                                val deltaType = delta.optString("type")
+                                if (deltaType == "text_delta") {
+                                    val chunk = delta.optString("text", "")
+                                    if (chunk.isNotEmpty()) {
+                                        accumulatedText.append(chunk)
+                                        emit(LlmStreamEvent.Token(chunk))
+                                    }
+                                } else if (deltaType == "input_json_delta") {
+                                    val partial = delta.optString("partial_json", "")
+                                    toolCallsMap[idx]?.arguments?.append(partial)
                                 }
                             }
                         }
                         "message_delta" -> {
                             val usage = json.optJSONObject("usage")
                             completionTokens = usage?.optInt("output_tokens", completionTokens) ?: completionTokens
+                        }
+                        "message_stop" -> {
+                            streamDone = true
                         }
                     }
                 } catch (e: CancellationException) {
@@ -640,30 +892,79 @@ class LlmClient(
                 }
             }
 
+            if (!streamDone && accumulatedText.isEmpty() && toolCallsMap.isEmpty()) {
+                emit(LlmStreamEvent.Error("Claude stream closed prematurely without message_stop", 0, true))
+                return@executeCancellableCall
+            }
+
             val fullText = accumulatedText.toString()
             if (promptTokens == 0) promptTokens = estimateTokens(fullText)
             if (completionTokens == 0) completionTokens = estimateTokens(fullText)
             val cost = calculateEstimatedCost(config.provider, config.modelName, promptTokens, completionTokens)
 
+            if (toolCallsMap.isNotEmpty()) {
+                val detectedTools = mutableListOf<ToolCall>()
+                var hasInvalidArgs = false
+
+                for ((_, acc) in toolCallsMap) {
+                    if (acc.name.isNotEmpty()) {
+                        val parsed = parseArgumentsJson(acc.arguments.toString())
+                        if (parsed != null) {
+                            val idStr = acc.id.ifEmpty { UUID.randomUUID().toString() }
+                            detectedTools.add(ToolCall(id = idStr, name = acc.name, arguments = parsed, rawJson = acc.arguments.toString()))
+                        } else {
+                            hasInvalidArgs = true
+                        }
+                    }
+                }
+
+                if (detectedTools.isNotEmpty()) {
+                    emit(
+                        LlmStreamEvent.ToolCallDetected(
+                            thought = fullText,
+                            toolCall = detectedTools.first(),
+                            toolCalls = detectedTools,
+                            promptTokens = promptTokens,
+                            completionTokens = completionTokens,
+                            estimatedCostUsd = cost
+                        )
+                    )
+                    return@executeCancellableCall
+                } else if (hasInvalidArgs) {
+                    emit(LlmStreamEvent.Error("Received malformed JSON arguments for tool call from Claude", 0, false))
+                    return@executeCancellableCall
+                }
+            }
+
             val parsedTool = extractToolCallFromText(fullText)
             if (parsedTool != null) {
-                emit(LlmStreamEvent.ToolCallDetected(thought = parsedTool.thought, toolCall = parsedTool.toolCall))
-                return
+                emit(
+                    LlmStreamEvent.ToolCallDetected(
+                        thought = parsedTool.thought,
+                        toolCall = parsedTool.toolCall,
+                        promptTokens = promptTokens,
+                        completionTokens = completionTokens,
+                        estimatedCostUsd = cost
+                    )
+                )
+                return@executeCancellableCall
             }
 
             emit(LlmStreamEvent.Completed(fullText = fullText, promptTokens = promptTokens, completionTokens = completionTokens, estimatedCostUsd = cost))
         }
     }
 
-    private fun parseArgumentsJson(rawJson: String): Map<String, String> {
-        val argsMap = mutableMapOf<String, String>()
-        try {
-            val obj = JSONObject(rawJson)
+    private fun parseArgumentsJson(rawJson: String): Map<String, String>? {
+        val trimmed = rawJson.trim()
+        if (trimmed.isEmpty()) return emptyMap()
+        return try {
+            val obj = JSONObject(trimmed)
+            val argsMap = mutableMapOf<String, String>()
             obj.keys().forEach { k -> argsMap[k] = obj.optString(k, "") }
+            argsMap
         } catch (e: Exception) {
-            argsMap["command"] = rawJson
+            null
         }
-        return argsMap
     }
 
     private fun estimateTokens(text: String): Int {

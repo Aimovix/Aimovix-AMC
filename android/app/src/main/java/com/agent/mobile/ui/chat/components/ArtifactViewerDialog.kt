@@ -168,42 +168,57 @@ fun ArtifactViewerDialog(
                                 }
                             } else {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Could not render the image.", color = TextMuted)
+                                    if (artifact.base64Data == null) {
+                                        CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(32.dp))
+                                    } else {
+                                        Text("Could not render the image.", color = TextMuted)
+                                    }
                                 }
                             }
                         }
 
                         ArtifactType.HTML -> {
-                            val html = artifact.content ?: "<html><body style='color:#ccc;background:#111;'>No content</body></html>"
-                            AndroidView(
-                                factory = { ctx ->
-                                    WebView(ctx).apply {
-                                        webViewClient = WebViewClient()
-                                        settings.javaScriptEnabled = false
-                                        setBackgroundColor(0xFF141414.toInt())
-                                        loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize()
-                            )
+                            if (artifact.content == null) {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(32.dp))
+                                }
+                            } else {
+                                val html = artifact.content
+                                AndroidView(
+                                    factory = { ctx ->
+                                        WebView(ctx).apply {
+                                            webViewClient = WebViewClient()
+                                            settings.javaScriptEnabled = false
+                                            setBackgroundColor(0xFF141414.toInt())
+                                            loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         }
 
                         ArtifactType.CODE, ArtifactType.MARKDOWN, ArtifactType.TEXT -> {
-                            val content = artifact.content ?: "File content not loaded."
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .verticalScroll(rememberScrollState())
-                            ) {
-                                Text(
-                                    text = content,
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        fontFamily = FontFamily.Monospace,
-                                        color = TextWhite,
-                                        fontSize = 12.sp,
-                                        lineHeight = 18.sp
+                            if (artifact.content == null) {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(32.dp))
+                                }
+                            } else {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .verticalScroll(rememberScrollState())
+                                ) {
+                                    Text(
+                                        text = artifact.content,
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontFamily = FontFamily.Monospace,
+                                            color = TextWhite,
+                                            fontSize = 12.sp,
+                                            lineHeight = 18.sp
+                                        )
                                     )
-                                )
+                                }
                             }
                         }
                     }

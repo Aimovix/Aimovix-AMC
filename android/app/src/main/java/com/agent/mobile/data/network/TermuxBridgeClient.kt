@@ -106,12 +106,24 @@ class TermuxBridgeClient(
     // Live terminal streaming events (ID to Output chunk)
     val terminalOutputEvents = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 256)
 
+    // Direct per-execution chunk listeners
+    private val executionChunkCallbacks = ConcurrentHashMap<String, (String) -> Unit>()
+
+    private class ExecutionBuffers(
+        val stdout: StringBuilder = StringBuilder(),
+        val stderr: StringBuilder = StringBuilder()
+    )
+
     // Map for waiting command execution completions
     private val pendingExecutions = ConcurrentHashMap<String, CompletableDeferred<ToolResult>>()
-    private val executionOutputs = ConcurrentHashMap<String, StringBuilder>()
+    private val executionBuffers = ConcurrentHashMap<String, ExecutionBuffers>()
+    private val pendingPings = ConcurrentHashMap<String, CompletableDeferred<Long>>()
 
-    // Map for waiting file reads
+    // Map for waiting file reads (keyed by request_id and path)
     private val pendingFileReads = ConcurrentHashMap<String, CompletableDeferred<String>>()
+
+    // Connection generation to prevent stale callbacks
+    private val connectionGeneration = java.util.concurrent.atomic.AtomicLong(0)
 
     // Auto-reconnect worker state
     private var isAutoReconnectEnabled = true
@@ -167,12 +179,28 @@ class TermuxBridgeClient(
                 if (ws == null) {
                     forceReconnect()
                 } else {
-                    val pingOk = ws.send(JSONObject().apply {
-                        put("action", "ping")
-                        put("timestamp", System.currentTimeMillis())
-                    }.toString())
-                    if (!pingOk) {
-                        forceReconnect()
+                    scope.launch {
+                        val pingId = UUID.randomUUID().toString()
+                        val deferred = CompletableDeferred<Long>()
+                        pendingPings[pingId] = deferred
+                        val sent = ws.send(JSONObject().apply {
+                            put("action", "ping")
+                            put("ping_id", pingId)
+                            put("timestamp", System.currentTimeMillis())
+                        }.toString())
+
+                        if (!sent) {
+                            pendingPings.remove(pingId)
+                            forceReconnect()
+                        } else {
+                            try {
+                                withTimeout(2500L) { deferred.await() }
+                                requestSysInfo()
+                            } catch (e: Exception) {
+                                pendingPings.remove(pingId)
+                                forceReconnect()
+                            }
+                        }
                     }
                 }
             }
@@ -190,10 +218,12 @@ class TermuxBridgeClient(
     }
 
     suspend fun triggerBoost(): ToolResult {
-        return executeCommand("amc boost || amc restart")
+        return executeCommand("nohup amc boost >/dev/null 2>&1 &")
     }
 
     private fun doConnect(authToken: String) {
+        val currentGen = connectionGeneration.incrementAndGet()
+
         // Clean up previous socket
         try {
             webSocket?.cancel()
@@ -210,7 +240,8 @@ class TermuxBridgeClient(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
-                Log.d(TAG, "WebSocket connection opened to $url")
+                if (connectionGeneration.get() != currentGen) return
+                Log.d(TAG, "WebSocket connection opened to $url (gen $currentGen)")
                 // Send auth handshake immediately
                 val authMsg = JSONObject().apply {
                     put("action", "auth")
@@ -220,10 +251,12 @@ class TermuxBridgeClient(
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
+                if (connectionGeneration.get() != currentGen) return
                 handleIncomingMessage(text)
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                if (connectionGeneration.get() != currentGen) return
                 Log.w(TAG, "WebSocket closed ($code): $reason")
                 failAllPendingExecutions("Connection to Termux closed ($reason)")
                 if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
@@ -233,6 +266,7 @@ class TermuxBridgeClient(
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                if (connectionGeneration.get() != currentGen) return
                 Log.w(TAG, "WebSocket error: ${t.message}")
                 failAllPendingExecutions("Connection error: ${t.localizedMessage}")
                 if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
@@ -269,9 +303,30 @@ class TermuxBridgeClient(
             )
         }
         pendingExecutions.clear()
-        executionOutputs.clear()
+        executionBuffers.clear()
+        executionChunkCallbacks.clear()
+        pendingPings.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
+        pendingPings.clear()
         pendingFileReads.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
         pendingFileReads.clear()
+    }
+
+    private fun parseSystemInfo(json: JSONObject): TermuxSystemInfo {
+        val sysJson = json.optJSONObject("system") ?: json.optJSONObject("data") ?: json
+        val batteryJson = sysJson.optJSONObject("battery")
+        val isCharging = if (batteryJson != null && batteryJson.has("plugged")) {
+            batteryJson.optString("plugged") != "UNPLUGGED"
+        } else {
+            false
+        }
+        return TermuxSystemInfo(
+            os = sysJson.optString("os", "Linux"),
+            cwd = json.optString("cwd", sysJson.optString("cwd", "~")),
+            batteryPercentage = if (batteryJson != null && batteryJson.has("percentage")) batteryJson.optInt("percentage") else null,
+            isCharging = isCharging,
+            hasTermuxApi = sysJson.optBoolean("has_termux_api", false),
+            hasLlama = sysJson.optBoolean("has_llama", false)
+        )
     }
 
     private fun handleIncomingMessage(text: String) {
@@ -281,42 +336,57 @@ class TermuxBridgeClient(
 
             when (type) {
                 "auth_ok" -> {
-                    val sysJson = json.optJSONObject("system")
-                    val batteryJson = sysJson?.optJSONObject("battery")
-                    val info = TermuxSystemInfo(
-                        os = sysJson?.optString("os", "Linux") ?: "Linux",
-                        cwd = json.optString("cwd", "~"),
-                        batteryPercentage = batteryJson?.optInt("percentage"),
-                        isCharging = batteryJson?.optString("plugged") != "UNPLUGGED",
-                        hasTermuxApi = sysJson?.optBoolean("has_termux_api", false) ?: false,
-                        hasLlama = sysJson?.optBoolean("has_llama", false) ?: false
-                    )
+                    val info = parseSystemInfo(json)
                     _connectionStatus.value = ConnectionStatus.Connected(info)
                     // Once connected, cancel any scheduled reconnects
                     reconnectJob?.cancel()
                     Log.i(TAG, "✅ Termux bridge authenticated and connected.")
+                }
+                "sys_info" -> {
+                    val info = parseSystemInfo(json)
+                    _connectionStatus.value = ConnectionStatus.Connected(info)
+                }
+                "pong" -> {
+                    val pingId = json.optString("ping_id")
+                    if (pingId.isNotEmpty()) {
+                        pendingPings.remove(pingId)?.complete(System.currentTimeMillis())
+                    }
                 }
                 "auth_fail" -> {
                     val error = json.optString("error", "Authentication failed: invalid token")
                     isAutoReconnectEnabled = false
                     _connectionStatus.value = ConnectionStatus.AuthFailed(error)
                     failAllPendingExecutions(error)
-                    // Do NOT auto-reconnect continuously on bad auth token until token changes
                     reconnectJob?.cancel()
                 }
-                "stdout", "stderr" -> {
+                "stdout" -> {
                     val execId = json.optString("execution_id")
                     val data = json.optString("data")
-                    val buffer = executionOutputs.getOrPut(execId) { StringBuilder() }
-                    buffer.append(data)
-                    scope.launch {
-                        terminalOutputEvents.emit(Pair(execId, data))
+                    val buffers = executionBuffers.getOrPut(execId) { ExecutionBuffers() }
+                    val maxBytes = 250 * 1024
+                    if (buffers.stdout.length < maxBytes) {
+                        buffers.stdout.append(data.take(maxBytes - buffers.stdout.length))
                     }
+                    executionChunkCallbacks[execId]?.invoke(data)
+                    terminalOutputEvents.tryEmit(Pair(execId, data))
+                }
+                "stderr" -> {
+                    val execId = json.optString("execution_id")
+                    val data = json.optString("data")
+                    val buffers = executionBuffers.getOrPut(execId) { ExecutionBuffers() }
+                    val maxBytes = 250 * 1024
+                    if (buffers.stderr.length < maxBytes) {
+                        buffers.stderr.append(data.take(maxBytes - buffers.stderr.length))
+                    }
+                    executionChunkCallbacks[execId]?.invoke(data)
+                    terminalOutputEvents.tryEmit(Pair(execId, data))
                 }
                 "completed" -> {
                     val execId = json.optString("execution_id")
                     val exitCode = json.optInt("exit_code", 0)
-                    val out = executionOutputs[execId]?.toString() ?: ""
+                    val buffers = executionBuffers[execId]
+                    val out = buffers?.stdout?.toString() ?: ""
+                    val err = buffers?.stderr?.toString() ?: ""
                     val deferred = pendingExecutions[execId]
                     if (deferred != null) {
                         deferred.complete(
@@ -324,31 +394,38 @@ class TermuxBridgeClient(
                                 toolCallId = execId,
                                 command = "",
                                 stdout = out,
+                                stderr = err,
                                 exitCode = exitCode,
                                 isError = exitCode != 0
                             )
                         )
                         pendingExecutions.remove(execId)
-                        executionOutputs.remove(execId)
+                        executionBuffers.remove(execId)
+                        executionChunkCallbacks.remove(execId)
                     }
                 }
                 "file_content" -> {
+                    val reqId = json.optString("request_id")
                     val path = json.optString("path")
                     val content = json.optString("content")
-                    val deferred = pendingFileReads.remove(path)
+                    val deferred = if (reqId.isNotEmpty()) pendingFileReads.remove(reqId) else pendingFileReads.remove(path)
                     deferred?.complete(content)
                 }
                 "file_base64" -> {
+                    val reqId = json.optString("request_id")
                     val path = json.optString("path")
                     val b64 = json.optString("data")
-                    val deferred = pendingFileReads.remove(path)
+                    val deferred = if (reqId.isNotEmpty()) pendingFileReads.remove(reqId) else pendingFileReads.remove(path)
                     deferred?.complete(b64)
                 }
                 "error" -> {
                     val execId = json.optString("execution_id")
                     val err = json.optString("error")
+                    val reqId = json.optString("request_id")
                     val path = json.optString("path")
-                    if (path.isNotEmpty()) {
+                    if (reqId.isNotEmpty()) {
+                        pendingFileReads.remove(reqId)?.completeExceptionally(Exception(err))
+                    } else if (path.isNotEmpty()) {
                         pendingFileReads.remove(path)?.completeExceptionally(Exception(err))
                     }
                     val deferred = pendingExecutions[execId]
@@ -363,7 +440,8 @@ class TermuxBridgeClient(
                             )
                         )
                         pendingExecutions.remove(execId)
-                        executionOutputs.remove(execId)
+                        executionBuffers.remove(execId)
+                        executionChunkCallbacks.remove(execId)
                     }
                 }
             }
@@ -387,7 +465,10 @@ class TermuxBridgeClient(
         val execId = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<ToolResult>()
         pendingExecutions[execId] = deferred
-        executionOutputs[execId] = StringBuilder()
+        executionBuffers[execId] = ExecutionBuffers()
+        if (onChunk != null) {
+            executionChunkCallbacks[execId] = onChunk
+        }
 
         val msg = JSONObject().apply {
             put("action", "execute")
@@ -396,21 +477,11 @@ class TermuxBridgeClient(
             put("timeout_ms", timeoutMs.coerceIn(1L, 3_600_000L))
         }
 
-        val listenerJob = onChunk?.let { callback ->
-            scope.launch {
-                terminalOutputEvents.collect { (id, chunk) ->
-                    if (id == execId) {
-                        callback(chunk)
-                    }
-                }
-            }
-        }
-
         val ws = webSocket
         if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
-            listenerJob?.cancel()
+            executionChunkCallbacks.remove(execId)
             pendingExecutions.remove(execId)
-            executionOutputs.remove(execId)
+            executionBuffers.remove(execId)
             return@withContext ToolResult(
                 toolCallId = execId,
                 command = command,
@@ -422,9 +493,9 @@ class TermuxBridgeClient(
 
         val sent = ws.send(msg.toString())
         if (!sent) {
-            listenerJob?.cancel()
+            executionChunkCallbacks.remove(execId)
             pendingExecutions.remove(execId)
-            executionOutputs.remove(execId)
+            executionBuffers.remove(execId)
             return@withContext ToolResult(
                 toolCallId = execId,
                 command = command,
@@ -451,9 +522,9 @@ class TermuxBridgeClient(
             interruptCurrent(execId)
             throw e
         } finally {
-            listenerJob?.cancel()
+            executionChunkCallbacks.remove(execId)
             pendingExecutions.remove(execId)
-            executionOutputs.remove(execId)
+            executionBuffers.remove(execId)
         }
 
         result.copy(command = command)
@@ -468,60 +539,81 @@ class TermuxBridgeClient(
     }
 
     suspend fun readFile(path: String, timeoutMs: Long = 10_000L): String = withContext(Dispatchers.IO) {
+        val reqId = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<String>()
-        pendingFileReads[path] = deferred
+        pendingFileReads[reqId] = deferred
         val msg = JSONObject().apply {
             put("action", "read_file")
+            put("request_id", reqId)
             put("path", path)
         }
         val ws = webSocket
         if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
-            pendingFileReads.remove(path)
+            pendingFileReads.remove(reqId)
             throw IllegalStateException("No connection to Termux")
         }
         ws.send(msg.toString())
         try {
             withTimeout(timeoutMs) { deferred.await() }
         } finally {
-            pendingFileReads.remove(path)
+            pendingFileReads.remove(reqId)
         }
     }
 
     suspend fun readFileBase64(path: String, timeoutMs: Long = 15_000L): String = withContext(Dispatchers.IO) {
+        val reqId = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<String>()
-        pendingFileReads[path] = deferred
+        pendingFileReads[reqId] = deferred
         val msg = JSONObject().apply {
             put("action", "read_file_base64")
+            put("request_id", reqId)
             put("path", path)
         }
         val ws = webSocket
         if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
-            pendingFileReads.remove(path)
+            pendingFileReads.remove(reqId)
             throw IllegalStateException("No connection to Termux")
         }
         ws.send(msg.toString())
         try {
             withTimeout(timeoutMs) { deferred.await() }
         } finally {
-            pendingFileReads.remove(path)
+            pendingFileReads.remove(reqId)
         }
     }
 
-    suspend fun awaitConnected(timeoutMs: Long = 10_000L) {
-        val status = withTimeout(timeoutMs) {
+    suspend fun awaitConnected(timeoutMs: Long = 10_000L): Boolean {
+        if (_connectionStatus.value is ConnectionStatus.Connected) return true
+        val status = withTimeoutOrNull(timeoutMs) {
             connectionStatus.first { it is ConnectionStatus.Connected || it is ConnectionStatus.AuthFailed }
         }
-        check(status is ConnectionStatus.Connected) { "Bridge authentication failed. Update the token in Setup." }
+        return status is ConnectionStatus.Connected
     }
 
     suspend fun getCrontab(): String {
         val res = executeCommand("crontab -l")
-        return if (res.exitCode == 0) res.stdout else ""
+        if (res.exitCode == 0) return res.stdout
+        if (res.exitCode == 1 && (res.stderr.contains("no crontab", ignoreCase = true) || res.stdout.contains("no crontab", ignoreCase = true))) {
+            return ""
+        }
+        throw java.io.IOException(if (res.stderr.isNotEmpty()) res.stderr else "Failed to read crontab (exit ${res.exitCode})")
     }
 
     suspend fun setCrontab(crontabContent: String): ToolResult {
         val escaped = crontabContent.replace("'", "'\\''")
         return executeCommand("echo '$escaped' | crontab -")
+    }
+
+    fun requestSysInfo() {
+        val ws = webSocket
+        if (ws != null && _connectionStatus.value is ConnectionStatus.Connected) {
+            ws.send(JSONObject().apply { put("action", "sys_info") }.toString())
+        }
+    }
+
+    suspend fun checkCronStatus(): String {
+        val res = executeCommand("command -v crond >/dev/null && (pgrep -x crond >/dev/null || pgrep -f crond >/dev/null) && echo 'RUNNING' || (command -v crond >/dev/null && echo 'STOPPED' || echo 'NOT_INSTALLED')")
+        return res.stdout.trim().ifEmpty { "UNKNOWN" }
     }
 
     fun disconnect() {

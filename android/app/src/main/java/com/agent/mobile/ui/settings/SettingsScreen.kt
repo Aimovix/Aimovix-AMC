@@ -118,9 +118,14 @@ fun SettingsScreen(
                                 color = if (isSelected) AccentPrimary else BorderSubtle
                             ),
                             onClick = {
-                                selectedProvider = provider
-                                baseUrl = provider.defaultBaseUrl
-                                modelName = provider.defaultModel
+                                if (selectedProvider != provider) {
+                                    preferenceManager.saveProviderProfile(selectedProvider, apiKey.trim(), baseUrl.trim(), modelName.trim())
+                                    selectedProvider = provider
+                                    val profile = preferenceManager.loadProviderProfile(provider)
+                                    baseUrl = profile.baseUrl
+                                    modelName = profile.modelName
+                                    apiKey = profile.apiKey
+                                }
                             }
                         ) {
                             Row(

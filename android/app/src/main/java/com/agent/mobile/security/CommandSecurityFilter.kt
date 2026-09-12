@@ -82,11 +82,17 @@ object CommandSecurityFilter {
     private var isStrictMode = false
 
     fun setCustomRules(whitelist: List<String>, blacklist: List<String>, strict: Boolean = false) {
-        customWhitelist = whitelist.mapNotNull {
+        val validWhite = whitelist.mapNotNull {
             try { Pattern.compile(it, Pattern.CASE_INSENSITIVE) } catch (e: Exception) { null }
         }
-        customBlacklist = blacklist.mapNotNull {
+        val validBlack = blacklist.mapNotNull {
             try { Pattern.compile(it, Pattern.CASE_INSENSITIVE) } catch (e: Exception) { null }
+        }
+        if (whitelist.isEmpty() || validWhite.isNotEmpty()) {
+            customWhitelist = validWhite
+        }
+        if (blacklist.isEmpty() || validBlack.isNotEmpty()) {
+            customBlacklist = validBlack
         }
         isStrictMode = strict
     }
@@ -194,10 +200,39 @@ object CommandSecurityFilter {
             .trim()
     }
 
+    fun isValidRegex(pattern: String): Boolean {
+        if (pattern.isBlank()) return false
+        return try {
+            Pattern.compile(pattern)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    internal fun normalizePath(path: String): String {
+        var p = path.trim().trim('\'', '"')
+        p = p.replace(MULTI_SLASH_REGEX, "/")
+        var changed = true
+        while (changed) {
+            val before = p
+            p = p.replace("/./", "/")
+            if (p.endsWith("/.")) {
+                p = p.substring(0, p.length - 2)
+            }
+            if (p.length > 1 && p.endsWith("/")) {
+                p = p.substring(0, p.length - 1)
+            }
+            p = p.replace(MULTI_SLASH_REGEX, "/")
+            changed = (p != before)
+        }
+        return p.ifEmpty { "/" }
+    }
+
     private fun isCatastrophicTarget(target: String): Boolean {
-        val clean = target.trim().removeSuffix("/").ifEmpty { "/" }
+        val clean = normalizePath(target)
         // 1. Literal root and global wildcards
-        if (clean in setOf("/", "/*", "~", "~/*", "*", ".", "..", "\$HOME", "\${HOME}", "\$PREFIX", "\${PREFIX}")) {
+        if (clean in setOf("/", "/*", "/.", "~", "~/*", "~.*", "*", ".", "..", "\$HOME", "\${HOME}", "\$PREFIX", "\${PREFIX}")) {
             return true
         }
         if (clean == "\$HOME/*" || clean == "\${HOME}/*" || clean == "\$PREFIX/*" || clean == "\${PREFIX}/*") {

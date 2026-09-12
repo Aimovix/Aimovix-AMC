@@ -66,6 +66,11 @@ cmd_stop() {
     if is_running; then
         local pid
         pid="$(cat "$PID_FILE")"
+        if [ -r "/proc/$pid/cmdline" ] && ! grep -qa "bridge_daemon" "/proc/$pid/cmdline" 2>/dev/null; then
+            echo "Warning: PID $pid does not appear to be the bridge daemon (PID reused). Cleaning up stale PID file." >&2
+            rm -f "$PID_FILE"
+            return 0
+        fi
         kill -TERM "$pid" 2>/dev/null || true
         # WebSocket close handshake, command cancellation, and Termux:API
         # cleanup can exceed five seconds. Allow graceful shutdown to finish.
@@ -125,7 +130,9 @@ case "${1:-}" in
             am start -a android.settings.APP_NOTIFICATION_SETTINGS --es android.provider.extra.APP_PACKAGE com.termux >/dev/null 2>&1 || true
         fi
         cmd_autostart
-        cmd_stop && cmd_start
+        nohup bash -c 'amc restart' >/dev/null 2>&1 &
+        disown 2>/dev/null || true
+        echo "AMC bridge boosted and restarting in background."
         ;;
     *)
         echo "Usage: amc {start|run|stop|restart|status|token|logs|autostart|boost}"
