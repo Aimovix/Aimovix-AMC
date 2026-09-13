@@ -31,9 +31,13 @@ class AutonomousAgentEngine(
 
     private var activeJob: Job? = null
     private var sessionCollectJob: Job? = null
+    private var stopJob: Job? = null
 
     private val _isStopping = MutableStateFlow(false)
     val isStopping: StateFlow<Boolean> = _isStopping.asStateFlow()
+
+    private val _isInitialized = MutableStateFlow(false)
+    val isInitialized: StateFlow<Boolean> = _isInitialized.asStateFlow()
 
     private val _currentSession = MutableStateFlow<ChatSession?>(null)
     val currentSession: StateFlow<ChatSession?> = _currentSession.asStateFlow()
@@ -81,23 +85,33 @@ class AutonomousAgentEngine(
         }
     }
 
+    fun close() {
+        sessionCollectJob?.cancel()
+        activeJob?.cancel()
+        stopJob?.cancel()
+        scope.cancel()
+    }
+
     private suspend fun initSession() {
-        val repo = chatRepository ?: return
-        val savedSessionId = preferenceManager?.loadActiveSessionId()
+        try {
+            val repo = chatRepository
+            if (repo == null) {
+                _isInitialized.value = true
+                return
+            }
+            val savedSessionId = preferenceManager?.loadActiveSessionId()
 
-        val sessionToLoad = if (savedSessionId != null) {
-            repo.getSessionById(savedSessionId)
-        } else null
+            val sessionToLoad = if (savedSessionId != null) {
+                repo.getSessionById(savedSessionId)
+            } else null
 
-        if (sessionToLoad != null) {
-            loadSession(sessionToLoad)
-        } else {
-            val newSession = repo.createNewSession(
-                title = "New chat",
-                provider = _modelConfig.value.provider.name,
-                model = _modelConfig.value.modelName
-            )
-            loadSession(newSession)
+            if (sessionToLoad != null) {
+                loadSession(sessionToLoad)
+            } else {
+                createNewSessionInternal()
+            }
+        } finally {
+            _isInitialized.value = true
         }
     }
 
@@ -122,33 +136,40 @@ class AutonomousAgentEngine(
     }
 
     fun createNewSession() {
-        emergencyStop()
         scope.launch {
-            val repo = chatRepository
-            val config = _modelConfig.value
-            val session = repo?.createNewSession(
-                title = "New chat",
-                provider = config.provider.name,
-                model = config.modelName
-            ) ?: ChatSession(
-                id = UUID.randomUUID().toString(),
-                title = "New chat",
-                modelProvider = config.provider.name,
-                modelName = config.modelName
-            )
-            _messages.value = emptyList()
-            _artifacts.value = emptyList()
-            loadSession(session)
+            sessionCollectJob?.cancel()
+            stopExecution(silent = true)
+            createNewSessionInternal()
         }
+    }
+
+    private suspend fun createNewSessionInternal() {
+        val repo = chatRepository
+        val config = _modelConfig.value
+        val session = repo?.createNewSession(
+            title = "New chat",
+            provider = config.provider.name,
+            model = config.modelName
+        ) ?: ChatSession(
+            id = UUID.randomUUID().toString(),
+            title = "New chat",
+            modelProvider = config.provider.name,
+            modelName = config.modelName
+        )
+        _messages.value = emptyList()
+        _artifacts.value = emptyList()
+        loadSession(session)
     }
 
     fun switchSession(sessionId: String) {
         if (_currentSession.value?.id == sessionId) return
-        emergencyStop()
         scope.launch {
+            sessionCollectJob?.cancel()
+            stopExecution(silent = true)
             val session = chatRepository?.getSessionById(sessionId)
             if (session != null) {
                 _artifacts.value = emptyList()
+                _messages.value = emptyList()
                 loadSession(session)
             }
         }
@@ -156,9 +177,13 @@ class AutonomousAgentEngine(
 
     fun deleteSession(sessionId: String) {
         scope.launch {
-            chatRepository?.deleteSession(sessionId)
             if (_currentSession.value?.id == sessionId) {
-                createNewSession()
+                sessionCollectJob?.cancel()
+                stopExecution(silent = true)
+                chatRepository?.deleteSession(sessionId)
+                createNewSessionInternal()
+            } else {
+                chatRepository?.deleteSession(sessionId)
             }
         }
     }
@@ -184,20 +209,21 @@ class AutonomousAgentEngine(
     }
 
     fun clearHistory() {
-        emergencyStop()
         val current = _currentSession.value
-        if (current != null && chatRepository != null) {
-            scope.launch {
+        scope.launch {
+            sessionCollectJob?.cancel()
+            stopExecution(silent = true)
+            if (current != null && chatRepository != null) {
                 chatRepository.deleteSession(current.id)
-                createNewSession()
+                createNewSessionInternal()
+            } else {
+                _messages.value = emptyList()
             }
-        } else {
-            _messages.value = emptyList()
         }
     }
 
-    fun startTask(userPrompt: String, imageBase64: String? = null, imageMimeType: String? = null) {
-        if (_isBusy.value || _isStopping.value || userPrompt.isBlank()) return
+    fun startTask(userPrompt: String, imageBase64: String? = null, imageMimeType: String? = null): Boolean {
+        if (!_isInitialized.value || _isBusy.value || _isStopping.value || userPrompt.isBlank()) return false
 
         val targetSession = _currentSession.value
         val executionSessionId = targetSession?.id ?: UUID.randomUUID().toString()
@@ -226,34 +252,55 @@ class AutonomousAgentEngine(
 
                 runAgentLoop(executionSessionId)
             } catch (e: CancellationException) {
+                recoverAbortedToolCalls(executionSessionId, "Execution canceled by the user.")
                 appendSystemMessage("🛑 Execution canceled by the user.", executionSessionId)
             } catch (e: Exception) {
                 Log.e(TAG, "Agent loop error: ${e.message}", e)
+                recoverAbortedToolCalls(executionSessionId, "Agent loop error: ${e.localizedMessage}")
                 appendSystemMessage("⚠️ Agent loop error: ${e.localizedMessage}", executionSessionId)
             } finally {
                 _isBusy.value = false
                 _pendingApproval.value = null
             }
         }
+        return true
     }
 
-    internal fun prepareContextMessages(allMessages: List<ChatMessage>, maxMessages: Int = 14): List<ChatMessage> {
+    internal fun prepareContextMessages(
+        allMessages: List<ChatMessage>,
+        maxMessages: Int = 14,
+        maxCharBudget: Int = 80_000
+    ): List<ChatMessage> {
         val nonSystem = allMessages.filter { it.role != MessageRole.SYSTEM }
-        if (nonSystem.size <= maxMessages) return nonSystem
+        if (nonSystem.isEmpty()) return emptyList()
 
-        val initialUserMsg = nonSystem.firstOrNull { it.role == MessageRole.USER }
-        val recentWindow = nonSystem.takeLast(maxMessages - 1).toMutableList()
+        val latestUserMsg = nonSystem.lastOrNull { it.role == MessageRole.USER }
+        var window = nonSystem.takeLast(maxMessages).toMutableList()
 
         // Ensure we do not start the window with an orphaned TOOL result
-        while (recentWindow.isNotEmpty() && recentWindow.first().role == MessageRole.TOOL) {
-            recentWindow.removeAt(0)
+        while (window.isNotEmpty() && window.first().role == MessageRole.TOOL) {
+            window.removeAt(0)
         }
 
-        return if (initialUserMsg != null && !recentWindow.contains(initialUserMsg)) {
-            listOf(initialUserMsg) + recentWindow
-        } else {
-            recentWindow
+        if (latestUserMsg != null && !window.contains(latestUserMsg)) {
+            window.add(0, latestUserMsg)
         }
+
+        fun totalChars(msgs: List<ChatMessage>): Int =
+            msgs.sumOf { it.text.length + (it.toolResult?.stdout?.length ?: 0) + (it.toolResult?.stderr?.length ?: 0) }
+
+        while (window.size > 2 && totalChars(window) > maxCharBudget) {
+            val dropIdx = if (window[0] == latestUserMsg && window.size > 1) 1 else 0
+            window.removeAt(dropIdx)
+            while (window.isNotEmpty() && window.first().role == MessageRole.TOOL) {
+                window.removeAt(0)
+            }
+            if (latestUserMsg != null && !window.contains(latestUserMsg)) {
+                window.add(0, latestUserMsg)
+            }
+        }
+
+        return window
     }
 
     private suspend fun runAgentLoop(executionSessionId: String) {
@@ -365,6 +412,7 @@ class AutonomousAgentEngine(
                     chatRepository?.saveMessage(executionSessionId, preMsg)
                 }
 
+                val pendingVisionObservations = mutableListOf<ChatMessage>()
                 for (toolCall in detectedTools) {
                     if (!currentCoroutineContext().isActive) break
                     val cmd = toolCall.arguments["command"]?.trim() ?: ""
@@ -374,11 +422,12 @@ class AutonomousAgentEngine(
                         val runawayMsg = "🛑 Loop protection: repeated execution or persistent failures detected for `$cmd` . Execution stopped."
                         appendSystemMessage(runawayMsg, executionSessionId)
                         updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
+                        recoverAbortedToolCalls(executionSessionId, "Loop protection stopped execution.")
                         val stoppedMsg = _messages.value.firstOrNull { it.id == assistantMsgId }
                         if (stoppedMsg != null) {
                             chatRepository?.saveMessage(executionSessionId, stoppedMsg)
                         }
-                        break
+                        return
                     }
                     commandHistory.add(cmd)
 
@@ -387,6 +436,8 @@ class AutonomousAgentEngine(
                         riskLevel = assessment.level.name,
                         riskReason = assessment.reason
                     )
+                    val updatedTools = detectedTools.map { if (it.id == securedToolCall.id) securedToolCall else it }
+                    updateMessageToolCalls(assistantMsgId, updatedTools, MessageStatus.EXECUTING_TOOL)
 
                     // 2. Blacklist Check
                     if (assessment.isBlocked) {
@@ -430,7 +481,7 @@ class AutonomousAgentEngine(
                     // 3. Approval Check (Step-by-step or High-Risk)
                     val mustApprove = CommandSecurityFilter.shouldRequireApproval(assessment, _executionMode.value)
                     if (mustApprove) {
-                        updateMessageStatus(assistantMsgId, MessageStatus.WAITING_FOR_APPROVAL)
+                        updateMessageToolCalls(assistantMsgId, updatedTools, MessageStatus.WAITING_FOR_APPROVAL)
                         _pendingApproval.value = Pair(assistantMsgId, securedToolCall)
                         val deferred = CompletableDeferred<Boolean>()
                         approvalContinuation = deferred
@@ -502,19 +553,20 @@ class AutonomousAgentEngine(
                     )
 
                     // 6. Termux-Vision-Loop Detection
-                    var visionObservation: ChatMessage? = null
                     if (cmd.contains("termux-camera-photo") && result.exitCode == 0) {
                         val photoPath = extractPhotoPathFromCommand(cmd)
                         if (photoPath != null) {
                             try {
                                 val base64Img = bridgeClient.readFileBase64(photoPath)
                                 if (base64Img.isNotEmpty()) {
-                                    visionObservation = ChatMessage(
-                                        role = MessageRole.USER,
-                                        text = "📸 Photo captured in Termux (`$photoPath`):",
-                                        imageBase64 = base64Img,
-                                        imageMimeType = "image/jpeg",
-                                        status = MessageStatus.COMPLETED
+                                    pendingVisionObservations.add(
+                                        ChatMessage(
+                                            role = MessageRole.USER,
+                                            text = "📸 Photo captured in Termux (`$photoPath`):",
+                                            imageBase64 = base64Img,
+                                            imageMimeType = "image/jpeg",
+                                            status = MessageStatus.COMPLETED
+                                        )
                                     )
                                     appendArtifact(
                                         ArtifactItem(
@@ -555,11 +607,11 @@ class AutonomousAgentEngine(
                     )
                     _messages.value = _messages.value + toolMsg
                     chatRepository?.saveMessage(executionSessionId, toolMsg)
+                }
 
-                    if (visionObservation != null) {
-                        _messages.value = _messages.value + visionObservation
-                        chatRepository?.saveMessage(executionSessionId, visionObservation)
-                    }
+                for (visionObservation in pendingVisionObservations) {
+                    _messages.value = _messages.value + visionObservation
+                    chatRepository?.saveMessage(executionSessionId, visionObservation)
                 }
 
                 val completedAssistant = _messages.value.firstOrNull { it.id == assistantMsgId }
@@ -660,12 +712,17 @@ class AutonomousAgentEngine(
 
     private fun detectAndRegisterArtifacts(command: String, result: ToolResult) {
         val fileExtensions = listOf(".py", ".sh", ".js", ".json", ".md", ".html", ".txt", ".png", ".jpg", ".jpeg")
-        val tokens = command.split("\\s+".toRegex())
+        val tokens = mutableListOf<String>()
+        val tokenMatcher = java.util.regex.Pattern.compile(""""([^"]*)"|'([^']*)'|(\S+)""").matcher(command)
+        while (tokenMatcher.find()) {
+            val token = tokenMatcher.group(1) ?: tokenMatcher.group(2) ?: tokenMatcher.group(3)
+            if (token != null) tokens.add(token)
+        }
 
         for (token in tokens) {
-            val clean = token.trim('"', '\'', '>', '<', ';', '&')
+            val clean = token.trim('"', '\'', '>', '<', ';', '&', ' ')
             val ext = fileExtensions.firstOrNull { clean.endsWith(it, ignoreCase = true) }
-            if (ext != null && clean.length > ext.length) {
+            if (ext != null && clean.length > ext.length && !clean.contains('\n')) {
                 val type = when {
                     ext in listOf(".png", ".jpg", ".jpeg") -> ArtifactType.IMAGE
                     ext == ".md" -> ArtifactType.MARKDOWN
@@ -731,28 +788,77 @@ class AutonomousAgentEngine(
         }
     }
 
-    fun approvePendingAction() {
+    fun approvePendingAction(toolCallId: String? = null) {
+        val pending = _pendingApproval.value
+        if (toolCallId != null && pending != null && pending.second.id != toolCallId) {
+            Log.w(TAG, "Mismatched tool approval ID: expected ${pending.second.id} but received $toolCallId")
+            return
+        }
         approvalContinuation?.complete(true)
     }
 
-    fun rejectPendingAction() {
+    fun rejectPendingAction(toolCallId: String? = null) {
+        val pending = _pendingApproval.value
+        if (toolCallId != null && pending != null && pending.second.id != toolCallId) {
+            Log.w(TAG, "Mismatched tool reject ID: expected ${pending.second.id} but received $toolCallId")
+            return
+        }
         approvalContinuation?.complete(false)
     }
 
-    fun emergencyStop() {
+    suspend fun stopExecution(silent: Boolean = false) {
         _isStopping.value = true
         approvalContinuation?.cancel()
         bridgeClient.interruptCurrent()
         _pendingApproval.value = null
-        appendSystemMessage("🛑 Emergency stop requested. Waiting for the bridge to stop execution.", _currentSession.value?.id)
+        if (!silent) {
+            appendSystemMessage("🛑 Emergency stop requested. Waiting for the bridge to stop execution.", _currentSession.value?.id)
+        }
         val jobToCancel = activeJob
         activeJob = null
-        scope.launch {
-            try {
-                jobToCancel?.cancelAndJoin()
-            } finally {
-                _isBusy.value = false
-                _isStopping.value = false
+        try {
+            jobToCancel?.cancelAndJoin()
+        } finally {
+            _isBusy.value = false
+            _isStopping.value = false
+            stopJob = null
+        }
+    }
+
+    fun emergencyStop() {
+        _isStopping.value = true
+        if (stopJob?.isActive == true) return
+        stopJob = scope.launch {
+            stopExecution(silent = false)
+        }
+    }
+
+    private fun recoverAbortedToolCalls(executionSessionId: String, reason: String) {
+        val currentMessages = _messages.value
+        val lastAssistant = currentMessages.lastOrNull { it.role == MessageRole.ASSISTANT } ?: return
+        val toolCalls = lastAssistant.toolCalls.ifEmpty { listOfNotNull(lastAssistant.toolCall) }
+        if (toolCalls.isEmpty()) return
+
+        for (toolCall in toolCalls) {
+            val alreadyAnswered = currentMessages.any { it.role == MessageRole.TOOL && it.toolResult?.toolCallId == toolCall.id }
+            if (!alreadyAnswered) {
+                val abortedResult = ToolResult(
+                    toolCallId = toolCall.id,
+                    command = toolCall.arguments["command"] ?: "",
+                    stderr = reason,
+                    isError = true,
+                    exitCode = -1
+                )
+                val abortedMsg = ChatMessage(
+                    role = MessageRole.TOOL,
+                    text = reason,
+                    toolResult = abortedResult,
+                    status = MessageStatus.ERROR
+                )
+                _messages.value = _messages.value + abortedMsg
+                scope.launch(NonCancellable) {
+                    chatRepository?.saveMessage(executionSessionId, abortedMsg)
+                }
             }
         }
     }

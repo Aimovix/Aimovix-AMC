@@ -15,8 +15,13 @@ if ! command -v llama-server &> /dev/null; then
         echo "Building llama.cpp from source..."
         pkg install -y git cmake clang make
         cd "$HOME"
-        git clone --depth 1 https://github.com/ggerganov/llama.cpp.git
-        cd llama.cpp
+        if [ -d "$HOME/llama.cpp" ]; then
+            echo "Directory $HOME/llama.cpp already exists, updating..."
+            (cd "$HOME/llama.cpp" && git pull || true)
+        else
+            git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$HOME/llama.cpp"
+        fi
+        cd "$HOME/llama.cpp"
         cmake -B build
         cmake --build build --config Release -j 4
         cp build/bin/llama-server "$PREFIX/bin/"
@@ -54,15 +59,31 @@ esac
 MODEL_PATH="$MODELS_DIR/$MODEL_NAME"
 PART_PATH="${MODEL_PATH}.part"
 
+is_valid_gguf() {
+    local file="$1"
+    [ -f "$file" ] || return 1
+    local size
+    size=$(wc -c < "$file" 2>/dev/null || stat -c %s "$file" 2>/dev/null || echo 0)
+    [ "$size" -ge 104857600 ] || return 1
+    local magic
+    magic=$(head -c 4 "$file" 2>/dev/null || true)
+    [ "$magic" = "GGUF" ] || return 1
+}
+
+if [ -f "$MODEL_PATH" ] && ! is_valid_gguf "$MODEL_PATH"; then
+    echo "⚠️ Existing model file is corrupted or incomplete. Removing..."
+    rm -f "$MODEL_PATH"
+fi
+
 if [ ! -f "$MODEL_PATH" ]; then
     echo "⬇️ Downloading $MODEL_NAME..."
     rm -f "$PART_PATH"
     if curl --fail --show-error -L "$MODEL_URL" -o "$PART_PATH"; then
-        if [ -s "$PART_PATH" ] && [ "$(wc -c < "$PART_PATH")" -ge 104857600 ]; then
+        if is_valid_gguf "$PART_PATH"; then
             mv "$PART_PATH" "$MODEL_PATH"
             echo "✅ Model download complete: $MODEL_NAME"
         else
-            echo "❌ Downloaded file is invalid or too small. Cleaning up..." >&2
+            echo "❌ Downloaded file is invalid (size < 100MB or missing GGUF header). Cleaning up..." >&2
             rm -f "$PART_PATH"
             exit 1
         fi
@@ -72,7 +93,7 @@ if [ ! -f "$MODEL_PATH" ]; then
         exit 1
     fi
 else
-    echo "✅ Model already downloaded: $MODEL_NAME"
+    echo "✅ Model already downloaded and verified: $MODEL_NAME"
 fi
 
 echo "🚀 [3/3] Starting local inference server at http://127.0.0.1:8080..."

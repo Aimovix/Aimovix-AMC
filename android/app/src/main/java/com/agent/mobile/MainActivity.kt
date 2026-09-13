@@ -56,6 +56,9 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
 
     override fun onCleared() {
         super.onCleared()
+        if (::agentEngine.isInitialized) {
+            agentEngine.close()
+        }
         if (::bridgeClient.isInitialized) {
             bridgeClient.disconnect()
         }

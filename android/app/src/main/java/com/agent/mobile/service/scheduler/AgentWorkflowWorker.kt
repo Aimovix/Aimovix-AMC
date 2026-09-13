@@ -13,6 +13,7 @@ import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.data.storage.db.AppDatabase
 import com.agent.mobile.data.storage.db.entity.CommandAuditEntity
 import com.agent.mobile.security.CommandSecurityFilter
+import com.agent.mobile.security.RiskLevel
 import com.agent.mobile.data.model.ExecutionMode
 import kotlinx.coroutines.CancellationException
 
@@ -46,8 +47,14 @@ class AgentWorkflowWorker(
                 return Result.failure()
             }
 
-            if (CommandSecurityFilter.shouldRequireApproval(assessment, prefs.loadExecutionMode())) {
-                sendNotification("Approval required ($title)", "Run this command interactively in AMC to review and approve it.")
+            val requiresApproval = if (assessment.level == RiskLevel.LOW) {
+                false
+            } else {
+                CommandSecurityFilter.shouldRequireApproval(assessment, prefs.loadExecutionMode())
+            }
+
+            if (requiresApproval) {
+                sendNotification("Approval required ($title)", "Command `$command` requires interactive approval and cannot run unattended in background.")
                 return Result.failure()
             }
             val token = prefs.loadAuthToken()
@@ -56,7 +63,12 @@ class AgentWorkflowWorker(
 
             val startTime = System.currentTimeMillis()
             val result = try {
-                bridge.awaitConnected()
+                val connected = bridge.awaitConnected(15_000L)
+                if (!connected) {
+                    Log.w(TAG, "Termux bridge not connected after 15s for workflow: $title (attempt $runAttemptCount)")
+                    sendNotification("⚠️ Offline ($title)", "Termux bridge is not reachable.")
+                    return if (runAttemptCount < 3) Result.retry() else Result.failure()
+                }
                 bridge.executeCommand(command, timeoutMs = 60_000L)
             } finally {
                 bridge.disconnect()
@@ -90,7 +102,7 @@ class AgentWorkflowWorker(
         } catch (e: Exception) {
             Log.e(TAG, "Background workflow failed: ${e.message}", e)
             sendNotification("⚠️ Error ($title)", e.localizedMessage ?: "Unknown error")
-            if (runAttemptCount < 2) Result.retry() else Result.failure()
+            if (runAttemptCount < 3) Result.retry() else Result.failure()
         }
     }
 

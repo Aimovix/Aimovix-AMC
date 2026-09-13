@@ -26,6 +26,10 @@ process_is_alive() {
         state="${stat##*) }"
         case "$state" in Z\ *|X\ *) return 1 ;; esac
     fi
+    # Verify the process is actually bridge_daemon to prevent PID reuse
+    if [ -r "/proc/$pid/cmdline" ]; then
+        grep -qa "bridge_daemon.py" "/proc/$pid/cmdline" 2>/dev/null || return 1
+    fi
     return 0
 }
 

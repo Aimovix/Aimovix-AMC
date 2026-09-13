@@ -70,43 +70,85 @@ fun SettingsScreen(
     val scrollState = rememberScrollState()
     val schedulerManager = remember { SchedulerManager(context) }
 
+    val switchPrimaryProvider = { target: ProviderType ->
+        if (selectedProvider != target) {
+            preferenceManager.saveProviderProfile(selectedProvider, apiKey.trim(), baseUrl.trim(), modelName.trim())
+            selectedProvider = target
+            val profile = preferenceManager.loadProviderProfile(target)
+            baseUrl = profile.baseUrl
+            modelName = profile.modelName
+            apiKey = profile.apiKey
+        }
+    }
+
+    val switchFallbackProvider = { target: ProviderType ->
+        if (fallbackProvider != target) {
+            fallbackProvider?.let { curr ->
+                preferenceManager.saveProviderProfile(curr, fallbackApiKey.trim(), fallbackBaseUrl.trim(), fallbackModelName.trim())
+            }
+            fallbackProvider = target
+            val profile = preferenceManager.loadProviderProfile(target)
+            fallbackBaseUrl = profile.baseUrl
+            fallbackModelName = profile.modelName
+            fallbackApiKey = profile.apiKey
+        }
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = DarkBackground,
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = "Settings & controls",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TextWhite
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = null,
+                            tint = AccentPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Settings",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = TextWhite
+                            )
+                        )
+                    }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkSurface)
             )
         }
-    ) { paddingValues ->
+    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
+                .padding(padding)
                 .verticalScroll(scrollState)
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Section 1: Primary Provider Picker
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "PRIMARY AI PROVIDER",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        color = TextMuted,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
+            // Section 1: Provider Selection Card
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = DarkCard,
+                border = BorderStroke(1.dp, BorderSubtle)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "AI MODEL PROVIDER",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = TextMuted,
+                            letterSpacing = 1.sp
+                        )
                     )
-                )
 
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ProviderType.values().forEach { provider ->
                         val isSelected = selectedProvider == provider
                         Surface(
@@ -117,16 +159,7 @@ fun SettingsScreen(
                                 width = if (isSelected) 1.5.dp else 1.dp,
                                 color = if (isSelected) AccentPrimary else BorderSubtle
                             ),
-                            onClick = {
-                                if (selectedProvider != provider) {
-                                    preferenceManager.saveProviderProfile(selectedProvider, apiKey.trim(), baseUrl.trim(), modelName.trim())
-                                    selectedProvider = provider
-                                    val profile = preferenceManager.loadProviderProfile(provider)
-                                    baseUrl = profile.baseUrl
-                                    modelName = profile.modelName
-                                    apiKey = profile.apiKey
-                                }
-                            }
+                            onClick = { switchPrimaryProvider(provider) }
                         ) {
                             Row(
                                 modifier = Modifier
@@ -170,11 +203,7 @@ fun SettingsScreen(
 
                                 RadioButton(
                                     selected = isSelected,
-                                    onClick = {
-                                        selectedProvider = provider
-                                        baseUrl = provider.defaultBaseUrl
-                                        modelName = provider.defaultModel
-                                    },
+                                    onClick = { switchPrimaryProvider(provider) },
                                     colors = RadioButtonDefaults.colors(
                                         selectedColor = AccentPrimary,
                                         unselectedColor = BorderLight
@@ -408,11 +437,7 @@ fun SettingsScreen(
                                     val isChosen = fallbackProvider == prov
                                     FilterChip(
                                         selected = isChosen,
-                                        onClick = {
-                                            fallbackProvider = prov
-                                            fallbackModelName = prov.defaultModel
-                                            fallbackBaseUrl = prov.defaultBaseUrl
-                                        },
+                                        onClick = { switchFallbackProvider(prov) },
                                         label = { Text(prov.displayName, fontSize = 11.sp) },
                                         shape = RoundedCornerShape(8.dp),
                                         colors = FilterChipDefaults.filterChipColors(
@@ -502,6 +527,14 @@ fun SettingsScreen(
                     )
                     agentEngine.setModelConfig(newConfig)
                     preferenceManager.saveModelConfig(newConfig)
+                    if (showFallbackSection && fallbackProvider != null) {
+                        preferenceManager.saveProviderProfile(
+                            fallbackProvider!!,
+                            fallbackApiKey.trim(),
+                            fallbackBaseUrl.trim().ifEmpty { fallbackProvider!!.defaultBaseUrl },
+                            fallbackModelName.trim().ifEmpty { fallbackProvider!!.defaultModel }
+                        )
+                    }
                     focusManager.clearFocus()
                     Toast.makeText(context, "✅ Saved: ${selectedProvider.displayName} (${finalModel})", Toast.LENGTH_SHORT).show()
                 },

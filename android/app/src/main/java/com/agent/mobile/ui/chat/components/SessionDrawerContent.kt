@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -48,21 +49,44 @@ fun SessionDrawerContent(
 
     var sessionToExport by remember { mutableStateOf<ChatSession?>(null) }
     var showExportDialog by remember { mutableStateOf(false) }
+    var pendingExportSessionId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingExportFormat by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingExportContent by remember { mutableStateOf<String?>(null) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("*/*")
     ) { uri: Uri? ->
-        if (uri != null && pendingExportContent != null) {
+        if (uri != null) {
             coroutineScope.launch {
-                val success = chatRepository?.saveExportToUri(context, uri, pendingExportContent!!) ?: false
-                if (success) {
-                    Toast.makeText(context, "Export saved successfully.", Toast.LENGTH_SHORT).show()
+                val content = pendingExportContent ?: run {
+                    val sId = pendingExportSessionId
+                    val fmt = pendingExportFormat
+                    if (sId != null && fmt != null && chatRepository != null) {
+                        val session = chatRepository.getSessionById(sId)
+                            ?: ChatSession(id = sId, title = "Chat", createdAt = System.currentTimeMillis())
+                        val messages = chatRepository.getMessagesForSessionSync(sId)
+                        if (fmt == "json") chatRepository.exportToJson(session, messages)
+                        else chatRepository.exportToMarkdown(session, messages)
+                    } else null
+                }
+                if (content != null) {
+                    val success = chatRepository?.saveExportToUri(context, uri, content) ?: false
+                    if (success) {
+                        Toast.makeText(context, "Export saved successfully.", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "Failed to save export.", Toast.LENGTH_SHORT).show()
+                    }
                 } else {
                     Toast.makeText(context, "Failed to save export.", Toast.LENGTH_SHORT).show()
                 }
                 pendingExportContent = null
+                pendingExportSessionId = null
+                pendingExportFormat = null
             }
+        } else {
+            pendingExportContent = null
+            pendingExportSessionId = null
+            pendingExportFormat = null
         }
     }
 
@@ -316,6 +340,8 @@ fun SessionDrawerContent(
                                 val messages = chatRepository?.getMessagesForSessionSync(session.id) ?: emptyList()
                                 val md = chatRepository?.exportToMarkdown(session, messages) ?: ""
                                 pendingExportContent = md
+                                pendingExportSessionId = session.id
+                                pendingExportFormat = "md"
                                 exportLauncher.launch("chat_${session.id.take(8)}.md")
                                 showExportDialog = false
                             }
@@ -333,6 +359,8 @@ fun SessionDrawerContent(
                                 val messages = chatRepository?.getMessagesForSessionSync(session.id) ?: emptyList()
                                 val json = chatRepository?.exportToJson(session, messages) ?: ""
                                 pendingExportContent = json
+                                pendingExportSessionId = session.id
+                                pendingExportFormat = "json"
                                 exportLauncher.launch("chat_${session.id.take(8)}.json")
                                 showExportDialog = false
                             }

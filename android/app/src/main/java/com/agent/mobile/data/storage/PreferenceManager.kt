@@ -124,12 +124,23 @@ class PreferenceManager(context: Context) {
             ProviderType.GEMINI
         }
         val profile = loadProviderProfile(provider)
-        // Check if legacy key needs one-time migration for this provider
+        var effectiveBaseUrl = profile.baseUrl
+        var effectiveModelName = profile.modelName
+        val legacyProvider = prefs.getString(KEY_PROVIDER, "")
+        if (legacyProvider == provider.name) {
+            val legacyBaseUrl = prefs.getString(KEY_BASE_URL, "") ?: ""
+            if (legacyBaseUrl.isNotEmpty() && !prefs.contains("${KEY_BASE_URL_PREFIX}${provider.name}")) {
+                effectiveBaseUrl = legacyBaseUrl
+            }
+            val legacyModel = prefs.getString(KEY_MODEL, "") ?: ""
+            if (legacyModel.isNotEmpty() && !prefs.contains("${KEY_MODEL_PREFIX}${provider.name}")) {
+                effectiveModelName = legacyModel
+            }
+        }
         val effectiveApiKey = profile.apiKey.ifEmpty {
             val legacyKey = prefs.getString(KEY_API_KEY, "") ?: ""
-            val legacyProvider = prefs.getString(KEY_PROVIDER, "")
             if (legacyKey.isNotEmpty() && legacyProvider == provider.name) {
-                saveProviderProfile(provider, legacyKey, profile.baseUrl, profile.modelName)
+                saveProviderProfile(provider, legacyKey, effectiveBaseUrl, effectiveModelName)
                 legacyKey
             } else ""
         }
@@ -144,9 +155,9 @@ class PreferenceManager(context: Context) {
 
         return ModelConfig(
             provider = provider,
-            modelName = profile.modelName,
+            modelName = effectiveModelName,
             apiKey = effectiveApiKey,
-            baseUrl = profile.baseUrl,
+            baseUrl = effectiveBaseUrl,
             fallbackProvider = fallbackProvider,
             fallbackModelName = fallbackModelName,
             fallbackApiKey = fallbackApiKey,

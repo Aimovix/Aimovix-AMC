@@ -29,12 +29,16 @@ import androidx.compose.ui.window.DialogProperties
 import com.agent.mobile.data.model.ArtifactItem
 import com.agent.mobile.data.model.ArtifactType
 import com.agent.mobile.ui.theme.*
+import androidx.compose.ui.graphics.ImageBitmap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ArtifactViewerDialog(
     artifact: ArtifactItem,
     onDismiss: () -> Unit,
-    onExecuteInTermux: ((String) -> Unit)? = null
+    onExecuteInTermux: ((String) -> Unit)? = null,
+    onRetryLoad: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
 
@@ -144,12 +148,15 @@ fun ArtifactViewerDialog(
                 ) {
                     when (artifact.type) {
                         ArtifactType.IMAGE -> {
-                            val bitmap = remember(artifact.base64Data) {
-                                try {
-                                    val bytes = Base64.decode(artifact.base64Data, Base64.DEFAULT)
-                                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-                                } catch (e: Exception) {
-                                    null
+                            val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = artifact.base64Data) {
+                                value = withContext(Dispatchers.IO) {
+                                    try {
+                                        val data = artifact.base64Data ?: return@withContext null
+                                        val bytes = Base64.decode(data, Base64.DEFAULT)
+                                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                                    } catch (e: Exception) {
+                                        null
+                                    }
                                 }
                             }
 
@@ -159,7 +166,7 @@ fun ArtifactViewerDialog(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Image(
-                                        bitmap = bitmap,
+                                        bitmap = bitmap!!,
                                         contentDescription = artifact.filename,
                                         modifier = Modifier
                                             .fillMaxSize()
@@ -169,7 +176,15 @@ fun ArtifactViewerDialog(
                             } else {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                     if (artifact.base64Data == null) {
-                                        CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(32.dp))
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(32.dp))
+                                            if (onRetryLoad != null) {
+                                                Spacer(modifier = Modifier.height(10.dp))
+                                                OutlinedButton(onClick = onRetryLoad) {
+                                                    Text("Retry loading", fontSize = 11.sp, color = TextWhite)
+                                                }
+                                            }
+                                        }
                                     } else {
                                         Text("Could not render the image.", color = TextMuted)
                                     }
@@ -180,7 +195,15 @@ fun ArtifactViewerDialog(
                         ArtifactType.HTML -> {
                             if (artifact.content == null) {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(32.dp))
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(32.dp))
+                                        if (onRetryLoad != null) {
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                            OutlinedButton(onClick = onRetryLoad) {
+                                                Text("Retry loading", fontSize = 11.sp, color = TextWhite)
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
                                 val html = artifact.content
@@ -201,7 +224,15 @@ fun ArtifactViewerDialog(
                         ArtifactType.CODE, ArtifactType.MARKDOWN, ArtifactType.TEXT -> {
                             if (artifact.content == null) {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(32.dp))
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        CircularProgressIndicator(color = AccentPrimary, modifier = Modifier.size(32.dp))
+                                        if (onRetryLoad != null) {
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                            OutlinedButton(onClick = onRetryLoad) {
+                                                Text("Retry loading", fontSize = 11.sp, color = TextWhite)
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
                                 Column(

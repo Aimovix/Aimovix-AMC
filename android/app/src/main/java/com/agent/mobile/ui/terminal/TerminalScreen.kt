@@ -21,23 +21,80 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.ui.theme.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+
+class TerminalViewModel : ViewModel() {
+    private val _terminalHistory = MutableStateFlow("Welcome to the AMC terminal.\nTarget: Termux localhost:8765 (pair in Setup first)\n$ ")
+    val terminalHistory: StateFlow<String> = _terminalHistory.asStateFlow()
+
+    private val _isRunning = MutableStateFlow(false)
+    val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
+
+    private var activeJob: Job? = null
+
+    fun appendOutput(chunk: String) {
+        _terminalHistory.value = (_terminalHistory.value + chunk).takeLast(100_000)
+    }
+
+    fun clear() {
+        _terminalHistory.value = "$ "
+    }
+
+    fun interrupt(bridgeClient: TermuxBridgeClient) {
+        bridgeClient.interruptCurrent()
+        appendOutput("^C\n$ ")
+        activeJob?.cancel()
+        _isRunning.value = false
+    }
+
+    fun runCommand(cmd: String, bridgeClient: TermuxBridgeClient) {
+        if (cmd.isBlank() || _isRunning.value) return
+        val toExec = cmd.trim()
+        appendOutput("$toExec\n")
+        _isRunning.value = true
+        activeJob = viewModelScope.launch {
+            try {
+                val result = bridgeClient.executeCommand(toExec) { chunk ->
+                    appendOutput(chunk)
+                }
+                if (result.isError && result.stderr.isNotEmpty()) {
+                    appendOutput(result.stderr + "\n")
+                }
+                appendOutput("$ ")
+            } catch (e: CancellationException) {
+                appendOutput("^C\n$ ")
+            } catch (e: Exception) {
+                appendOutput("Error: ${e.message}\n$ ")
+            } finally {
+                _isRunning.value = false
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TerminalScreen(
     bridgeClient: TermuxBridgeClient,
+    viewModel: TerminalViewModel = viewModel(),
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var terminalHistory by remember { mutableStateOf("Welcome to the AMC terminal.\nTarget: Termux localhost:8765 (pair in Setup first)\n$ ") }
+    val terminalHistory by viewModel.terminalHistory.collectAsState()
+    val isRunning by viewModel.isRunning.collectAsState()
     var inputCmd by remember { mutableStateOf("") }
-    var isRunning by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
-    val scope = rememberCoroutineScope()
 
     // Auto-scroll on new output
     LaunchedEffect(terminalHistory) {
@@ -73,7 +130,7 @@ fun TerminalScreen(
                         IconButton(onClick = { TermuxBridgeClient.openTermuxApp(context) }) {
                             Icon(Icons.Default.Terminal, contentDescription = "Open Termux App", tint = AccentPrimary)
                         }
-                        IconButton(onClick = { terminalHistory = "$ " }) {
+                        IconButton(onClick = { viewModel.clear() }) {
                             Icon(Icons.Default.ClearAll, contentDescription = "Clear", tint = TextMuted)
                         }
                     },
@@ -123,11 +180,8 @@ fun TerminalScreen(
                     Surface(
                         onClick = {
                             when (key) {
-                                "CTRL-C" -> {
-                                    bridgeClient.interruptCurrent()
-                                    terminalHistory += "^C\n$ "
-                                }
-                                "clear" -> terminalHistory = "$ "
+                                "CTRL-C" -> viewModel.interrupt(bridgeClient)
+                                "clear" -> viewModel.clear()
                                 "TAB" -> inputCmd += "  "
                                 else -> inputCmd += key
                             }
@@ -201,21 +255,7 @@ fun TerminalScreen(
                                 if (inputCmd.isNotBlank()) {
                                     val toExec = inputCmd.trim()
                                     inputCmd = ""
-                                    terminalHistory += "$toExec\n"
-                                    isRunning = true
-                                    scope.launch {
-                                        try {
-                                            val result = bridgeClient.executeCommand(toExec) { chunk ->
-                                                terminalHistory += chunk
-                                            }
-                                            if (result.isError && result.stderr.isNotEmpty()) {
-                                                terminalHistory += result.stderr + "\n"
-                                            }
-                                            terminalHistory += "$ "
-                                        } finally {
-                                            isRunning = false
-                                        }
-                                    }
+                                    viewModel.runCommand(toExec, bridgeClient)
                                 }
                             },
                             enabled = inputCmd.isNotBlank()

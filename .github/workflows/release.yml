@@ -21,8 +21,8 @@ jobs:
     permissions:
       contents: write
     env:
-      VERSION: '1.2.3'
-      TAG: v1.2.3
+      VERSION: '1.2.4'
+      TAG: v1.2.4
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,7 +37,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Validate version
         run: |
-          grep -q 'versionName = "1.2.3"' android/app/build.gradle.kts
+          grep -q 'versionName = "1.2.4"' android/app/build.gradle.kts
       - name: Bridge tests
         run: |
           python -m pip install -r termux-bridge/requirements.txt
@@ -97,7 +97,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: AMC-1.2.3-downloads
+          name: AMC-1.2.4-downloads
           path: dist/
           if-no-files-found: error
       - name: Publish GitHub release downloads
@@ -106,7 +106,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           SIGNED_RELEASE: ${{ steps.signing.outputs.ready }}
         run: |
-          cp docs/releases/v1.2.3.md "$RUNNER_TEMP/release-notes.md"
+          cp docs/releases/v1.2.4.md "$RUNNER_TEMP/release-notes.md"
           printf '\nBuilt from commit: %s\n' "$GITHUB_SHA" >> "$RUNNER_TEMP/release-notes.md"
           if [[ "$SIGNED_RELEASE" != "true" ]]; then
             printf '\n**Debug preview:** the debug APK and ZIP are available. Signed release downloads are pending private signing-key configuration. Do not use older release assets as substitutes for this version.\n' >> "$RUNNER_TEMP/release-notes.md"
@@ -119,7 +119,7 @@ jobs:
               exit 1
             fi
           else
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "AMC $TAG - Gemini authentication hardening and credential fixes" --notes-file "$RUNNER_TEMP/release-notes.md" --draft
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "AMC $TAG - Comprehensive bugfixes and engine hardening" --notes-file "$RUNNER_TEMP/release-notes.md" --draft
           fi
           gh release upload "$TAG" dist/*.apk dist/*.zip dist/SHA256SUMS.txt --clobber
           if [[ "$SIGNED_RELEASE" == "true" ]]; then

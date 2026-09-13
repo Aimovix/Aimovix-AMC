@@ -183,17 +183,24 @@ class ChatRepository(
             mObj.put("text", m.text)
             mObj.put("timestamp", m.timestamp)
             mObj.put("status", m.status.name)
-            if (m.toolCall != null) {
-                mObj.put("tool_call", JSONObject().apply {
-                    put("id", m.toolCall.id)
-                    put("name", m.toolCall.name)
-                    put("command", m.toolCall.arguments["command"] ?: "")
-                    put("risk_level", m.toolCall.riskLevel)
-                    put("risk_reason", m.toolCall.riskReason)
-                    if (m.toolCall.thoughtSignature != null) {
-                        put("thought_signature", m.toolCall.thoughtSignature)
-                    }
-                })
+            val allCalls = if (m.toolCalls.isNotEmpty()) m.toolCalls else if (m.toolCall != null) listOf(m.toolCall) else emptyList()
+            if (allCalls.isNotEmpty()) {
+                val tcArr = JSONArray()
+                for (tc in allCalls) {
+                    tcArr.put(JSONObject().apply {
+                        put("id", tc.id)
+                        put("name", tc.name)
+                        put("command", tc.arguments["command"] ?: "")
+                        put("arguments", JSONObject(tc.arguments))
+                        put("risk_level", tc.riskLevel)
+                        put("risk_reason", tc.riskReason)
+                        if (tc.thoughtSignature != null) {
+                            put("thought_signature", tc.thoughtSignature)
+                        }
+                    })
+                }
+                mObj.put("tool_calls", tcArr)
+                mObj.put("tool_call", tcArr.getJSONObject(0))
             }
             if (m.toolResult != null) {
                 mObj.put("tool_result", JSONObject().apply {
@@ -249,19 +256,24 @@ class ChatRepository(
     }
 
     private fun ChatMessage.toEntity(sessionId: String): ChatMessageEntity {
-        val toolCallJson = toolCall?.let { tc ->
-            JSONObject().apply {
-                put("id", tc.id)
-                put("name", tc.name)
-                put("arguments", JSONObject(tc.arguments))
-                put("rawJson", tc.rawJson)
-                put("riskLevel", tc.riskLevel)
-                put("riskReason", tc.riskReason)
-                if (tc.thoughtSignature != null) {
-                    put("thoughtSignature", tc.thoughtSignature)
-                }
-            }.toString()
-        }
+        val allCalls = if (toolCalls.isNotEmpty()) toolCalls else if (toolCall != null) listOf(toolCall) else emptyList()
+        val toolCallJson = if (allCalls.isNotEmpty()) {
+            val arr = JSONArray()
+            for (tc in allCalls) {
+                arr.put(JSONObject().apply {
+                    put("id", tc.id)
+                    put("name", tc.name)
+                    put("arguments", JSONObject(tc.arguments))
+                    put("rawJson", tc.rawJson)
+                    put("riskLevel", tc.riskLevel)
+                    put("riskReason", tc.riskReason)
+                    if (tc.thoughtSignature != null) {
+                        put("thoughtSignature", tc.thoughtSignature)
+                    }
+                })
+            }
+            arr.toString()
+        } else null
 
         val toolResultJson = toolResult?.let { tr ->
             JSONObject().apply {
@@ -302,30 +314,61 @@ class ChatRepository(
             MessageStatus.COMPLETED
         }
 
-        val parsedToolCall = toolCallJson?.let { jsonStr ->
+        val parsedToolCalls = toolCallJson?.let { jsonStr ->
             try {
-                val obj = JSONObject(jsonStr)
-                val argsMap = mutableMapOf<String, String>()
-                val argsObj = obj.optJSONObject("arguments")
-                argsObj?.keys()?.forEach { k ->
-                    argsMap[k] = argsObj.optString(k, "")
+                val trimmed = jsonStr.trim()
+                if (trimmed.startsWith("[")) {
+                    val arr = JSONArray(trimmed)
+                    val list = mutableListOf<ToolCall>()
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        val argsMap = mutableMapOf<String, String>()
+                        val argsObj = obj.optJSONObject("arguments")
+                        argsObj?.keys()?.forEach { k ->
+                            argsMap[k] = argsObj.optString(k, "")
+                        }
+                        val sig = if (obj.has("thoughtSignature") && !obj.isNull("thoughtSignature")) {
+                            obj.getString("thoughtSignature")
+                        } else null
+                        list.add(
+                            ToolCall(
+                                id = obj.optString("id", UUID.randomUUID().toString()),
+                                name = obj.optString("name", "execute_command"),
+                                arguments = argsMap,
+                                rawJson = obj.optString("rawJson", ""),
+                                riskLevel = obj.optString("riskLevel", "LOW"),
+                                riskReason = obj.optString("riskReason", ""),
+                                thoughtSignature = sig
+                            )
+                        )
+                    }
+                    list
+                } else {
+                    val obj = JSONObject(trimmed)
+                    val argsMap = mutableMapOf<String, String>()
+                    val argsObj = obj.optJSONObject("arguments")
+                    argsObj?.keys()?.forEach { k ->
+                        argsMap[k] = argsObj.optString(k, "")
+                    }
+                    val sig = if (obj.has("thoughtSignature") && !obj.isNull("thoughtSignature")) {
+                        obj.getString("thoughtSignature")
+                    } else null
+                    listOf(
+                        ToolCall(
+                            id = obj.optString("id", UUID.randomUUID().toString()),
+                            name = obj.optString("name", "execute_command"),
+                            arguments = argsMap,
+                            rawJson = obj.optString("rawJson", ""),
+                            riskLevel = obj.optString("riskLevel", "LOW"),
+                            riskReason = obj.optString("riskReason", ""),
+                            thoughtSignature = sig
+                        )
+                    )
                 }
-                val sig = if (obj.has("thoughtSignature") && !obj.isNull("thoughtSignature")) {
-                    obj.getString("thoughtSignature")
-                } else null
-                ToolCall(
-                    id = obj.optString("id", UUID.randomUUID().toString()),
-                    name = obj.optString("name", "execute_command"),
-                    arguments = argsMap,
-                    rawJson = obj.optString("rawJson", ""),
-                    riskLevel = obj.optString("riskLevel", "LOW"),
-                    riskReason = obj.optString("riskReason", ""),
-                    thoughtSignature = sig
-                )
             } catch (e: Exception) {
-                null
+                emptyList()
             }
-        }
+        } ?: emptyList()
 
         val parsedToolResult = toolResultJson?.let { jsonStr ->
             try {
@@ -347,7 +390,8 @@ class ChatRepository(
             id = id,
             role = parsedRole,
             text = text,
-            toolCall = parsedToolCall,
+            toolCall = parsedToolCalls.firstOrNull(),
+            toolCalls = parsedToolCalls,
             toolResult = parsedToolResult,
             streamingTerminalOutput = streamingTerminalOutput,
             timestamp = timestamp,

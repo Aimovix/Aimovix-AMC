@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.*
 import org.json.JSONObject
 import java.util.UUID
@@ -109,9 +111,51 @@ class TermuxBridgeClient(
     // Direct per-execution chunk listeners
     private val executionChunkCallbacks = ConcurrentHashMap<String, (String) -> Unit>()
 
+    internal class HeadTailBuffer(
+        val maxHead: Int = 100 * 1024,
+        val maxTail: Int = 150 * 1024
+    ) {
+        private val head = StringBuilder()
+        private val tail = StringBuilder()
+        private var totalOmitted = 0
+
+        @Synchronized
+        fun append(chunk: String) {
+            val remainingHead = maxHead - head.length
+            if (remainingHead > 0) {
+                val toHead = chunk.take(remainingHead)
+                head.append(toHead)
+                val remainingChunk = chunk.substring(toHead.length)
+                if (remainingChunk.isNotEmpty()) {
+                    appendToTail(remainingChunk)
+                }
+            } else {
+                appendToTail(chunk)
+            }
+        }
+
+        private fun appendToTail(chunk: String) {
+            tail.append(chunk)
+            if (tail.length > maxTail) {
+                val overflow = tail.length - maxTail
+                totalOmitted += overflow
+                tail.delete(0, overflow)
+            }
+        }
+
+        @Synchronized
+        fun build(): String {
+            return if (totalOmitted > 0) {
+                "${head.toString()}\n\n[... $totalOmitted characters omitted ...]\n\n${tail.toString()}"
+            } else {
+                "${head.toString()}${tail.toString()}"
+            }
+        }
+    }
+
     private class ExecutionBuffers(
-        val stdout: StringBuilder = StringBuilder(),
-        val stderr: StringBuilder = StringBuilder()
+        val stdout: HeadTailBuffer = HeadTailBuffer(),
+        val stderr: HeadTailBuffer = HeadTailBuffer()
     )
 
     // Map for waiting command execution completions
@@ -125,9 +169,13 @@ class TermuxBridgeClient(
     // Connection generation to prevent stale callbacks
     private val connectionGeneration = java.util.concurrent.atomic.AtomicLong(0)
 
-    // Auto-reconnect worker state
+    // Mutex to strictly serialize connection attempts
+    private val connectionMutex = Mutex()
+
+    // Auto-reconnect worker and heartbeat state
     private var isAutoReconnectEnabled = true
     private var reconnectJob: Job? = null
+    private var heartbeatJob: Job? = null
     private var isManualDisconnect = false
 
     fun setToken(newToken: String) {
@@ -221,8 +269,67 @@ class TermuxBridgeClient(
         return executeCommand("nohup amc boost >/dev/null 2>&1 &")
     }
 
-    private fun doConnect(authToken: String) {
+    private fun startHeartbeat() {
+        stopHeartbeat()
+        heartbeatJob = scope.launch {
+            while (isActive && _connectionStatus.value is ConnectionStatus.Connected) {
+                delay(15_000L)
+                if (!isActive || _connectionStatus.value !is ConnectionStatus.Connected) break
+
+                val ws = webSocket
+                if (ws == null) {
+                    handleConnectionLost("WebSocket instance is null")
+                    break
+                }
+
+                val pingId = UUID.randomUUID().toString()
+                val deferred = CompletableDeferred<Long>()
+                pendingPings[pingId] = deferred
+                val sent = ws.send(JSONObject().apply {
+                    put("action", "ping")
+                    put("ping_id", pingId)
+                    put("timestamp", System.currentTimeMillis())
+                }.toString())
+
+                if (!sent) {
+                    pendingPings.remove(pingId)
+                    handleConnectionLost("Failed to send ping heartbeat")
+                    break
+                }
+
+                try {
+                    withTimeout(5_000L) { deferred.await() }
+                } catch (e: Exception) {
+                    pendingPings.remove(pingId)
+                    Log.w(TAG, "Heartbeat ping timeout after 5s: ${e.message}")
+                    handleConnectionLost("Heartbeat ping timeout")
+                    break
+                }
+            }
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+    }
+
+    private fun handleConnectionLost(reason: String) {
+        stopHeartbeat()
+        failAllPendingExecutions("Connection lost: $reason")
+        if (_connectionStatus.value !is ConnectionStatus.AuthFailed && !isManualDisconnect) {
+            _connectionStatus.value = ConnectionStatus.Disconnected
+            scheduleReconnect()
+        }
+    }
+
+    private suspend fun doConnect(authToken: String) = connectionMutex.withLock {
+        if (_connectionStatus.value is ConnectionStatus.Connected && webSocket != null) {
+            return@withLock
+        }
+        stopHeartbeat()
         val currentGen = connectionGeneration.incrementAndGet()
+        failAllPendingExecutions("Reconnecting to Termux bridge...")
 
         // Clean up previous socket
         try {
@@ -258,6 +365,7 @@ class TermuxBridgeClient(
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 if (connectionGeneration.get() != currentGen) return
                 Log.w(TAG, "WebSocket closed ($code): $reason")
+                stopHeartbeat()
                 failAllPendingExecutions("Connection to Termux closed ($reason)")
                 if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
                     _connectionStatus.value = ConnectionStatus.Disconnected
@@ -268,6 +376,7 @@ class TermuxBridgeClient(
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 if (connectionGeneration.get() != currentGen) return
                 Log.w(TAG, "WebSocket error: ${t.message}")
+                stopHeartbeat()
                 failAllPendingExecutions("Connection error: ${t.localizedMessage}")
                 if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
                     _connectionStatus.value = ConnectionStatus.Error(t.localizedMessage ?: "Connection to Termux failed")
@@ -338,8 +447,9 @@ class TermuxBridgeClient(
                 "auth_ok" -> {
                     val info = parseSystemInfo(json)
                     _connectionStatus.value = ConnectionStatus.Connected(info)
-                    // Once connected, cancel any scheduled reconnects
+                    // Once connected, cancel any scheduled reconnects and start heartbeat
                     reconnectJob?.cancel()
+                    startHeartbeat()
                     Log.i(TAG, "✅ Termux bridge authenticated and connected.")
                 }
                 "sys_info" -> {
@@ -353,6 +463,7 @@ class TermuxBridgeClient(
                     }
                 }
                 "auth_fail" -> {
+                    stopHeartbeat()
                     val error = json.optString("error", "Authentication failed: invalid token")
                     isAutoReconnectEnabled = false
                     _connectionStatus.value = ConnectionStatus.AuthFailed(error)
@@ -363,10 +474,7 @@ class TermuxBridgeClient(
                     val execId = json.optString("execution_id")
                     val data = json.optString("data")
                     val buffers = executionBuffers.getOrPut(execId) { ExecutionBuffers() }
-                    val maxBytes = 250 * 1024
-                    if (buffers.stdout.length < maxBytes) {
-                        buffers.stdout.append(data.take(maxBytes - buffers.stdout.length))
-                    }
+                    buffers.stdout.append(data)
                     executionChunkCallbacks[execId]?.invoke(data)
                     terminalOutputEvents.tryEmit(Pair(execId, data))
                 }
@@ -374,10 +482,7 @@ class TermuxBridgeClient(
                     val execId = json.optString("execution_id")
                     val data = json.optString("data")
                     val buffers = executionBuffers.getOrPut(execId) { ExecutionBuffers() }
-                    val maxBytes = 250 * 1024
-                    if (buffers.stderr.length < maxBytes) {
-                        buffers.stderr.append(data.take(maxBytes - buffers.stderr.length))
-                    }
+                    buffers.stderr.append(data)
                     executionChunkCallbacks[execId]?.invoke(data)
                     terminalOutputEvents.tryEmit(Pair(execId, data))
                 }
@@ -385,8 +490,8 @@ class TermuxBridgeClient(
                     val execId = json.optString("execution_id")
                     val exitCode = json.optInt("exit_code", 0)
                     val buffers = executionBuffers[execId]
-                    val out = buffers?.stdout?.toString() ?: ""
-                    val err = buffers?.stderr?.toString() ?: ""
+                    val out = buffers?.stdout?.build() ?: ""
+                    val err = buffers?.stderr?.build() ?: ""
                     val deferred = pendingExecutions[execId]
                     if (deferred != null) {
                         deferred.complete(
@@ -612,13 +717,14 @@ class TermuxBridgeClient(
     }
 
     suspend fun checkCronStatus(): String {
-        val res = executeCommand("command -v crond >/dev/null && (pgrep -x crond >/dev/null || pgrep -f crond >/dev/null) && echo 'RUNNING' || (command -v crond >/dev/null && echo 'STOPPED' || echo 'NOT_INSTALLED')")
+        val res = executeCommand("command -v crond >/dev/null && (pgrep -x crond >/dev/null) && echo 'RUNNING' || (command -v crond >/dev/null && echo 'STOPPED' || echo 'NOT_INSTALLED')")
         return res.stdout.trim().ifEmpty { "UNKNOWN" }
     }
 
     fun disconnect() {
         isManualDisconnect = true
         isAutoReconnectEnabled = false
+        stopHeartbeat()
         reconnectJob?.cancel()
         failAllPendingExecutions("Client disconnected")
         webSocket?.close(1000, "App closed")

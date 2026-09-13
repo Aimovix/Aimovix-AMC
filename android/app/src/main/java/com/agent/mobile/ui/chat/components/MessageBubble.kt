@@ -12,11 +12,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -24,13 +27,17 @@ import androidx.compose.ui.unit.sp
 import com.agent.mobile.data.model.ChatMessage
 import com.agent.mobile.data.model.MessageRole
 import com.agent.mobile.data.model.MessageStatus
+import com.agent.mobile.data.model.ToolCall
 import com.agent.mobile.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun MessageBubble(
     message: ChatMessage,
-    onApproveTool: () -> Unit,
-    onRejectTool: () -> Unit,
+    pendingApproval: Pair<String, ToolCall>? = null,
+    onApproveTool: (toolId: String) -> Unit = {},
+    onRejectTool: (toolId: String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     when (message.role) {
@@ -49,17 +56,20 @@ fun MessageBubble(
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
                         if (message.imageBase64 != null) {
-                            val bitmap = remember(message.imageBase64) {
-                                try {
-                                    val bytes = android.util.Base64.decode(message.imageBase64, android.util.Base64.DEFAULT)
-                                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-                                } catch (e: Exception) {
-                                    null
+                            val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = message.imageBase64) {
+                                value = withContext(Dispatchers.IO) {
+                                    try {
+                                        val bytes = android.util.Base64.decode(message.imageBase64, android.util.Base64.DEFAULT)
+                                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                                    } catch (e: Exception) {
+                                        null
+                                    }
                                 }
                             }
-                            if (bitmap != null) {
+                            val currentBitmap = bitmap
+                            if (currentBitmap != null) {
                                 androidx.compose.foundation.Image(
-                                    bitmap = bitmap,
+                                    bitmap = currentBitmap,
                                     contentDescription = "Attached image",
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -131,25 +141,36 @@ fun MessageBubble(
                             )
                         }
 
-                        // If a tool call is present
-                        if (message.toolCall != null) {
+                        // If tool calls are present
+                        val allCalls = if (message.toolCalls.isNotEmpty()) message.toolCalls else listOfNotNull(message.toolCall)
+                        if (allCalls.isNotEmpty()) {
                             if (message.text.isNotEmpty()) {
                                 Spacer(modifier = Modifier.height(10.dp))
                             }
 
-                            if (message.status == MessageStatus.WAITING_FOR_APPROVAL) {
-                                ApprovalPromptCard(
-                                    toolCall = message.toolCall,
-                                    onApprove = onApproveTool,
-                                    onReject = onRejectTool
-                                )
-                            } else {
-                                StreamingTerminalCard(
-                                    toolCall = message.toolCall,
-                                    toolResult = message.toolResult,
-                                    liveOutput = message.streamingTerminalOutput,
-                                    status = message.status
-                                )
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                for (tc in allCalls) {
+                                    val isThisWaiting = pendingApproval?.first == message.id && pendingApproval.second.id == tc.id
+                                    if (isThisWaiting) {
+                                        ApprovalPromptCard(
+                                            toolCall = pendingApproval.second,
+                                            onApprove = { onApproveTool(tc.id) },
+                                            onReject = { onRejectTool(tc.id) }
+                                        )
+                                    } else {
+                                        val matchingResult = if (message.toolResult?.toolCallId == tc.id) message.toolResult else null
+                                        StreamingTerminalCard(
+                                            toolCall = tc,
+                                            toolResult = matchingResult,
+                                            liveOutput = if (isThisWaiting || message.status == MessageStatus.EXECUTING_TOOL) message.streamingTerminalOutput else "",
+                                            status = if (matchingResult != null) {
+                                                if (matchingResult.isError) MessageStatus.ERROR else MessageStatus.COMPLETED
+                                            } else {
+                                                message.status
+                                            }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

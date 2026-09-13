@@ -75,6 +75,7 @@ fun ChatScreen(
     val currentSession by agentEngine.currentSession.collectAsState()
     val artifacts by agentEngine.artifacts.collectAsState()
     val metrics by agentEngine.metrics.collectAsState()
+    val pendingApproval by agentEngine.pendingApproval.collectAsState()
 
     var inputText by remember { mutableStateOf("") }
     var showModelPickerDialog by remember { mutableStateOf(false) }
@@ -474,8 +475,9 @@ fun ChatScreen(
                     items(messages, key = { it.id }) { msg ->
                         MessageBubble(
                             message = msg,
-                            onApproveTool = { agentEngine.approvePendingAction() },
-                            onRejectTool = { agentEngine.rejectPendingAction() }
+                            pendingApproval = pendingApproval,
+                            onApproveTool = { toolId -> agentEngine.approvePendingAction(toolId) },
+                            onRejectTool = { toolId -> agentEngine.rejectPendingAction(toolId) }
                         )
                     }
                 }
@@ -607,12 +609,12 @@ fun ChatScreen(
                                             val prompt = inputText.trim().ifEmpty { "Analyze the attached image." }
                                             val imgB64 = pendingImageBase64
                                             val mime = pendingImageMimeType
-                                            inputText = ""
-                                            pendingImageBitmap = null
-                                            pendingImageBase64 = null
-                                            focusManager.clearFocus()
 
-                                             if (prompt.startsWith("/boost", ignoreCase = true) || prompt.startsWith("amc boost", ignoreCase = true)) {
+                                            if (prompt.startsWith("/boost", ignoreCase = true) || prompt.startsWith("amc boost", ignoreCase = true)) {
+                                                inputText = ""
+                                                pendingImageBitmap = null
+                                                pendingImageBase64 = null
+                                                focusManager.clearFocus()
                                                 coroutineScope.launch {
                                                     bridgeClient.forceReconnect()
                                                     val connected = bridgeClient.awaitConnected(3000)
@@ -632,7 +634,13 @@ fun ChatScreen(
                                                     }
                                                 }
                                             } else {
-                                                agentEngine.startTask(prompt, imgB64, mime)
+                                                val accepted = agentEngine.startTask(prompt, imgB64, mime)
+                                                if (accepted) {
+                                                    inputText = ""
+                                                    pendingImageBitmap = null
+                                                    pendingImageBase64 = null
+                                                    focusManager.clearFocus()
+                                                }
                                             }
                                         }
                                     }
@@ -655,12 +663,12 @@ fun ChatScreen(
                                         val prompt = inputText.trim().ifEmpty { "Analyze the attached image." }
                                         val imgB64 = pendingImageBase64
                                         val mime = pendingImageMimeType
-                                        inputText = ""
-                                        pendingImageBitmap = null
-                                        pendingImageBase64 = null
-                                        focusManager.clearFocus()
 
                                         if (prompt.startsWith("/boost", ignoreCase = true) || prompt.startsWith("amc boost", ignoreCase = true)) {
+                                            inputText = ""
+                                            pendingImageBitmap = null
+                                            pendingImageBase64 = null
+                                            focusManager.clearFocus()
                                             coroutineScope.launch {
                                                 bridgeClient.forceReconnect()
                                                 val connected = bridgeClient.awaitConnected(3000)
@@ -680,7 +688,13 @@ fun ChatScreen(
                                                 }
                                             }
                                         } else {
-                                            agentEngine.startTask(prompt, imgB64, mime)
+                                            val accepted = agentEngine.startTask(prompt, imgB64, mime)
+                                            if (accepted) {
+                                                inputText = ""
+                                                pendingImageBitmap = null
+                                                pendingImageBase64 = null
+                                                focusManager.clearFocus()
+                                            }
                                         }
                                     }
                                 },
@@ -711,6 +725,11 @@ fun ChatScreen(
             onDismiss = { viewingArtifactPath = null },
             onExecuteInTermux = { cmd ->
                 agentEngine.startTask(cmd)
+            },
+            onRetryLoad = {
+                coroutineScope.launch {
+                    agentEngine.loadArtifactContent(viewingArtifact)
+                }
             }
         )
     }

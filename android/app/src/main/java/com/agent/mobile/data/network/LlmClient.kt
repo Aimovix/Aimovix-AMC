@@ -3,8 +3,13 @@ package com.agent.mobile.data.network
 import android.util.Log
 import com.agent.mobile.data.model.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import java.net.UnknownHostException
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
@@ -179,21 +184,29 @@ class LlmClient(
         crossinline block: suspend (Response) -> T
     ): T {
         val call = client.newCall(request)
-        val job = currentCoroutineContext().job
-        val completionHandle = job.invokeOnCompletion {
-            call.cancel()
+        val response = suspendCancellableCoroutine<Response> { continuation ->
+            continuation.invokeOnCancellation {
+                call.cancel()
+            }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isCancelled) return
+                    continuation.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    continuation.resume(response)
+                }
+            })
         }
+
         return try {
-            call.execute().use { response ->
-                block(response)
+            response.use { resp ->
+                block(resp)
             }
-        } catch (e: IOException) {
-            if (!currentCoroutineContext().job.isActive) {
-                throw CancellationException("Network call cancelled by coroutine", e)
-            }
-            throw e
-        } finally {
-            completionHandle.dispose()
+        } catch (t: Throwable) {
+            call.cancel()
+            throw t
         }
     }
 
@@ -392,13 +405,15 @@ class LlmClient(
                 }
             }
 
-            if (!streamDone && accumulatedText.isEmpty() && toolCallsMap.isEmpty()) {
-                emit(LlmStreamEvent.Error("OpenAI stream closed prematurely without completion", 0, true))
+            if (!streamDone) {
+                emit(LlmStreamEvent.Error("OpenAI stream closed prematurely without [DONE] termination", 0, true))
                 return@executeCancellableCall
             }
 
             val fullText = accumulatedText.toString()
-            if (promptTokens == 0) promptTokens = estimateTokens(fullText)
+            if (promptTokens == 0) {
+                promptTokens = estimateTokens(systemPrompt) + messages.sumOf { estimateTokens(it.text) + if (it.imageBase64 != null) 1000 else 0 }
+            }
             if (completionTokens == 0) completionTokens = estimateTokens(fullText)
             val cost = calculateEstimatedCost(config.provider, config.modelName, promptTokens, completionTokens)
 
@@ -497,9 +512,6 @@ class LlmClient(
                             put("functionCall", JSONObject().apply {
                                 put("name", tc.name)
                                 put("args", JSONObject(tc.arguments))
-                                if (tc.thoughtSignature != null) {
-                                    put("thoughtSignature", tc.thoughtSignature)
-                                }
                             })
                             if (tc.thoughtSignature != null) {
                                 put("thoughtSignature", tc.thoughtSignature)
@@ -511,6 +523,9 @@ class LlmClient(
                     partsArr.put(JSONObject().apply {
                         put("functionResponse", JSONObject().apply {
                             put("name", "execute_command")
+                            if (m.toolResult.toolCallId.isNotEmpty()) {
+                                put("id", m.toolResult.toolCallId)
+                            }
                             put("response", JSONObject().apply {
                                 put("stdout", m.toolResult.stdout)
                                 put("stderr", m.toolResult.stderr)
@@ -527,10 +542,25 @@ class LlmClient(
             }
 
             if (partsArr.length() > 0) {
-                contents.put(JSONObject().apply {
-                    put("role", role)
-                    put("parts", partsArr)
-                })
+                if (m.toolResult != null && contents.length() > 0 && contents.getJSONObject(contents.length() - 1).getString("role") == "user") {
+                    val prevObj = contents.getJSONObject(contents.length() - 1)
+                    val prevParts = prevObj.getJSONArray("parts")
+                    if (prevParts.length() > 0 && prevParts.getJSONObject(0).has("functionResponse")) {
+                        for (pIdx in 0 until partsArr.length()) {
+                            prevParts.put(partsArr.getJSONObject(pIdx))
+                        }
+                    } else {
+                        contents.put(JSONObject().apply {
+                            put("role", role)
+                            put("parts", partsArr)
+                        })
+                    }
+                } else {
+                    contents.put(JSONObject().apply {
+                        put("role", role)
+                        put("parts", partsArr)
+                    })
+                }
             }
         }
         root.put("contents", contents)
@@ -613,6 +643,22 @@ class LlmClient(
                 val data = l.substring(5).trim()
                 try {
                     val json = JSONObject(data)
+                    if (json.has("error")) {
+                        val errObj = json.getJSONObject("error")
+                        val msg = errObj.optString("message", "Gemini stream error")
+                        emit(LlmStreamEvent.Error("Gemini stream error: $msg", errObj.optInt("code", 0), false))
+                        return@executeCancellableCall
+                    }
+
+                    if (json.has("promptFeedback")) {
+                        val fb = json.getJSONObject("promptFeedback")
+                        if (fb.has("blockReason")) {
+                            val br = fb.optString("blockReason")
+                            emit(LlmStreamEvent.Error("Gemini prompt blocked: $br", 0, false))
+                            return@executeCancellableCall
+                        }
+                    }
+
                     val candidates = json.optJSONArray("candidates")
 
                     if (json.has("usageMetadata")) {
@@ -623,6 +669,12 @@ class LlmClient(
 
                     if (candidates != null && candidates.length() > 0) {
                         val c = candidates.getJSONObject(0)
+                        val finishReason = c.optString("finishReason", "")
+                        if (finishReason == "SAFETY" || finishReason == "RECITATION" || finishReason == "BLOCKLIST" || finishReason == "PROHIBITED_CONTENT") {
+                            emit(LlmStreamEvent.Error("Gemini response blocked by content filter ($finishReason)", 0, false))
+                            return@executeCancellableCall
+                        }
+
                         val content = c.optJSONObject("content")
                         val parts = content?.optJSONArray("parts")
 
@@ -637,15 +689,18 @@ class LlmClient(
                                 if (p.has("functionCall")) {
                                     val fc = p.getJSONObject("functionCall")
                                     val name = fc.getString("name")
+                                    val id = if (fc.has("id")) fc.getString("id")
+                                        else if (p.has("id")) p.getString("id")
+                                        else UUID.randomUUID().toString()
                                     val argsObj = fc.optJSONObject("args")
                                     val argsMap = mutableMapOf<String, String>()
                                     argsObj?.keys()?.forEach { k -> argsMap[k] = argsObj.optString(k, "") }
-                                    val signature = if (fc.has("thoughtSignature")) fc.getString("thoughtSignature")
-                                        else if (p.has("thoughtSignature")) p.getString("thoughtSignature")
+                                    val signature = if (p.has("thoughtSignature")) p.getString("thoughtSignature")
+                                        else if (fc.has("thoughtSignature")) fc.getString("thoughtSignature")
                                         else null
                                     detectedTools.add(
                                         ToolCall(
-                                            id = UUID.randomUUID().toString(),
+                                            id = id,
                                             name = name,
                                             arguments = argsMap,
                                             thoughtSignature = signature
@@ -663,9 +718,16 @@ class LlmClient(
             }
 
             val fullText = accumulatedText.toString()
-            if (promptTokens == 0) promptTokens = estimateTokens(fullText)
+            if (promptTokens == 0) {
+                promptTokens = estimateTokens(systemPrompt) + messages.sumOf { estimateTokens(it.text) + if (it.imageBase64 != null) 1000 else 0 }
+            }
             if (completionTokens == 0) completionTokens = estimateTokens(fullText)
             val cost = calculateEstimatedCost(config.provider, config.modelName, promptTokens, completionTokens)
+
+            if (detectedTools.isEmpty() && fullText.isEmpty()) {
+                emit(LlmStreamEvent.Error("Gemini stream completed with empty response", 0, true))
+                return@executeCancellableCall
+            }
 
             if (detectedTools.isNotEmpty()) {
                 emit(
@@ -922,13 +984,15 @@ class LlmClient(
                 }
             }
 
-            if (!streamDone && accumulatedText.isEmpty() && toolCallsMap.isEmpty()) {
+            if (!streamDone) {
                 emit(LlmStreamEvent.Error("Claude stream closed prematurely without message_stop", 0, true))
                 return@executeCancellableCall
             }
 
             val fullText = accumulatedText.toString()
-            if (promptTokens == 0) promptTokens = estimateTokens(fullText)
+            if (promptTokens == 0) {
+                promptTokens = estimateTokens(systemPrompt) + messages.sumOf { estimateTokens(it.text) + if (it.imageBase64 != null) 1000 else 0 }
+            }
             if (completionTokens == 0) completionTokens = estimateTokens(fullText)
             val cost = calculateEstimatedCost(config.provider, config.modelName, promptTokens, completionTokens)
 
@@ -986,11 +1050,15 @@ class LlmClient(
 
     private fun parseArgumentsJson(rawJson: String): Map<String, String>? {
         val trimmed = rawJson.trim()
-        if (trimmed.isEmpty()) return emptyMap()
+        if (trimmed.isEmpty()) return null
         return try {
             val obj = JSONObject(trimmed)
             val argsMap = mutableMapOf<String, String>()
             obj.keys().forEach { k -> argsMap[k] = obj.optString(k, "") }
+            val cmd = argsMap["command"]
+            if (cmd != null && cmd.trim().isEmpty()) {
+                return null
+            }
             argsMap
         } catch (e: Exception) {
             null

@@ -29,12 +29,22 @@ fun CronSyncCard(
     val coroutineScope = rememberCoroutineScope()
 
     var crontabContent by remember { mutableStateOf("") }
+    var isCrontabLoaded by remember { mutableStateOf(false) }
     var isLoadingCron by remember { mutableStateOf(false) }
     var isSavingCron by remember { mutableStateOf(false) }
     var cronDaemonStatus by remember { mutableStateOf<String?>("UNKNOWN") }
 
     LaunchedEffect(Unit) {
         cronDaemonStatus = bridgeClient.checkCronStatus()
+        try {
+            isLoadingCron = true
+            crontabContent = bridgeClient.getCrontab()
+            isCrontabLoaded = true
+        } catch (_: Exception) {
+            // bridge might be offline initially; user can load manually
+        } finally {
+            isLoadingCron = false
+        }
     }
 
     var workflowTitle by remember { mutableStateOf("Morning routine") }
@@ -82,6 +92,7 @@ fun CronSyncCard(
                             try {
                                 crontabContent = bridgeClient.getCrontab()
                                 cronDaemonStatus = bridgeClient.checkCronStatus()
+                                isCrontabLoaded = true
                                 Toast.makeText(context, "Crontab loaded from Termux", Toast.LENGTH_SHORT).show()
                             } catch (e: Exception) {
                                 Toast.makeText(context, "Failed to load: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -191,11 +202,21 @@ fun CronSyncCard(
                                 }
                             }
                         },
+                        enabled = isCrontabLoaded && !isSavingCron && !isLoadingCron,
                         shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = DarkBackground),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AccentPrimary,
+                            contentColor = DarkBackground,
+                            disabledContainerColor = BorderSubtle,
+                            disabledContentColor = TextMuted
+                        ),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                     ) {
-                        Text("Sync crontab", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (!isCrontabLoaded) "Load first to sync" else "Sync crontab",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
