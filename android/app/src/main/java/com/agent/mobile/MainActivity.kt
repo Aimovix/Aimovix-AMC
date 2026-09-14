@@ -44,7 +44,7 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
         database = AppDatabase.getInstance(context.applicationContext)
         chatRepository = ChatRepository(database)
         val savedToken = preferenceManager.loadAuthToken()
-        bridgeClient = TermuxBridgeClient(token = savedToken)
+        bridgeClient = TermuxBridgeClient.getInstance(context, savedToken)
         agentEngine = AutonomousAgentEngine(
             bridgeClient = bridgeClient,
             preferenceManager = preferenceManager,
@@ -59,9 +59,8 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
         if (::agentEngine.isInitialized) {
             agentEngine.close()
         }
-        if (::bridgeClient.isInitialized) {
-            bridgeClient.disconnect()
-        }
+        // Note: bridgeClient is decoupled from ViewModel/Activity lifecycle so that
+        // background operations and AgentForegroundService maintain bridge persistence.
     }
 }
 
@@ -257,13 +256,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (viewModel.isInitialized) bridgeClient.reconnectIfDisconnected(force = true)
     }
 
     override fun onResume() {
         super.onResume()
-        // Automatically reconnect the moment the user switches back from Termux to AMC
-        if (viewModel.isInitialized) bridgeClient.reconnectIfDisconnected(force = true)
+        // Automatically reconnect if disconnected without sending redundant forced pings
+        if (viewModel.isInitialized) bridgeClient.reconnectIfDisconnected(force = false)
     }
 
     override fun onDestroy() {

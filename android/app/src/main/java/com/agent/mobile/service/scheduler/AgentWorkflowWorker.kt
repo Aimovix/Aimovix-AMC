@@ -16,6 +16,7 @@ import com.agent.mobile.security.CommandSecurityFilter
 import com.agent.mobile.security.RiskLevel
 import com.agent.mobile.data.model.ExecutionMode
 import kotlinx.coroutines.CancellationException
+import java.security.GeneralSecurityException
 
 class AgentWorkflowWorker(
     private val appContext: Context,
@@ -36,10 +37,19 @@ class AgentWorkflowWorker(
         val command = inputData.getString(KEY_COMMAND) ?: "termux-battery-status"
         Log.i(TAG, "Starting background automation: $title with command: $command")
 
+        val prefs = try {
+            PreferenceManager(appContext)
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "Android Keystore is locked or secure storage unavailable (Direct Boot): ${e.message}. Retrying workflow later.")
+            return Result.retry()
+        } catch (e: GeneralSecurityException) {
+            Log.w(TAG, "Android Keystore security exception: ${e.message}. Retrying workflow later.")
+            return Result.retry()
+        }
+
         sendNotification(title, "Running command: $command...")
 
         return try {
-            val prefs = PreferenceManager(appContext)
             CommandSecurityFilter.setCustomRules(prefs.loadWhitelist(), prefs.loadBlacklist(), prefs.loadStrictMode())
             val assessment = CommandSecurityFilter.analyze(command)
             if (assessment.isBlocked) {
@@ -99,6 +109,12 @@ class AgentWorkflowWorker(
             if (result.exitCode == 0) Result.success() else Result.failure()
         } catch (e: CancellationException) {
             throw e
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "Keystore locked or secure storage unavailable during workflow: ${e.message}. Retrying...")
+            Result.retry()
+        } catch (e: GeneralSecurityException) {
+            Log.w(TAG, "Keystore security exception during workflow: ${e.message}. Retrying...")
+            Result.retry()
         } catch (e: Exception) {
             Log.e(TAG, "Background workflow failed: ${e.message}", e)
             sendNotification("⚠️ Error ($title)", e.localizedMessage ?: "Unknown error")

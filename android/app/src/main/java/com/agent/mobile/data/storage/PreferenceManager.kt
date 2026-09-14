@@ -8,6 +8,7 @@ import androidx.security.crypto.MasterKey
 import com.agent.mobile.data.model.ExecutionMode
 import com.agent.mobile.data.model.ModelConfig
 import com.agent.mobile.data.model.ProviderType
+import java.security.GeneralSecurityException
 
 class PreferenceManager(context: Context) {
 
@@ -23,11 +24,19 @@ class PreferenceManager(context: Context) {
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
+    } catch (e: GeneralSecurityException) {
+        Log.e(TAG, "Android Keystore is inaccessible or secure storage could not be initialized: ${e.message}", e)
+        throw IllegalStateException("Secure storage is unavailable. Unlock the device and try again. Credentials were not saved.", e)
+    } catch (e: IllegalStateException) {
+        Log.e(TAG, "Keystore or secure preferences in illegal state: ${e.message}", e)
+        throw IllegalStateException("Secure storage is unavailable. Unlock the device and try again. Credentials were not saved.", e)
     } catch (e: Exception) {
+        Log.e(TAG, "Failed to initialize encrypted preferences: ${e.message}", e)
         throw IllegalStateException("Secure storage is unavailable. Unlock the device and try again. Credentials were not saved.", e)
     }
 
     companion object {
+        private const val TAG = "PreferenceManager"
         private const val KEY_PROVIDER = "key_provider"
         private const val KEY_MODEL = "key_model"
         private const val KEY_API_KEY = "key_api_key"

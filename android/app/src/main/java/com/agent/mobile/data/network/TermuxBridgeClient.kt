@@ -2,6 +2,11 @@ package com.agent.mobile.data.network
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import com.agent.mobile.data.model.ConnectionStatus
@@ -21,15 +26,48 @@ import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ThreadLocalRandom
 
 class TermuxBridgeClient(
     private val host: String = "127.0.0.1",
     private val port: Int = 8765,
-    private var token: String = ""
+    private var token: String = "",
+    private var context: Context? = null
 ) {
     companion object {
         private const val TAG = "TermuxBridgeClient"
-        private const val RECONNECT_DELAY_MS = 1500L
+        const val INITIAL_BACKOFF_MS = 1000L
+        const val BACKOFF_MULTIPLIER = 2.0
+        const val MAX_BACKOFF_MS = 30_000L
+        const val MAX_JITTER_MS = 1000L
+        const val PING_TIMEOUT_MS = 10_000L
+        const val HEARTBEAT_INTERVAL_MS = 15_000L
+
+        @Volatile
+        private var singletonInstance: TermuxBridgeClient? = null
+
+        fun getInstance(context: Context, token: String = ""): TermuxBridgeClient {
+            val existing = singletonInstance
+            if (existing != null) {
+                if (token.isNotEmpty() && existing.token.isEmpty()) {
+                    existing.setToken(token)
+                }
+                return existing
+            }
+            return synchronized(this) {
+                singletonInstance ?: TermuxBridgeClient(
+                    token = token,
+                    context = context.applicationContext
+                ).also { singletonInstance = it }
+            }
+        }
+
+        internal fun resetInstanceForTesting() {
+            synchronized(this) {
+                singletonInstance?.disconnect()
+                singletonInstance = null
+            }
+        }
 
         fun isTermuxInstalled(context: Context): Boolean {
             return try {
@@ -165,6 +203,7 @@ class TermuxBridgeClient(
 
     // Map for waiting file reads (keyed by request_id and path)
     private val pendingFileReads = ConcurrentHashMap<String, CompletableDeferred<String>>()
+    private val pendingFileWrites = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
 
     // Connection generation to prevent stale callbacks
     private val connectionGeneration = java.util.concurrent.atomic.AtomicLong(0)
@@ -172,11 +211,115 @@ class TermuxBridgeClient(
     // Mutex to strictly serialize connection attempts
     private val connectionMutex = Mutex()
 
-    // Auto-reconnect worker and heartbeat state
+    // Auto-reconnect worker, exponential backoff, and heartbeat state
     private var isAutoReconnectEnabled = true
     private var reconnectJob: Job? = null
     private var heartbeatJob: Job? = null
     private var isManualDisconnect = false
+    private var reconnectAttempts = 0
+
+    private val powerManager: PowerManager?
+        get() = context?.getSystemService(Context.POWER_SERVICE) as? PowerManager
+
+    private var pingWakeLock: PowerManager.WakeLock? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    init {
+        if (context != null) {
+            registerNetworkCallback()
+        }
+    }
+
+    fun attachContext(ctx: Context) {
+        if (this.context == null) {
+            this.context = ctx.applicationContext
+            registerNetworkCallback()
+        }
+    }
+
+    private fun acquirePingWakeLock(timeoutMs: Long = PING_TIMEOUT_MS + 2000L) {
+        try {
+            if (pingWakeLock == null) {
+                pingWakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AMC:BridgeClient:Ping")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (pingWakeLock?.isHeld == false) {
+                pingWakeLock?.acquire(timeoutMs)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire ping wake lock: ${e.message}")
+        }
+    }
+
+    private fun releasePingWakeLock() {
+        try {
+            if (pingWakeLock?.isHeld == true) {
+                pingWakeLock?.release()
+            }
+        } catch (e: Exception) {
+            // ignore
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        val ctx = context ?: return
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        if (networkCallback != null) return
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.d(TAG, "Network interface became available")
+                if (isAutoReconnectEnabled && !isManualDisconnect &&
+                    _connectionStatus.value !is ConnectionStatus.Connected &&
+                    _connectionStatus.value !is ConnectionStatus.Connecting
+                ) {
+                    Log.i(TAG, "Network available, triggering immediate reconnect")
+                    reconnectIfDisconnected(force = false)
+                }
+            }
+
+            override fun onLost(network: Network) {
+                Log.d(TAG, "Network interface lost")
+            }
+        }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                cm.registerDefaultNetworkCallback(callback)
+            } else {
+                val request = NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build()
+                cm.registerNetworkCallback(request, callback)
+            }
+            networkCallback = callback
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register network callback: ${e.message}")
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val ctx = context ?: return
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        networkCallback?.let {
+            try {
+                cm.unregisterNetworkCallback(it)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to unregister network callback: ${e.message}")
+            }
+            networkCallback = null
+        }
+    }
+
+    fun getReconnectAttempts(): Int = reconnectAttempts
+
+    fun calculateBackoffDelay(attempt: Int): Long {
+        val base = (INITIAL_BACKOFF_MS * Math.pow(BACKOFF_MULTIPLIER, attempt.coerceAtLeast(0).toDouble())).toLong()
+        val capped = minOf(base, MAX_BACKOFF_MS)
+        val jitter = if (MAX_JITTER_MS > 0) ThreadLocalRandom.current().nextLong(0, MAX_JITTER_MS + 1) else 0L
+        return capped + jitter
+    }
 
     fun setToken(newToken: String) {
         this.token = newToken
@@ -189,6 +332,7 @@ class TermuxBridgeClient(
         this.token = authToken
         this.isManualDisconnect = false
         this.isAutoReconnectEnabled = true
+        this.reconnectAttempts = 0
 
         if (_connectionStatus.value is ConnectionStatus.Connected) {
             return
@@ -206,6 +350,7 @@ class TermuxBridgeClient(
         this.token = authToken
         this.isManualDisconnect = false
         this.isAutoReconnectEnabled = true
+        this.reconnectAttempts = 0
         reconnectJob?.cancel()
         scope.launch {
             try {
@@ -214,7 +359,7 @@ class TermuxBridgeClient(
                 // ignore
             }
             webSocket = null
-            doConnect(authToken)
+            doConnect(authToken, force = true)
         }
     }
 
@@ -231,6 +376,7 @@ class TermuxBridgeClient(
                         val pingId = UUID.randomUUID().toString()
                         val deferred = CompletableDeferred<Long>()
                         pendingPings[pingId] = deferred
+                        acquirePingWakeLock()
                         val sent = ws.send(JSONObject().apply {
                             put("action", "ping")
                             put("ping_id", pingId)
@@ -238,15 +384,18 @@ class TermuxBridgeClient(
                         }.toString())
 
                         if (!sent) {
+                            releasePingWakeLock()
                             pendingPings.remove(pingId)
                             forceReconnect()
                         } else {
                             try {
-                                withTimeout(2500L) { deferred.await() }
+                                withTimeout(PING_TIMEOUT_MS) { deferred.await() }
                                 requestSysInfo()
                             } catch (e: Exception) {
                                 pendingPings.remove(pingId)
                                 forceReconnect()
+                            } finally {
+                                releasePingWakeLock()
                             }
                         }
                     }
@@ -273,7 +422,7 @@ class TermuxBridgeClient(
         stopHeartbeat()
         heartbeatJob = scope.launch {
             while (isActive && _connectionStatus.value is ConnectionStatus.Connected) {
-                delay(15_000L)
+                delay(HEARTBEAT_INTERVAL_MS)
                 if (!isActive || _connectionStatus.value !is ConnectionStatus.Connected) break
 
                 val ws = webSocket
@@ -285,6 +434,7 @@ class TermuxBridgeClient(
                 val pingId = UUID.randomUUID().toString()
                 val deferred = CompletableDeferred<Long>()
                 pendingPings[pingId] = deferred
+                acquirePingWakeLock()
                 val sent = ws.send(JSONObject().apply {
                     put("action", "ping")
                     put("ping_id", pingId)
@@ -292,18 +442,21 @@ class TermuxBridgeClient(
                 }.toString())
 
                 if (!sent) {
+                    releasePingWakeLock()
                     pendingPings.remove(pingId)
                     handleConnectionLost("Failed to send ping heartbeat")
                     break
                 }
 
                 try {
-                    withTimeout(5_000L) { deferred.await() }
+                    withTimeout(PING_TIMEOUT_MS) { deferred.await() }
                 } catch (e: Exception) {
                     pendingPings.remove(pingId)
-                    Log.w(TAG, "Heartbeat ping timeout after 5s: ${e.message}")
+                    Log.w(TAG, "Heartbeat ping timeout after ${PING_TIMEOUT_MS / 1000}s: ${e.message}")
                     handleConnectionLost("Heartbeat ping timeout")
                     break
+                } finally {
+                    releasePingWakeLock()
                 }
             }
         }
@@ -323,8 +476,10 @@ class TermuxBridgeClient(
         }
     }
 
-    private suspend fun doConnect(authToken: String) = connectionMutex.withLock {
-        if (_connectionStatus.value is ConnectionStatus.Connected && webSocket != null) {
+    private suspend fun doConnect(authToken: String, force: Boolean = false) = connectionMutex.withLock {
+        val currentStatus = _connectionStatus.value
+        if (!force && (currentStatus is ConnectionStatus.Connected || currentStatus is ConnectionStatus.Connecting) && webSocket != null) {
+            Log.d(TAG, "Connection attempt already in progress or connected ($currentStatus), skipping doConnect")
             return@withLock
         }
         stopHeartbeat()
@@ -390,10 +545,13 @@ class TermuxBridgeClient(
         if (!isAutoReconnectEnabled || isManualDisconnect) return
 
         reconnectJob?.cancel()
+        val attempt = reconnectAttempts++
+        val delayMs = calculateBackoffDelay(attempt)
+        Log.d(TAG, "Scheduling reconnect attempt #$attempt in ${delayMs}ms")
         reconnectJob = scope.launch {
-            delay(RECONNECT_DELAY_MS)
+            delay(delayMs)
             if (isAutoReconnectEnabled && !isManualDisconnect && _connectionStatus.value !is ConnectionStatus.Connected) {
-                Log.d(TAG, "Attempting to reconnect to Termux...")
+                Log.d(TAG, "Attempting to reconnect to Termux (attempt #$attempt)...")
                 doConnect(token)
             }
         }
@@ -418,6 +576,8 @@ class TermuxBridgeClient(
         pendingPings.clear()
         pendingFileReads.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
         pendingFileReads.clear()
+        pendingFileWrites.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
+        pendingFileWrites.clear()
     }
 
     private fun parseSystemInfo(json: JSONObject): TermuxSystemInfo {
@@ -445,6 +605,7 @@ class TermuxBridgeClient(
 
             when (type) {
                 "auth_ok" -> {
+                    reconnectAttempts = 0
                     val info = parseSystemInfo(json)
                     _connectionStatus.value = ConnectionStatus.Connected(info)
                     // Once connected, cancel any scheduled reconnects and start heartbeat
@@ -509,6 +670,11 @@ class TermuxBridgeClient(
                         executionChunkCallbacks.remove(execId)
                     }
                 }
+                "interrupted" -> {
+                    val execId = json.optString("execution_id")
+                    Log.i(TAG, "Process interrupted by bridge daemon: execution_id=$execId")
+                    terminalOutputEvents.tryEmit(Pair(execId, "\n[Execution interrupted]\n"))
+                }
                 "file_content" -> {
                     val reqId = json.optString("request_id")
                     val path = json.optString("path")
@@ -523,6 +689,13 @@ class TermuxBridgeClient(
                     val deferred = if (reqId.isNotEmpty()) pendingFileReads.remove(reqId) else pendingFileReads.remove(path)
                     deferred?.complete(b64)
                 }
+                "file_written" -> {
+                    val reqId = json.optString("request_id")
+                    val path = json.optString("path")
+                    val success = json.optBoolean("success", true)
+                    val deferred = if (reqId.isNotEmpty()) pendingFileWrites.remove(reqId) else pendingFileWrites.remove(path)
+                    deferred?.complete(success)
+                }
                 "error" -> {
                     val execId = json.optString("execution_id")
                     val err = json.optString("error")
@@ -530,8 +703,10 @@ class TermuxBridgeClient(
                     val path = json.optString("path")
                     if (reqId.isNotEmpty()) {
                         pendingFileReads.remove(reqId)?.completeExceptionally(Exception(err))
+                        pendingFileWrites.remove(reqId)?.completeExceptionally(Exception(err))
                     } else if (path.isNotEmpty()) {
                         pendingFileReads.remove(path)?.completeExceptionally(Exception(err))
+                        pendingFileWrites.remove(path)?.completeExceptionally(Exception(err))
                     }
                     val deferred = pendingExecutions[execId]
                     if (deferred != null) {
@@ -575,6 +750,16 @@ class TermuxBridgeClient(
             executionChunkCallbacks[execId] = onChunk
         }
 
+        val execWakeLock = try {
+            powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AMC:BridgeClient:Exec:$execId")?.apply {
+                setReferenceCounted(false)
+                acquire(timeoutMs.coerceAtLeast(1000L) + 5000L)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire exec wake lock: ${e.message}")
+            null
+        }
+
         val msg = JSONObject().apply {
             put("action", "execute")
             put("command", command)
@@ -584,6 +769,11 @@ class TermuxBridgeClient(
 
         val ws = webSocket
         if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
+            try {
+                if (execWakeLock?.isHeld == true) execWakeLock.release()
+            } catch (e: Exception) {
+                // ignore
+            }
             executionChunkCallbacks.remove(execId)
             pendingExecutions.remove(execId)
             executionBuffers.remove(execId)
@@ -598,6 +788,11 @@ class TermuxBridgeClient(
 
         val sent = ws.send(msg.toString())
         if (!sent) {
+            try {
+                if (execWakeLock?.isHeld == true) execWakeLock.release()
+            } catch (e: Exception) {
+                // ignore
+            }
             executionChunkCallbacks.remove(execId)
             pendingExecutions.remove(execId)
             executionBuffers.remove(execId)
@@ -627,6 +822,13 @@ class TermuxBridgeClient(
             interruptCurrent(execId)
             throw e
         } finally {
+            try {
+                if (execWakeLock?.isHeld == true) {
+                    execWakeLock.release()
+                }
+            } catch (e: Exception) {
+                // ignore
+            }
             executionChunkCallbacks.remove(execId)
             pendingExecutions.remove(execId)
             executionBuffers.remove(execId)
@@ -641,6 +843,33 @@ class TermuxBridgeClient(
             executionId?.let { put("execution_id", it) }
         }
         webSocket?.send(msg.toString())
+    }
+
+    suspend fun writeFile(path: String, content: String, timeoutMs: Long = 10_000L): Boolean = withContext(Dispatchers.IO) {
+        val reqId = UUID.randomUUID().toString()
+        val deferred = CompletableDeferred<Boolean>()
+        pendingFileWrites[reqId] = deferred
+        val msg = JSONObject().apply {
+            put("action", "write_file")
+            put("request_id", reqId)
+            put("path", path)
+            put("content", content)
+        }
+        val ws = webSocket
+        if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
+            pendingFileWrites.remove(reqId)
+            throw IllegalStateException("No connection to Termux")
+        }
+        val sent = ws.send(msg.toString())
+        if (!sent) {
+            pendingFileWrites.remove(reqId)
+            throw java.io.IOException("Failed to send write_file message (socket closed)")
+        }
+        try {
+            withTimeout(timeoutMs) { deferred.await() }
+        } finally {
+            pendingFileWrites.remove(reqId)
+        }
     }
 
     suspend fun readFile(path: String, timeoutMs: Long = 10_000L): String = withContext(Dispatchers.IO) {
@@ -726,6 +955,8 @@ class TermuxBridgeClient(
         isAutoReconnectEnabled = false
         stopHeartbeat()
         reconnectJob?.cancel()
+        releasePingWakeLock()
+        unregisterNetworkCallback()
         failAllPendingExecutions("Client disconnected")
         webSocket?.close(1000, "App closed")
         webSocket = null

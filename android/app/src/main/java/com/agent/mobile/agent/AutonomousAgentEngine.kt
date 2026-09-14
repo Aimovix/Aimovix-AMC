@@ -15,6 +15,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import java.util.UUID
 
 class AutonomousAgentEngine(
@@ -261,6 +262,17 @@ class AutonomousAgentEngine(
             } finally {
                 _isBusy.value = false
                 _pendingApproval.value = null
+                withContext(NonCancellable) {
+                    try {
+                        val session = _currentSession.value
+                        val sessionId = session?.id ?: executionSessionId
+                        chatRepository?.getMessagesForSession(sessionId)?.firstOrNull()?.let { dbMessages ->
+                            _messages.value = dbMessages
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to re-sync messages from Room DB: ${e.message}")
+                    }
+                }
             }
         }
         return true

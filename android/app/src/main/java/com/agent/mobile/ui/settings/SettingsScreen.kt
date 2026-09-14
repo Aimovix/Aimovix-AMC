@@ -149,7 +149,7 @@ fun SettingsScreen(
                         )
                     )
 
-                    ProviderType.values().forEach { provider ->
+                    ProviderType.entries.forEach { provider ->
                         val isSelected = selectedProvider == provider
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
@@ -433,7 +433,7 @@ fun SettingsScreen(
                                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                ProviderType.values().filter { it != selectedProvider }.forEach { prov ->
+                                ProviderType.entries.filter { it != selectedProvider }.forEach { prov ->
                                     val isChosen = fallbackProvider == prov
                                     FilterChip(
                                         selected = isChosen,

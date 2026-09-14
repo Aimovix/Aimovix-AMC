@@ -38,7 +38,7 @@ fun SetupWizardScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val connectionStatus by bridgeClient.connectionStatus.collectAsState()
     var inputToken by remember { mutableStateOf(savedToken) }
     var isTermuxIgnoringBattery by remember {

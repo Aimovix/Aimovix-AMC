@@ -54,6 +54,15 @@ def ensure_wake_lock():
         except Exception:
             pass
 
+def release_wake_lock():
+    """Ensure Termux CPU wake lock is released on daemon shutdown."""
+    wake_unlock = shutil.which("termux-wake-unlock", path=ENV.get("PATH"))
+    if wake_unlock:
+        try:
+            subprocess.run([wake_unlock], env=ENV, timeout=2, capture_output=True)
+        except Exception:
+            pass
+
 def update_termux_notification(status_text="Bridge active • Port 8765"):
     """Post or update an ongoing notification via termux-api to prevent background freeze."""
     termux_notif = shutil.which("termux-notification", path=ENV.get("PATH"))
@@ -98,6 +107,8 @@ AUTH_TOKEN = load_or_generate_token()
 _cached_battery = None
 _last_battery_check = 0.0
 _termux_api_available = True
+_termux_api_consecutive_failures = 0
+_termux_api_retry_after = 0.0
 
 def get_battery_info_fast() -> dict | None:
     """Quickly read Android battery capacity and status from kernel sysfs without blocking."""
@@ -120,6 +131,7 @@ def get_battery_info_fast() -> dict | None:
 def get_system_info(cwd: str = DEFAULT_CWD) -> dict:
     """Collect system, memory, storage, and battery status via fast sysfs or termux-api."""
     global _cached_battery, _last_battery_check, _termux_api_available
+    global _termux_api_consecutive_failures, _termux_api_retry_after
     info = {
         "os": sys.platform,
         "cwd": cwd,
@@ -133,10 +145,13 @@ def get_system_info(cwd: str = DEFAULT_CWD) -> dict:
     if fast_batt is not None:
         info["battery"] = fast_batt
         _cached_battery = fast_batt
+        _termux_api_consecutive_failures = 0
+        _termux_api_retry_after = 0.0
+        _termux_api_available = True
     else:
-        # 2. Fallback to cached battery or termux-battery-status with short 1s timeout
+        # 2. Fallback to cached battery or termux-battery-status with short 1.5s timeout
         now = time.time()
-        if info["has_termux_api"] and _termux_api_available:
+        if info["has_termux_api"] and (now >= _termux_api_retry_after):
             if _cached_battery is not None and (now - _last_battery_check < 30.0):
                 info["battery"] = _cached_battery
             else:
@@ -145,13 +160,24 @@ def get_system_info(cwd: str = DEFAULT_CWD) -> dict:
                     if res.returncode == 0 and res.stdout.strip():
                         _cached_battery = json.loads(res.stdout)
                         _last_battery_check = now
+                        _termux_api_consecutive_failures = 0
+                        _termux_api_retry_after = 0.0
+                        _termux_api_available = True
                         info["battery"] = _cached_battery
                     else:
+                        _termux_api_consecutive_failures += 1
+                        _termux_api_retry_after = now + min(120.0, 15.0 * _termux_api_consecutive_failures)
                         _termux_api_available = False
+                        if _cached_battery:
+                            info["battery"] = _cached_battery
                 except Exception:
+                    _termux_api_consecutive_failures += 1
+                    _termux_api_retry_after = now + min(120.0, 15.0 * _termux_api_consecutive_failures)
                     _termux_api_available = False
                     if _cached_battery:
                         info["battery"] = _cached_battery
+        elif _cached_battery:
+            info["battery"] = _cached_battery
 
     # Disk usage in HOME
     try:
@@ -188,10 +214,45 @@ def validate_file_path(target_path_str: str, base_cwd: str = DEFAULT_CWD, for_wr
     home = Path(DEFAULT_CWD).resolve()
 
     if for_write:
-        # Prevent writing outside HOME (or allowed user directory)
-        try:
-            resolved.relative_to(home)
-        except ValueError:
+        # Prevent writing outside HOME or allowed Android storage directories
+        allowed_roots = [home]
+        for candidate_str in ("/storage/emulated/0", "/sdcard", "/storage/self/primary"):
+            candidate = Path(candidate_str)
+            try:
+                allowed_roots.append(candidate.resolve())
+            except Exception:
+                pass
+            allowed_roots.append(candidate)
+
+        # Allow targets of valid symlinks configured in ~/storage/ (e.g. termux-setup-storage)
+        storage_dir = home / "storage"
+        if storage_dir.is_dir():
+            try:
+                allowed_roots.append(storage_dir.resolve())
+            except Exception:
+                pass
+            try:
+                for entry in storage_dir.iterdir():
+                    if entry.is_symlink():
+                        try:
+                            sym_target = entry.resolve()
+                            if sym_target not in (Path("/"), Path("/etc"), Path("/proc"), Path("/sys")):
+                                allowed_roots.append(sym_target)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        in_allowed_root = False
+        for root in allowed_roots:
+            try:
+                resolved.relative_to(root)
+                in_allowed_root = True
+                break
+            except ValueError:
+                pass
+
+        if not in_allowed_root:
             return resolved, f"Security block: Writing outside home directory ({home}) is forbidden."
 
         # Prevent modification of shell initialization & profile files
@@ -218,47 +279,180 @@ def validate_file_path(target_path_str: str, base_cwd: str = DEFAULT_CWD, for_wr
 
     return resolved, None
 
+def cleanup_process_resources(process):
+    """Cleanly close subprocess transports and pipe handles to avoid ResourceWarnings and leaks."""
+    if process is None:
+        return
+    for stream in (getattr(process, "stdin", None), getattr(process, "stdout", None), getattr(process, "stderr", None)):
+        if stream is not None:
+            transport = getattr(stream, "_transport", None)
+            if transport is not None and hasattr(transport, "close") and not transport.is_closing():
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+    transport = getattr(process, "_transport", None)
+    if transport is not None and hasattr(transport, "close") and not transport.is_closing():
+        try:
+            transport.close()
+        except Exception:
+            pass
+
+RECONNECT_GRACE_SECONDS = float(os.environ.get("BRIDGE_RECONNECT_GRACE", 30.0))
+DETACHED_SESSIONS: dict[str, "BridgeSession"] = {}
+
+def register_detached_session(session: "BridgeSession"):
+    """Register a detached session during reconnect grace window."""
+    DETACHED_SESSIONS[session.session_id] = session
+    if session.execution_id:
+        DETACHED_SESSIONS[session.execution_id] = session
+
+def unregister_detached_session(session: "BridgeSession"):
+    """Remove all references to session from DETACHED_SESSIONS."""
+    for k in list(DETACHED_SESSIONS.keys()):
+        if DETACHED_SESSIONS[k] is session:
+            del DETACHED_SESSIONS[k]
+
+def pop_detached_session(execution_id: str | None = None) -> "BridgeSession | None":
+    """Retrieve and unregister a detached session by execution_id or most recent."""
+    matched = None
+    if execution_id:
+        for k, sess in list(DETACHED_SESSIONS.items()):
+            if k == execution_id or getattr(sess, "execution_id", None) == execution_id:
+                matched = sess
+                break
+    elif DETACHED_SESSIONS:
+        matched = next(reversed(list(DETACHED_SESSIONS.values())))
+    if matched is not None:
+        unregister_detached_session(matched)
+        return matched
+    return None
+
 class BridgeSession:
     """Own execution state per authenticated connection."""
 
     def __init__(self, websocket):
+        self.session_id = secrets.token_hex(8)
         self.websocket = websocket
         self.cwd = DEFAULT_CWD
         self.task = None
         self.process = None
         self.execution_id = None
+        self.buffered_output = []
+        self.buffered_events = []
+        self.grace_task = None
+        self.file_tasks = set()
+
+    def is_running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    async def attach(self, websocket):
+        """Re-attach a newly connected WebSocket to an existing running session."""
+        if self.grace_task is not None and not self.grace_task.done():
+            self.grace_task.cancel()
+            self.grace_task = None
+        self.websocket = websocket
+        await self.flush_buffered()
+
+    async def flush_buffered(self):
+        """Flush output and events buffered while disconnected."""
+        if self.websocket is None:
+            return
+        for item in self.buffered_output:
+            try:
+                await self.websocket.send(json.dumps(item))
+            except websockets.exceptions.ConnectionClosed:
+                self.websocket = None
+                return
+        self.buffered_output.clear()
+
+        for item in self.buffered_events:
+            try:
+                await self.websocket.send(json.dumps(item))
+            except websockets.exceptions.ConnectionClosed:
+                self.websocket = None
+                return
+        self.buffered_events.clear()
+
+    async def wait_grace_period(self, duration: float):
+        """Wait for reconnect; if grace period expires without reconnection, stop execution."""
+        try:
+            await asyncio.sleep(duration)
+            await self.stop()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            unregister_detached_session(self)
 
     async def send(self, kind, **payload):
-        await self.websocket.send(json.dumps({"type": kind, **payload}))
+        msg = json.dumps({"type": kind, **payload})
+        if self.websocket is not None:
+            try:
+                await self.websocket.send(msg)
+                return
+            except websockets.exceptions.ConnectionClosed:
+                self.websocket = None
+        if kind in ("completed", "interrupted", "error"):
+            self.buffered_events.append({"type": kind, **payload})
+        elif kind in ("stdout", "stderr"):
+            self.buffered_output.append({"type": kind, **payload})
+            if len(self.buffered_output) > 200:
+                self.buffered_output.pop(0)
 
     async def terminate_process(self):
         process = self.process
         if process is None:
             return
+        if sys.platform == "win32":
+            try:
+                if process.returncode is None:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(process.wait(), timeout=2)
+            cleanup_process_resources(process)
+            return
+
         # Signal the entire group, even if its shell has already exited.
         sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
         for sig in (signal.SIGINT, signal.SIGTERM, sigkill):
             try:
-                if sys.platform != "win32":
-                    os.killpg(process.pid, sig)
-                elif process.returncode is None:
-                    process.kill()
-                else:
-                    break
+                os.killpg(process.pid, sig)
             except ProcessLookupError:
                 break
             if sig != sigkill:
                 await asyncio.sleep(0.25)
+                if process.returncode is not None:
+                    break
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(process.wait(), timeout=2)
+        cleanup_process_resources(process)
 
     async def stop(self):
+        curr = asyncio.current_task()
+        if self.grace_task is not None and self.grace_task != curr and not self.grace_task.done():
+            self.grace_task.cancel()
+            self.grace_task = None
         task = self.task
         if task is not None and not task.done():
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
         self.task = None
+        if self.process is not None:
+            await self.terminate_process()
+            cleanup_process_resources(self.process)
+            self.process = None
+        for ft in list(self.file_tasks):
+            if not ft.done():
+                ft.cancel()
+        if self.file_tasks:
+            await asyncio.gather(*self.file_tasks, return_exceptions=True)
+            self.file_tasks.clear()
+        self.buffered_output.clear()
+        self.buffered_events.clear()
+        unregister_detached_session(self)
 
     async def run(self, command, execution_id, cwd, timeout_seconds):
         readers = []
@@ -335,6 +529,8 @@ class BridgeSession:
                     reader.cancel()
             if readers:
                 await asyncio.gather(*readers, return_exceptions=True)
+            if self.process is not None:
+                cleanup_process_resources(self.process)
             self.process = None
             self.execution_id = None
 
@@ -343,13 +539,14 @@ class BridgeSession:
         request_id = msg.get("request_id")
         extra = {"request_id": request_id} if request_id is not None else {}
         for_write = (action == "write_file")
-        resolved_path, err = validate_file_path(request_path, self.cwd, for_write=for_write)
-        if err:
-            await self.send("error", path=request_path, error=err, **extra)
-            return
-
-        path = str(resolved_path)
         try:
+            resolved_path, err = validate_file_path(request_path, self.cwd, for_write=for_write)
+            if err:
+                with suppress(websockets.exceptions.ConnectionClosed):
+                    await self.send("error", path=request_path, error=err, **extra)
+                return
+
+            path = str(resolved_path)
             if action == "write_file":
                 content = msg.get("content", "")
                 if not isinstance(content, str):
@@ -360,7 +557,8 @@ class BridgeSession:
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     Path(path).write_text(content, encoding="utf-8")
                 await asyncio.to_thread(write)
-                await self.send("file_written", path=request_path, success=True, **extra)
+                with suppress(websockets.exceptions.ConnectionClosed):
+                    await self.send("file_written", path=request_path, success=True, **extra)
             else:
                 def read():
                     if not os.path.exists(path):
@@ -386,17 +584,21 @@ class BridgeSession:
                         raise ValueError("File exceeds the 5 MiB transfer limit.")
                     return data
                 data = await asyncio.to_thread(read)
-                if action == "read_file_base64":
-                    await self.send("file_base64", path=request_path, data=base64.b64encode(data).decode("ascii"), **extra)
-                else:
-                    await self.send("file_content", path=request_path, content=data.decode("utf-8", errors="replace"), **extra)
+                with suppress(websockets.exceptions.ConnectionClosed):
+                    if action == "read_file_base64":
+                        await self.send("file_base64", path=request_path, data=base64.b64encode(data).decode("ascii"), **extra)
+                    else:
+                        await self.send("file_content", path=request_path, content=data.decode("utf-8", errors="replace"), **extra)
+        except asyncio.CancelledError:
+            pass
         except Exception as error:
-            await self.send("error", path=request_path, error=str(error), **extra)
+            with suppress(websockets.exceptions.ConnectionClosed):
+                await self.send("error", path=request_path, error=str(error), **extra)
 
 
 async def handle_connection(websocket):
     """Require a token for every client; receive controls while commands run."""
-    session = BridgeSession(websocket)
+    session = None
     authenticated = False
     try:
         async for message in websocket:
@@ -405,7 +607,11 @@ async def handle_connection(websocket):
                 if not isinstance(msg, dict):
                     raise ValueError("Expected a JSON object.")
             except (ValueError, TypeError):
-                await session.send("error", error="Invalid JSON object.")
+                if session is not None:
+                    await session.send("error", error="Invalid JSON object.")
+                else:
+                    with suppress(websockets.exceptions.ConnectionClosed):
+                        await websocket.send(json.dumps({"type": "error", "error": "Invalid JSON object."}))
                 continue
             action = msg.get("action")
             if action == "auth":
@@ -414,16 +620,27 @@ async def handle_connection(websocket):
                     token.encode("utf-8"), AUTH_TOKEN.encode("utf-8")
                 ):
                     authenticated = True
+                    matched_session = pop_detached_session(msg.get("execution_id"))
+                    if matched_session is not None:
+                        session = matched_session
+                        await session.attach(websocket)
+                    else:
+                        session = BridgeSession(websocket)
                     info = await asyncio.to_thread(get_system_info, session.cwd)
                     await session.send("auth_ok", system=info, cwd=session.cwd)
                 else:
-                    await session.send("auth_fail", error="Authentication failed: invalid token.")
+                    err_msg = json.dumps({"type": "auth_fail", "error": "Authentication failed: invalid token."})
+                    with suppress(websockets.exceptions.ConnectionClosed):
+                        await websocket.send(err_msg)
                     await websocket.close(code=1008, reason="Authentication required")
                     return
                 continue
-            if not authenticated:
-                await session.send("error", error="Authentication required.",
-                                   execution_id=msg.get("execution_id", ""))
+            if not authenticated or session is None:
+                err_payload = {"type": "error", "error": "Authentication required."}
+                if msg.get("execution_id"):
+                    err_payload["execution_id"] = msg.get("execution_id")
+                with suppress(websockets.exceptions.ConnectionClosed):
+                    await websocket.send(json.dumps(err_payload))
                 continue
             if action == "ping":
                 resp = {"timestamp": msg.get("timestamp", 0)}
@@ -435,19 +652,23 @@ async def handle_connection(websocket):
                 await session.send("sys_info", data=sys_data, system=sys_data, cwd=session.cwd)
             elif action == "execute":
                 command = msg.get("command")
-                execution_id = msg.get("execution_id", "default")
+                raw_exec_id = msg.get("execution_id")
+                execution_id = str(raw_exec_id) if raw_exec_id is not None and str(raw_exec_id).strip() else "default"
                 if not isinstance(command, str) or not command.strip():
                     await session.send("error", execution_id=execution_id, error="Command must be a nonempty string.")
                     continue
                 if session.task is not None and not session.task.done():
                     await session.send("error", execution_id=execution_id, error="A command is already running on this connection.")
                     continue
-                cwd = msg.get("cwd", session.cwd)
+                raw_cwd = msg.get("cwd")
+                cwd = raw_cwd if (isinstance(raw_cwd, str) and raw_cwd.strip()) else session.cwd
                 if not isinstance(cwd, str):
                     await session.send("error", execution_id=execution_id, error="Invalid working directory.")
                     continue
-                timeout_ms = msg.get("timeout_ms", 90000)
-                if not isinstance(timeout_ms, (int, float)) or not 1 <= timeout_ms <= 3600000:
+                timeout_ms = msg.get("timeout_ms")
+                if timeout_ms is None:
+                    timeout_ms = 90000
+                elif not isinstance(timeout_ms, (int, float)) or not 1 <= timeout_ms <= 3600000:
                     await session.send("error", execution_id=execution_id, error="Invalid command timeout.")
                     continue
                 session.execution_id = execution_id
@@ -468,13 +689,23 @@ async def handle_connection(websocket):
                 if not isinstance(msg.get("path"), str) or not msg["path"]:
                     await session.send("error", error="A file path is required.", **extra)
                     continue
-                asyncio.create_task(session.transfer_file(action, msg))
+                ftask = asyncio.create_task(session.transfer_file(action, msg))
+                session.file_tasks.add(ftask)
+                ftask.add_done_callback(session.file_tasks.discard)
             else:
                 await session.send("error", error="Unknown action.")
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
-        await session.stop()
+        if session is not None:
+            session.websocket = None
+            if session.is_running():
+                register_detached_session(session)
+                session.grace_task = asyncio.create_task(
+                    session.wait_grace_period(RECONNECT_GRACE_SECONDS)
+                )
+            else:
+                await session.stop()
 
 
 def _watchdog_sync_cycle():
@@ -544,7 +775,11 @@ async def main():
                 watchdog_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await watchdog_task
+            for s in list(DETACHED_SESSIONS.values()):
+                await s.stop()
+            DETACHED_SESSIONS.clear()
             remove_termux_notification()
+            release_wake_lock()
             remove_owned_pid_file()
 
 
@@ -559,6 +794,7 @@ def remove_owned_pid_file():
 
 def cleanup_and_exit(signum, frame):
     remove_termux_notification()
+    release_wake_lock()
     remove_owned_pid_file()
     sys.exit(0)
 

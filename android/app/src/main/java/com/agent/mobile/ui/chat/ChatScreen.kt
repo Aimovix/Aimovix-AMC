@@ -847,7 +847,7 @@ private fun QuickModelPickerDialog(
                             .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        ProviderType.values().forEach { provider ->
+                        ProviderType.entries.forEach { provider ->
                             val isSelected = selectedProvider == provider
                             Surface(
                                 onClick = {

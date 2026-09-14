@@ -15,6 +15,9 @@ import com.agent.mobile.MainActivity
 import android.content.pm.ServiceInfo
 import android.util.Log
 
+import android.os.PowerManager
+import com.agent.mobile.data.network.TermuxBridgeClient
+
 class AgentForegroundService : Service {
 
     constructor() : super()
@@ -64,16 +67,58 @@ class AgentForegroundService : Service {
         }
     }
 
+    private var serviceWakeLock: PowerManager.WakeLock? = null
+
+    private fun acquireWakeLock() {
+        if (serviceWakeLock == null) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            serviceWakeLock = powerManager?.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "AMC:AgentForegroundService::Lock"
+            )?.apply {
+                setReferenceCounted(false)
+            }
+        }
+        try {
+            if (serviceWakeLock?.isHeld == false) {
+                serviceWakeLock?.acquire(6 * 60 * 60 * 1000L) // Safe 6h max timeout
+                Log.d(TAG, "Foreground service WakeLock acquired")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to acquire service wake lock: ${e.message}", e)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (serviceWakeLock?.isHeld == true) {
+                serviceWakeLock?.release()
+                Log.d(TAG, "Foreground service WakeLock released")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release service wake lock: ${e.message}", e)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        acquireWakeLock()
+        try {
+            TermuxBridgeClient.getInstance(applicationContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not initialize bridge client in service: ${e.message}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            releaseWakeLock()
             stopSelf()
             return START_NOT_STICKY
         }
+
+        acquireWakeLock()
 
         val title = intent?.getStringExtra(EXTRA_TITLE) ?: "AMC – AI Mobile Center"
         val message = intent?.getStringExtra(EXTRA_MESSAGE) ?: "Autonomous agent ready"
@@ -127,6 +172,12 @@ class AgentForegroundService : Service {
     override fun onTimeout(startId: Int, fgsType: Int) {
         super.onTimeout(startId, fgsType)
         Log.w(TAG, "Foreground service timed out (startId: $startId, fgsType: $fgsType). Stopping cleanly.")
+        releaseWakeLock()
         stopSelf(startId)
+    }
+
+    override fun onDestroy() {
+        releaseWakeLock()
+        super.onDestroy()
     }
 }
