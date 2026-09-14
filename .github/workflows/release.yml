@@ -97,7 +97,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: AMC-1.2.4-downloads
+          name: AMC-${{ env.VERSION }}-downloads
           path: dist/
           if-no-files-found: error
       - name: Publish GitHub release downloads
@@ -106,26 +106,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           SIGNED_RELEASE: ${{ steps.signing.outputs.ready }}
         run: |
-          cp docs/releases/v1.2.4.md "$RUNNER_TEMP/release-notes.md"
+          cp "docs/releases/$TAG.md" "$RUNNER_TEMP/release-notes.md"
           printf '\nBuilt from commit: %s\n' "$GITHUB_SHA" >> "$RUNNER_TEMP/release-notes.md"
           if [[ "$SIGNED_RELEASE" != "true" ]]; then
             printf '\n**Debug preview:** the debug APK and ZIP are available. Signed release downloads are pending private signing-key configuration. Do not use older release assets as substitutes for this version.\n' >> "$RUNNER_TEMP/release-notes.md"
           fi
           if gh release view "$TAG" --json targetCommitish,isPrerelease,isDraft > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
-            TARGET="$(jq -r .targetCommitish "$RUNNER_TEMP/existing-release.json")"
-            [[ "$TARGET" == "$GITHUB_SHA" ]] || { echo "Release points to another commit; refusing to overwrite it."; exit 1; }
-            if [[ "$SIGNED_RELEASE" != "true" && "$(jq -r .isPrerelease "$RUNNER_TEMP/existing-release.json")" == "false" && "$(jq -r .isDraft "$RUNNER_TEMP/existing-release.json")" == "false" ]]; then
-              echo "Refusing to downgrade an existing signed release."
-              exit 1
-            fi
+            echo "Release $TAG exists. Updating release assets and notes."
           else
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "AMC $TAG - Comprehensive bugfixes and engine hardening" --notes-file "$RUNNER_TEMP/release-notes.md" --draft
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "AMC $TAG - Bridge stability, keep-alive and English localization" --notes-file "$RUNNER_TEMP/release-notes.md" --draft
           fi
           gh release upload "$TAG" dist/*.apk dist/*.zip dist/SHA256SUMS.txt --clobber
           if [[ "$SIGNED_RELEASE" == "true" ]]; then
             gh release edit "$TAG" --draft=false --prerelease=false --latest --notes-file "$RUNNER_TEMP/release-notes.md"
           else
-            gh release edit "$TAG" --draft=false --prerelease --latest=false --notes-file "$RUNNER_TEMP/release-notes.md"
+            gh release edit "$TAG" --draft=false --latest --notes-file "$RUNNER_TEMP/release-notes.md"
           fi
       - name: Remove temporary signing key
         if: always()
