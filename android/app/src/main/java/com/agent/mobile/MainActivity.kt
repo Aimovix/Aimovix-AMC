@@ -3,6 +3,7 @@ package com.agent.mobile
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -26,7 +27,7 @@ import com.agent.mobile.data.storage.db.AppDatabase
 import com.agent.mobile.ui.chat.ChatScreen
 import com.agent.mobile.ui.settings.SettingsScreen
 import com.agent.mobile.ui.setup.SetupWizardScreen
-import com.agent.mobile.ui.tutorial.OnboardingTutorialDialog
+import com.agent.mobile.ui.tutorial.OnboardingTutorialOverlay
 import com.agent.mobile.ui.theme.*
 
 
@@ -118,160 +119,162 @@ class MainActivity : ComponentActivity() {
                     mutableStateOf(!preferenceManager.hasCompletedTutorial())
                 }
 
-                if (showTutorial) {
-                    OnboardingTutorialDialog(
-                        onDismiss = {
-                            preferenceManager.setTutorialCompleted(true)
-                            showTutorial = false
-                        },
-                        onNavigateToSetup = {
-                            preferenceManager.setTutorialCompleted(true)
-                            showTutorial = false
-                            selectedTab = 2
-                        },
-                        onNavigateToChat = {
-                            preferenceManager.setTutorialCompleted(true)
-                            showTutorial = false
-                            selectedTab = 0
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Scaffold(
+                        modifier = Modifier.fillMaxSize(),
+                        containerColor = DarkBackground,
+                        bottomBar = {
+                            Column {
+                                HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
+                                NavigationBar(
+                                    containerColor = DarkSurface,
+                                    tonalElevation = 0.dp
+                                ) {
+                                    NavigationBarItem(
+                                        selected = selectedTab == 0,
+                                        onClick = { selectedTab = 0 },
+                                        icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Chat") },
+                                        label = {
+                                            Text(
+                                                text = "Chat",
+                                                fontSize = 10.5.sp,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                                fontWeight = if (selectedTab == 0) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
+                                            )
+                                        },
+                                        colors = NavigationBarItemDefaults.colors(
+                                            selectedIconColor = AccentPrimary,
+                                            selectedTextColor = AccentPrimary,
+                                            indicatorColor = AccentPrimary.copy(alpha = 0.12f),
+                                            unselectedIconColor = TextMuted,
+                                            unselectedTextColor = TextMuted
+                                        )
+                                    )
+                                    NavigationBarItem(
+                                        selected = selectedTab == 1,
+                                        onClick = { selectedTab = 1 },
+                                        icon = { Icon(Icons.Default.Terminal, contentDescription = "Terminal") },
+                                        label = {
+                                            Text(
+                                                text = "Terminal",
+                                                fontSize = 10.5.sp,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                                fontWeight = if (selectedTab == 1) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
+                                            )
+                                        },
+                                        colors = NavigationBarItemDefaults.colors(
+                                            selectedIconColor = AccentPrimary,
+                                            selectedTextColor = AccentPrimary,
+                                            indicatorColor = AccentPrimary.copy(alpha = 0.12f),
+                                            unselectedIconColor = TextMuted,
+                                            unselectedTextColor = TextMuted
+                                        )
+                                    )
+                                    NavigationBarItem(
+                                        selected = selectedTab == 2,
+                                        onClick = { selectedTab = 2 },
+                                        icon = { Icon(Icons.Default.Build, contentDescription = "Setup") },
+                                        label = {
+                                            Text(
+                                                text = "Setup",
+                                                fontSize = 10.5.sp,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                                fontWeight = if (selectedTab == 2) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
+                                            )
+                                        },
+                                        colors = NavigationBarItemDefaults.colors(
+                                            selectedIconColor = AccentPrimary,
+                                            selectedTextColor = AccentPrimary,
+                                            indicatorColor = AccentPrimary.copy(alpha = 0.12f),
+                                            unselectedIconColor = TextMuted,
+                                            unselectedTextColor = TextMuted
+                                        )
+                                    )
+                                    NavigationBarItem(
+                                        selected = selectedTab == 3,
+                                        onClick = { selectedTab = 3 },
+                                        icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
+                                        label = {
+                                            Text(
+                                                text = "Settings",
+                                                fontSize = 10.sp,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                                fontWeight = if (selectedTab == 3) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
+                                            )
+                                        },
+                                        colors = NavigationBarItemDefaults.colors(
+                                            selectedIconColor = AccentPrimary,
+                                            selectedTextColor = AccentPrimary,
+                                            indicatorColor = AccentPrimary.copy(alpha = 0.12f),
+                                            unselectedIconColor = TextMuted,
+                                            unselectedTextColor = TextMuted
+                                        )
+                                    )
+                                }
+                            }
                         }
-                    )
-                }
-
-                Scaffold(
-                    modifier = Modifier.fillMaxSize(),
-                    containerColor = DarkBackground,
-                    bottomBar = {
-                        Column {
-                            HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
-                            NavigationBar(
-                                containerColor = DarkSurface,
-                                tonalElevation = 0.dp
-                            ) {
-                                NavigationBarItem(
-                                    selected = selectedTab == 0,
-                                    onClick = { selectedTab = 0 },
-                                    icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Chat") },
-                                    label = {
-                                        Text(
-                                            text = "Chat",
-                                            fontSize = 10.5.sp,
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                            fontWeight = if (selectedTab == 0) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
-                                        )
-                                    },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AccentPrimary,
-                                        selectedTextColor = AccentPrimary,
-                                        indicatorColor = AccentPrimary.copy(alpha = 0.12f),
-                                        unselectedIconColor = TextMuted,
-                                        unselectedTextColor = TextMuted
-                                    )
+                    ) { innerPadding ->
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding),
+                            color = DarkBackground
+                        ) {
+                            when (selectedTab) {
+                                0 -> ChatScreen(
+                                    agentEngine = agentEngine,
+                                    bridgeClient = bridgeClient,
+                                    onNavigateSetup = { selectedTab = 2 },
+                                    onNavigateSettings = { selectedTab = 3 }
                                 )
-                                NavigationBarItem(
-                                    selected = selectedTab == 1,
-                                    onClick = { selectedTab = 1 },
-                                    icon = { Icon(Icons.Default.Terminal, contentDescription = "Terminal") },
-                                    label = {
-                                        Text(
-                                            text = "Terminal",
-                                            fontSize = 10.5.sp,
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                            fontWeight = if (selectedTab == 1) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
-                                        )
-                                    },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AccentPrimary,
-                                        selectedTextColor = AccentPrimary,
-                                        indicatorColor = AccentPrimary.copy(alpha = 0.12f),
-                                        unselectedIconColor = TextMuted,
-                                        unselectedTextColor = TextMuted
-                                    )
+                                1 -> com.agent.mobile.ui.terminal.TerminalScreen(
+                                    bridgeClient = bridgeClient
                                 )
-                                NavigationBarItem(
-                                    selected = selectedTab == 2,
-                                    onClick = { selectedTab = 2 },
-                                    icon = { Icon(Icons.Default.Build, contentDescription = "Setup") },
-                                    label = {
-                                        Text(
-                                            text = "Setup",
-                                            fontSize = 10.5.sp,
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                            fontWeight = if (selectedTab == 2) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
-                                        )
-                                    },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AccentPrimary,
-                                        selectedTextColor = AccentPrimary,
-                                        indicatorColor = AccentPrimary.copy(alpha = 0.12f),
-                                        unselectedIconColor = TextMuted,
-                                        unselectedTextColor = TextMuted
-                                    )
+                                2 -> SetupWizardScreen(
+                                    bridgeClient = bridgeClient,
+                                    savedToken = currentToken,
+                                    onTokenChanged = { newToken ->
+                                        currentToken = newToken
+                                        preferenceManager.saveAuthToken(newToken)
+                                        bridgeClient.connect(newToken)
+                                    }
                                 )
-                                NavigationBarItem(
-                                    selected = selectedTab == 3,
-                                    onClick = { selectedTab = 3 },
-                                    icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                                    label = {
-                                        Text(
-                                            text = "Settings",
-                                            fontSize = 10.sp,
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                            fontWeight = if (selectedTab == 3) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Normal
-                                        )
-                                    },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = AccentPrimary,
-                                        selectedTextColor = AccentPrimary,
-                                        indicatorColor = AccentPrimary.copy(alpha = 0.12f),
-                                        unselectedIconColor = TextMuted,
-                                        unselectedTextColor = TextMuted
-                                    )
+                                3 -> SettingsScreen(
+                                    agentEngine = agentEngine,
+                                    preferenceManager = preferenceManager,
+                                    chatRepository = chatRepository,
+                                    bridgeClient = bridgeClient,
+                                    onOpenTutorial = { showTutorial = true }
                                 )
                             }
                         }
                     }
-                ) { innerPadding ->
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding),
-                        color = DarkBackground
-                    ) {
-                        when (selectedTab) {
-                            0 -> ChatScreen(
-                                agentEngine = agentEngine,
-                                bridgeClient = bridgeClient,
-                                onNavigateSetup = { selectedTab = 2 },
-                                onNavigateSettings = { selectedTab = 3 }
-                            )
-                            1 -> com.agent.mobile.ui.terminal.TerminalScreen(
-                                bridgeClient = bridgeClient
-                            )
-                            2 -> SetupWizardScreen(
-                                bridgeClient = bridgeClient,
-                                savedToken = currentToken,
-                                onTokenChanged = { newToken ->
-                                    currentToken = newToken
-                                    preferenceManager.saveAuthToken(newToken)
-                                    bridgeClient.connect(newToken)
-                                }
-                            )
-                            3 -> SettingsScreen(
-                                agentEngine = agentEngine,
-                                preferenceManager = preferenceManager,
-                                chatRepository = chatRepository,
-                                bridgeClient = bridgeClient,
-                                onOpenTutorial = { showTutorial = true }
-                            )
-                        }
+
+                    if (showTutorial) {
+                        OnboardingTutorialOverlay(
+                            onDismiss = {
+                                preferenceManager.setTutorialCompleted(true)
+                                showTutorial = false
+                            },
+                            onNavigateToSetup = {
+                                preferenceManager.setTutorialCompleted(true)
+                                showTutorial = false
+                                selectedTab = 2
+                            },
+                            onNavigateToChat = {
+                                preferenceManager.setTutorialCompleted(true)
+                                showTutorial = false
+                                selectedTab = 0
+                            }
+                        )
                     }
                 }
             }
