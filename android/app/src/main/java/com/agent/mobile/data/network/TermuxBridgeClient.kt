@@ -338,6 +338,7 @@ class TermuxBridgeClient(
             return
         }
 
+        _connectionStatus.value = ConnectionStatus.Connecting
         // Cancel existing reconnect job to avoid racing
         reconnectJob?.cancel()
 
@@ -407,6 +408,7 @@ class TermuxBridgeClient(
 
         this.isManualDisconnect = false
         this.isAutoReconnectEnabled = true
+        _connectionStatus.value = ConnectionStatus.Connecting
         reconnectJob?.cancel()
 
         scope.launch {

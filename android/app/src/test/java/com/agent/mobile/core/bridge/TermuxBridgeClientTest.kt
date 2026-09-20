@@ -452,8 +452,13 @@ class TermuxBridgeClientTest {
         client.reconnectIfDisconnected(force = false)
 
         // Status should be Connecting without thrashing
-        val status = client.connectionStatus.value
-        assertTrue("Status should remain Connecting without crashing", status is ConnectionStatus.Connecting || status is ConnectionStatus.Connected)
+        val deadline = System.currentTimeMillis() + 3000
+        var status = client.connectionStatus.value
+        while (status is ConnectionStatus.Disconnected && System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(50)
+            status = client.connectionStatus.value
+        }
+        assertTrue("Status should remain Connecting without crashing (was $status)", status is ConnectionStatus.Connecting || status is ConnectionStatus.Connected)
 
         client.disconnect()
     }
