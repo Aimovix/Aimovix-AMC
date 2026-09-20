@@ -1,6 +1,6 @@
 package com.agent.mobile.security
 
-import com.agent.mobile.data.model.ExecutionMode
+import com.agent.mobile.data.model.SecurityPreset
 import java.util.regex.Pattern
 
 enum class RiskLevel(val displayName: String, val colorHex: Long) {
@@ -337,10 +337,20 @@ object CommandSecurityFilter {
         return hasDelete && hasCatastrophicTarget
     }
 
-    /** Explicit and strict modes always require approval. High risks cannot be exempted. */
-    fun shouldRequireApproval(assessment: SecurityAssessment, mode: ExecutionMode): Boolean {
+    /**
+     * Evaluates whether a command requires manual user approval based on the active SecurityPreset.
+     * Catastrophic commands (isBlocked) are unconditionally rejected and never prompt for approval.
+     */
+    fun shouldRequireApproval(assessment: SecurityAssessment, preset: SecurityPreset): Boolean {
         if (assessment.isBlocked) return false
-        if (isStrictMode || mode == ExecutionMode.STEP_BY_STEP) return true
-        return assessment.level == RiskLevel.HIGH || assessment.level == RiskLevel.MEDIUM
+        return when (preset) {
+            SecurityPreset.TURBO -> false
+            SecurityPreset.DEFAULT -> true
+            SecurityPreset.FULL_MACHINE -> true
+            SecurityPreset.CUSTOM -> {
+                if (isStrictMode) true
+                else assessment.level == RiskLevel.HIGH || assessment.level == RiskLevel.MEDIUM
+            }
+        }
     }
 }

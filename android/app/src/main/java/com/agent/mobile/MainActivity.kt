@@ -26,6 +26,7 @@ import com.agent.mobile.data.storage.db.AppDatabase
 import com.agent.mobile.ui.chat.ChatScreen
 import com.agent.mobile.ui.settings.SettingsScreen
 import com.agent.mobile.ui.setup.SetupWizardScreen
+import com.agent.mobile.ui.tutorial.OnboardingTutorialDialog
 import com.agent.mobile.ui.theme.*
 
 
@@ -113,6 +114,28 @@ class MainActivity : ComponentActivity() {
             AutonomousAgentTheme {
                 var selectedTab by remember { mutableIntStateOf(0) }
                 var currentToken by remember { mutableStateOf(savedToken) }
+                var showTutorial by remember {
+                    mutableStateOf(!preferenceManager.hasCompletedTutorial())
+                }
+
+                if (showTutorial) {
+                    OnboardingTutorialDialog(
+                        onDismiss = {
+                            preferenceManager.setTutorialCompleted(true)
+                            showTutorial = false
+                        },
+                        onNavigateToSetup = {
+                            preferenceManager.setTutorialCompleted(true)
+                            showTutorial = false
+                            selectedTab = 2
+                        },
+                        onNavigateToChat = {
+                            preferenceManager.setTutorialCompleted(true)
+                            showTutorial = false
+                            selectedTab = 0
+                        }
+                    )
+                }
 
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
@@ -245,7 +268,8 @@ class MainActivity : ComponentActivity() {
                                 agentEngine = agentEngine,
                                 preferenceManager = preferenceManager,
                                 chatRepository = chatRepository,
-                                bridgeClient = bridgeClient
+                                bridgeClient = bridgeClient,
+                                onOpenTutorial = { showTutorial = true }
                             )
                         }
                     }

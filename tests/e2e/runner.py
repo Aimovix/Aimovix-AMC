@@ -34,9 +34,10 @@ def build_suite(tier: int = 0, feature: int = 0) -> unittest.TestSuite:
         2: "tests.e2e.test_tier2_boundaries",
         3: "tests.e2e.test_tier3_combinations",
         4: "tests.e2e.test_tier4_scenarios",
+        5: "tests.e2e.test_adversarial_tier5",
     }
 
-    selected_tiers = [tier] if tier in tier_modules else [1, 2, 3, 4]
+    selected_tiers = [tier] if tier in tier_modules else [1, 2, 3, 4, 5]
 
     for t in selected_tiers:
         mod_name = tier_modules[t]
@@ -68,9 +69,9 @@ def _flatten_suite(suite):
 
 def main():
     parser = argparse.ArgumentParser(description="Aimovix-AMC E2E Test Runner")
-    parser.add_argument("--tier", type=int, choices=[1, 2, 3, 4], default=0, help="Run specific tier (1-4)")
+    parser.add_argument("--tier", type=int, choices=[1, 2, 3, 4, 5], default=0, help="Run specific tier (1-5)")
     parser.add_argument("--feature", type=int, choices=range(1, 21), default=0, help="Run specific feature (1-20)")
-    parser.add_argument("--all", action="store_true", help="Run all 4 tiers")
+    parser.add_argument("--all", action="store_true", help="Run all 5 tiers")
     parser.add_argument("--list", action="store_true", help="List all discovered tests without running")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose test execution output")
     parser.add_argument("--benchmark", action="store_true", help="Output execution benchmark timing metrics")

@@ -46,6 +46,7 @@ fun SettingsScreen(
     preferenceManager: PreferenceManager,
     chatRepository: ChatRepository? = null,
     bridgeClient: TermuxBridgeClient? = null,
+    onOpenTutorial: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -511,7 +512,52 @@ fun SettingsScreen(
                 )
             }
 
-            // Section 6: Save Button
+            // Section 6: App Walkthrough & Tutorial
+            if (onOpenTutorial != null) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = DarkCard,
+                    border = BorderStroke(1.dp, BorderSubtle)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "App Tutorial & Walkthrough",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = TextWhite
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Replay the step-by-step setup guide and app tour",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.5.sp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        OutlinedButton(
+                            onClick = onOpenTutorial,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, AccentPrimary.copy(alpha = 0.5f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentPrimary)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Open", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                        }
+                    }
+                }
+            }
+
+            // Section 7: Save Button
             Button(
                 onClick = {
                     val finalModel = modelName.trim().ifEmpty { selectedProvider.defaultModel }

@@ -5,14 +5,17 @@ import android.content.SharedPreferences
 import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.agent.mobile.data.model.ExecutionMode
 import com.agent.mobile.data.model.ModelConfig
+import com.agent.mobile.data.model.SecurityPreset
 import com.agent.mobile.data.model.ProviderType
 import java.security.GeneralSecurityException
 
-class PreferenceManager(context: Context) {
+class PreferenceManager(
+    context: Context,
+    prefsOverride: SharedPreferences? = null
+) {
 
-    private val prefs: SharedPreferences = try {
+    private val prefs: SharedPreferences = prefsOverride ?: try {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
@@ -48,12 +51,14 @@ class PreferenceManager(context: Context) {
         private const val KEY_FALLBACK_MODEL = "key_fallback_model"
         private const val KEY_FALLBACK_API_KEY = "key_fallback_api_key"
         private const val KEY_FALLBACK_BASE_URL = "key_fallback_base_url"
-        private const val KEY_EXEC_MODE = "key_exec_mode"
+        private const val KEY_SECURITY_PRESET = "key_security_preset"
+        private const val KEY_LEGACY_EXEC_MODE = "key_exec_mode"
         private const val KEY_AUTH_TOKEN = "key_auth_token"
         private const val KEY_WHITELIST = "key_whitelist"
         private const val KEY_BLACKLIST = "key_blacklist"
         private const val KEY_STRICT_MODE = "key_strict_mode"
         private const val KEY_ACTIVE_SESSION_ID = "key_active_session_id"
+        private const val KEY_HAS_COMPLETED_TUTORIAL = "key_has_completed_tutorial"
     }
 
     data class ProviderProfile(
@@ -174,17 +179,27 @@ class PreferenceManager(context: Context) {
         )
     }
 
-    fun saveExecutionMode(mode: ExecutionMode) {
-        prefs.edit().putString(KEY_EXEC_MODE, mode.name).apply()
+    fun saveSecurityPreset(preset: SecurityPreset) {
+        prefs.edit().putString(KEY_SECURITY_PRESET, preset.name).apply()
     }
 
-    fun loadExecutionMode(): ExecutionMode {
-        val modeName = prefs.getString(KEY_EXEC_MODE, ExecutionMode.STEP_BY_STEP.name)
-        return try {
-            ExecutionMode.valueOf(modeName ?: ExecutionMode.AUTOPILOT.name)
-        } catch (e: Exception) {
-            ExecutionMode.STEP_BY_STEP
+    fun loadSecurityPreset(): SecurityPreset {
+        val presetName = prefs.getString(KEY_SECURITY_PRESET, null)
+        if (presetName != null) {
+            return try {
+                SecurityPreset.valueOf(presetName)
+            } catch (e: Exception) {
+                SecurityPreset.DEFAULT
+            }
         }
+        val legacyMode = prefs.getString(KEY_LEGACY_EXEC_MODE, null)
+        if (legacyMode != null) {
+            val migrated = if (legacyMode == "AUTOPILOT") SecurityPreset.TURBO else SecurityPreset.DEFAULT
+            saveSecurityPreset(migrated)
+            prefs.edit().remove(KEY_LEGACY_EXEC_MODE).apply()
+            return migrated
+        }
+        return SecurityPreset.DEFAULT
     }
 
     fun saveAuthToken(token: String) {
@@ -227,5 +242,13 @@ class PreferenceManager(context: Context) {
 
     fun loadActiveSessionId(): String? {
         return prefs.getString(KEY_ACTIVE_SESSION_ID, null)
+    }
+
+    fun hasCompletedTutorial(): Boolean {
+        return prefs.getBoolean(KEY_HAS_COMPLETED_TUTORIAL, false)
+    }
+
+    fun setTutorialCompleted(completed: Boolean = true) {
+        prefs.edit().putBoolean(KEY_HAS_COMPLETED_TUTORIAL, completed).apply()
     }
 }

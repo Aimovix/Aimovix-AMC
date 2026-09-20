@@ -1,8 +1,8 @@
 package com.agent.mobile.agent
 
 import com.agent.mobile.data.model.ChatMessage
-import com.agent.mobile.data.model.ExecutionMode
 import com.agent.mobile.data.model.MessageRole
+import com.agent.mobile.data.model.SecurityPreset
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.data.storage.db.entity.ChatSession
 import kotlinx.coroutines.CoroutineScope
@@ -96,12 +96,14 @@ class AutonomousAgentEngineTest {
     }
 
     @Test
-    fun testExecutionModeSwitching() {
-        assertEquals(ExecutionMode.AUTOPILOT, engine.executionMode.value)
-        engine.setExecutionMode(ExecutionMode.STEP_BY_STEP)
-        assertEquals(ExecutionMode.STEP_BY_STEP, engine.executionMode.value)
-        engine.setExecutionMode(ExecutionMode.AUTOPILOT)
-        assertEquals(ExecutionMode.AUTOPILOT, engine.executionMode.value)
+    fun testSecurityPresetSwitching() {
+        assertEquals(SecurityPreset.DEFAULT, engine.securityPreset.value)
+        engine.setSecurityPreset(SecurityPreset.TURBO)
+        assertEquals(SecurityPreset.TURBO, engine.securityPreset.value)
+        engine.setSecurityPreset(SecurityPreset.FULL_MACHINE)
+        assertEquals(SecurityPreset.FULL_MACHINE, engine.securityPreset.value)
+        engine.setSecurityPreset(SecurityPreset.CUSTOM)
+        assertEquals(SecurityPreset.CUSTOM, engine.securityPreset.value)
     }
 
     @Test

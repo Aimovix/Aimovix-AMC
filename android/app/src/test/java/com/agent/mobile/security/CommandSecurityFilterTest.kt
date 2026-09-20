@@ -1,6 +1,6 @@
 package com.agent.mobile.security
 
-import com.agent.mobile.data.model.ExecutionMode
+import com.agent.mobile.data.model.SecurityPreset
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -38,7 +38,11 @@ class CommandSecurityFilterTest {
             assertEquals(RiskLevel.BLOCKED, assessment.level)
             assertFalse(
                 "Blocked commands should never require approval (they cannot be run)",
-                CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT)
+                CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.TURBO)
+            )
+            assertFalse(
+                "Blocked commands should never require approval under any preset",
+                CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.DEFAULT)
             )
         }
     }
@@ -64,8 +68,12 @@ class CommandSecurityFilterTest {
             val assessment = CommandSecurityFilter.analyze(cmd)
             assertEquals("Expected '$cmd' to be HIGH risk", RiskLevel.HIGH, assessment.level)
             assertTrue(
-                "High risk command '$cmd' must require approval even in Autopilot mode",
-                CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT)
+                "High risk command '$cmd' must require approval in Default preset",
+                CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.DEFAULT)
+            )
+            assertTrue(
+                "High risk command '$cmd' must require approval in Custom preset",
+                CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.CUSTOM)
             )
         }
     }
@@ -100,12 +108,16 @@ class CommandSecurityFilterTest {
             val assessment = CommandSecurityFilter.analyze(cmd)
             assertEquals("Expected '$cmd' to be LOW risk", RiskLevel.LOW, assessment.level)
             assertFalse(
-                "Safe command should not require approval in Autopilot mode",
-                CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT)
+                "Safe command should not require approval in Turbo mode",
+                CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.TURBO)
             )
             assertTrue(
-                "Safe command should require approval in Step-by-Step mode",
-                CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.STEP_BY_STEP)
+                "Safe command should require approval in Default mode",
+                CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.DEFAULT)
+            )
+            assertFalse(
+                "Safe command should not require approval in non-strict Custom mode",
+                CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.CUSTOM)
             )
         }
     }
@@ -131,7 +143,7 @@ class CommandSecurityFilterTest {
 
         val whitelistedAssessment = CommandSecurityFilter.analyze(customCmd)
         assertEquals(RiskLevel.LOW, whitelistedAssessment.level)
-        assertFalse(CommandSecurityFilter.shouldRequireApproval(whitelistedAssessment, ExecutionMode.AUTOPILOT))
+        assertFalse(CommandSecurityFilter.shouldRequireApproval(whitelistedAssessment, SecurityPreset.CUSTOM))
     }
 
     @Test
@@ -151,22 +163,23 @@ class CommandSecurityFilterTest {
 
     @Test
     fun testStrictModeForcesApprovalForEverything() {
-        // In strict mode, medium risk operations require user approval even in Autopilot
+        // In strict mode, medium risk operations require user approval
         val mediumCmd = "touch new_file.txt"
         val assessment = CommandSecurityFilter.analyze(mediumCmd)
         assertEquals(RiskLevel.MEDIUM, assessment.level)
 
-        // File and network changes require approval unless specifically allowlisted.
+        // File and network changes require approval in custom mode unless specifically allowlisted.
         CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
-        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.CUSTOM))
 
-        // Strict mode forces approval for medium risk in autopilot
+        // Strict mode forces approval even for low risk in custom
         CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = true)
         assertTrue(
-            "Strict Mode must force approval for medium risk commands in Autopilot",
-            CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT)
+            "Strict Mode must force approval in Custom preset",
+            CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.CUSTOM)
         )
     }
+
     @Test
     fun testBroadAllowlistCannotBypassDangerousOrUnknownCommands() {
         CommandSecurityFilter.setCustomRules(listOf(".*"), emptyList())
@@ -183,7 +196,7 @@ class CommandSecurityFilterTest {
         )) {
             val assessment = CommandSecurityFilter.analyze(command)
             assertEquals(command, RiskLevel.HIGH, assessment.level)
-            assertTrue(command, CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT))
+            assertTrue(command, CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.CUSTOM))
         }
     }
 
@@ -192,7 +205,7 @@ class CommandSecurityFilterTest {
         CommandSecurityFilter.setCustomRules(listOf("curl"), emptyList())
         val assessment = CommandSecurityFilter.analyze("curl https://example.com")
         assertEquals(RiskLevel.MEDIUM, assessment.level)
-        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.CUSTOM))
     }
 
     @Test
@@ -200,9 +213,32 @@ class CommandSecurityFilterTest {
         CommandSecurityFilter.setCustomRules(listOf("^curl\\s+.*"), emptyList())
         val assessment = CommandSecurityFilter.analyze("curl https://example.com")
         assertEquals(RiskLevel.LOW, assessment.level)
-        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.STEP_BY_STEP))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.DEFAULT))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.FULL_MACHINE))
         CommandSecurityFilter.setCustomRules(listOf(".*"), emptyList(), strict = true)
-        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, ExecutionMode.AUTOPILOT))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.CUSTOM))
+    }
+
+    @Test
+    fun testSecurityPresetsPolicy() {
+        val lowRisk = CommandSecurityFilter.analyze("pwd")
+        val mediumRisk = CommandSecurityFilter.analyze("mkdir test_dir")
+        val highRisk = CommandSecurityFilter.analyze("rm test_dir/file.txt")
+
+        // TURBO mode: none require approval (blocked ones are blocked, not approved)
+        assertFalse(CommandSecurityFilter.shouldRequireApproval(lowRisk, SecurityPreset.TURBO))
+        assertFalse(CommandSecurityFilter.shouldRequireApproval(mediumRisk, SecurityPreset.TURBO))
+        assertFalse(CommandSecurityFilter.shouldRequireApproval(highRisk, SecurityPreset.TURBO))
+
+        // DEFAULT mode: all terminal commands require manual review
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(lowRisk, SecurityPreset.DEFAULT))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(mediumRisk, SecurityPreset.DEFAULT))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(highRisk, SecurityPreset.DEFAULT))
+
+        // FULL_MACHINE mode: all terminal commands require review
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(lowRisk, SecurityPreset.FULL_MACHINE))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(mediumRisk, SecurityPreset.FULL_MACHINE))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(highRisk, SecurityPreset.FULL_MACHINE))
     }
 
     @Test

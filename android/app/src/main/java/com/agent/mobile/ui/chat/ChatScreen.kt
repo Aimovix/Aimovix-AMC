@@ -69,7 +69,8 @@ fun ChatScreen(
 ) {
     val messages by agentEngine.messages.collectAsState()
     val isBusy by agentEngine.isBusy.collectAsState()
-    val executionMode by agentEngine.executionMode.collectAsState()
+    val securityPreset by agentEngine.securityPreset.collectAsState()
+    var presetMenuExpanded by remember { mutableStateOf(false) }
     val modelConfig by agentEngine.modelConfig.collectAsState()
     val connectionStatus by bridgeClient.connectionStatus.collectAsState()
     val currentSession by agentEngine.currentSession.collectAsState()
@@ -234,37 +235,98 @@ fun ChatScreen(
                             }
                         },
                         actions = {
-                            // Execution mode toggle chip
-                            Surface(
-                                onClick = {
-                                    agentEngine.setExecutionMode(
-                                        if (executionMode == ExecutionMode.AUTOPILOT) ExecutionMode.STEP_BY_STEP else ExecutionMode.AUTOPILOT
+                            // Security Preset selector dropdown
+                            Box {
+                                val isTurbo = securityPreset == SecurityPreset.TURBO
+                                val presetIcon = when (securityPreset) {
+                                    SecurityPreset.DEFAULT -> Icons.Default.Shield
+                                    SecurityPreset.FULL_MACHINE -> Icons.Default.Storage
+                                    SecurityPreset.TURBO -> Icons.Default.Bolt
+                                    SecurityPreset.CUSTOM -> Icons.Default.Tune
+                                }
+
+                                Surface(
+                                    onClick = { presetMenuExpanded = true },
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isTurbo) AccentPrimary.copy(alpha = 0.15f) else DarkCard,
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isTurbo) AccentPrimary.copy(alpha = 0.5f) else BorderSubtle
                                     )
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary.copy(alpha = 0.12f) else DarkCard,
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary.copy(alpha = 0.4f) else BorderSubtle
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = if (executionMode == ExecutionMode.AUTOPILOT) Icons.Default.Bolt else Icons.Default.Shield,
-                                        contentDescription = null,
-                                        tint = if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary else TextMuted,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                    Text(
-                                        text = if (executionMode == ExecutionMode.AUTOPILOT) "Autopilot" else "Approval",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = if (executionMode == ExecutionMode.AUTOPILOT) AccentPrimary else TextSecondary
-                                    )
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = presetIcon,
+                                            contentDescription = null,
+                                            tint = if (isTurbo) AccentPrimary else TextWhite,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Text(
+                                            text = securityPreset.title,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (isTurbo) AccentPrimary else TextSecondary
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Default.ArrowDropDown,
+                                            contentDescription = null,
+                                            tint = TextMuted,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+
+                                DropdownMenu(
+                                    expanded = presetMenuExpanded,
+                                    onDismissRequest = { presetMenuExpanded = false }
+                                ) {
+                                    SecurityPreset.entries.forEach { preset ->
+                                        val isSelected = preset == securityPreset
+                                        DropdownMenuItem(
+                                            text = {
+                                                Column(modifier = Modifier.padding(vertical = 2.dp)) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        val icon = when (preset) {
+                                                            SecurityPreset.DEFAULT -> Icons.Default.Shield
+                                                            SecurityPreset.FULL_MACHINE -> Icons.Default.Storage
+                                                            SecurityPreset.TURBO -> Icons.Default.Bolt
+                                                            SecurityPreset.CUSTOM -> Icons.Default.Tune
+                                                        }
+                                                        Icon(
+                                                            icon,
+                                                            contentDescription = null,
+                                                            tint = if (isSelected) AccentPrimary else TextMuted,
+                                                            modifier = Modifier.size(15.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text(
+                                                            text = preset.title,
+                                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                            color = if (isSelected) AccentPrimary else TextWhite,
+                                                            fontSize = 12.sp
+                                                        )
+                                                        if (isSelected) {
+                                                            Spacer(modifier = Modifier.width(6.dp))
+                                                            Icon(Icons.Default.Check, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(14.dp))
+                                                        }
+                                                    }
+                                                    Text(
+                                                        text = preset.description,
+                                                        style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 10.sp),
+                                                        maxLines = 2
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                agentEngine.setSecurityPreset(preset)
+                                                presetMenuExpanded = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
 

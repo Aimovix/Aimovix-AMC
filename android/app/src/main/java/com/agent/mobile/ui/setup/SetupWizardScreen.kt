@@ -174,46 +174,44 @@ fun SetupWizardScreen(
 
             // Step 1: Install Termux & Termux:API
             Text(
-                "Step 1: Install the apps",
+                "Step 1: Install Termux & Termux:API",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextWhite)
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Install Termux and Termux:API from F-Droid for this setup. Use the same source for both apps.",
+                text = "Tap below to directly download both official APKs. Open the downloaded files to install them:",
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
+                Button(
                     onClick = {
-                        val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://f-droid.org/packages/com.termux/"))
-                        context.startActivity(browserIntent)
+                        ApkDownloadHelper.downloadTermux(context)
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                    border = BorderStroke(1.dp, BorderSubtle),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = DarkCardElevated, contentColor = TextWhite),
+                    border = BorderStroke(1.dp, AccentPrimary.copy(alpha = 0.5f))
                 ) {
                     Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(15.dp), tint = AccentPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("1. Termux", fontSize = 11.5.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    Text("1. Termux APK", fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
 
-                OutlinedButton(
+                Button(
                     onClick = {
-                        val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://f-droid.org/packages/com.termux.api/"))
-                        context.startActivity(browserIntent)
+                        ApkDownloadHelper.downloadTermuxApi(context)
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                    border = BorderStroke(1.dp, BorderSubtle),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextWhite)
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = DarkCardElevated, contentColor = TextWhite),
+                    border = BorderStroke(1.dp, AccentPrimary.copy(alpha = 0.5f))
                 ) {
                     Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(15.dp), tint = AccentPrimary)
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("2. Termux:API", fontSize = 11.5.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    Text("2. Termux:API APK", fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
             }
 

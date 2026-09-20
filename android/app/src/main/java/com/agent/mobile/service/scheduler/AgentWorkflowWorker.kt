@@ -14,7 +14,7 @@ import com.agent.mobile.data.storage.db.AppDatabase
 import com.agent.mobile.data.storage.db.entity.CommandAuditEntity
 import com.agent.mobile.security.CommandSecurityFilter
 import com.agent.mobile.security.RiskLevel
-import com.agent.mobile.data.model.ExecutionMode
+import com.agent.mobile.data.model.SecurityPreset
 import kotlinx.coroutines.CancellationException
 import java.security.GeneralSecurityException
 
@@ -60,7 +60,7 @@ class AgentWorkflowWorker(
             val requiresApproval = if (assessment.level == RiskLevel.LOW) {
                 false
             } else {
-                CommandSecurityFilter.shouldRequireApproval(assessment, prefs.loadExecutionMode())
+                CommandSecurityFilter.shouldRequireApproval(assessment, prefs.loadSecurityPreset())
             }
 
             if (requiresApproval) {

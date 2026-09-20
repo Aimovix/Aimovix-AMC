@@ -46,10 +46,10 @@ class AutonomousAgentEngine(
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
-    private val _executionMode = MutableStateFlow(
-        preferenceManager?.loadExecutionMode() ?: ExecutionMode.AUTOPILOT
+    private val _securityPreset = MutableStateFlow(
+        preferenceManager?.loadSecurityPreset() ?: SecurityPreset.DEFAULT
     )
-    val executionMode: StateFlow<ExecutionMode> = _executionMode.asStateFlow()
+    val securityPreset: StateFlow<SecurityPreset> = _securityPreset.asStateFlow()
 
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
@@ -189,9 +189,9 @@ class AutonomousAgentEngine(
         }
     }
 
-    fun setExecutionMode(mode: ExecutionMode) {
-        _executionMode.value = mode
-        preferenceManager?.saveExecutionMode(mode)
+    fun setSecurityPreset(preset: SecurityPreset) {
+        _securityPreset.value = preset
+        preferenceManager?.saveSecurityPreset(preset)
     }
 
     fun setModelConfig(config: ModelConfig) {
@@ -490,8 +490,8 @@ class AutonomousAgentEngine(
                         continue
                     }
 
-                    // 3. Approval Check (Step-by-step or High-Risk)
-                    val mustApprove = CommandSecurityFilter.shouldRequireApproval(assessment, _executionMode.value)
+                    // 3. Approval Check (Preset-based evaluation)
+                    val mustApprove = CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value)
                     if (mustApprove) {
                         updateMessageToolCalls(assistantMsgId, updatedTools, MessageStatus.WAITING_FOR_APPROVAL)
                         _pendingApproval.value = Pair(assistantMsgId, securedToolCall)

@@ -31,7 +31,7 @@ Android credentials use encrypted preferences. If initialization fails, AMC stop
 
 ## Command approval
 
-New installations use step-by-step approval. Autopilot permits a small set of recognized diagnostics. Medium-risk operations require approval unless a custom allowlist fully matches the recognized command. High-risk operations, scripts, unknown commands, and shell composition cannot receive allowlist exceptions. Strict mode and step-by-step mode require approval regardless of allowlists. Known catastrophic patterns are always blocked.
+New installations use the **Default** security preset (manual review for all terminal commands). **Turbo mode** bypasses interactive approvals for maximum speed while strictly maintaining the hardcoded catastrophic blocklist. **Full machine** requires command approvals while granting open filesystem access. The **Custom** preset allows users to configure custom allowlists, blocklists, and strict mode. High-risk operations, scripts, unknown commands, and shell composition cannot receive allowlist exceptions. Known catastrophic patterns are always blocked across all presets.
 
 A direct terminal submission is an explicit user command, not an autonomous agent decision. The client still blocks catastrophic patterns. Manually synchronized cron schedules run independently of interactive agent approval; review their contents before installing them.
 

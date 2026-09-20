@@ -12,9 +12,26 @@ enum class MessageRole {
 }
 
 @Serializable
-enum class ExecutionMode {
-    AUTOPILOT,
-    STEP_BY_STEP
+enum class SecurityPreset(
+    val title: String,
+    val description: String
+) {
+    DEFAULT(
+        title = "Default",
+        description = "Requires manual review for all terminal commands and file accesses outside of the working folders."
+    ),
+    FULL_MACHINE(
+        title = "Full machine",
+        description = "All terminal commands require review. The agent can read or write to any file in the machine."
+    ),
+    TURBO(
+        title = "Turbo mode",
+        description = "Disables all safety barriers for maximal iteration velocity."
+    ),
+    CUSTOM(
+        title = "Custom",
+        description = "Manually customize individual settings."
+    )
 }
 
 @Serializable

@@ -67,9 +67,8 @@ Model suggestions are editable examples, not a live availability catalog. Check 
 ## Using AMC
 
 - **Chat:** submit a task, attach an image, or use a quick action.
-- **Step-by-step mode:** the default for new installations; every agent command needs approval.
-- **Autopilot:** recognized diagnostic commands can run automatically. File changes, network operations, scripts, and unknown commands normally require approval.
-- **Strict mode:** requires approval for every agent command, even operations covered by a custom allowlist.
+- **Security presets:** inspired by Google Antigravity, choose between **Default** (manual review for terminal commands and out-of-folder files), **Full machine** (manual review for commands, full device file access), **Turbo mode** (disables approval barriers for maximal iteration velocity), and **Custom** (granular control with strict mode, custom allowlists, and blocklists).
+- **Strict mode:** available in Custom preset; requires approval for every agent command, even operations covered by a custom allowlist.
 - **Emergency stop:** requests cancellation through the active bridge connection. The bridge handles controls while commands run and terminates the command's process group. The UI reports a request rather than claiming immediate completion.
 - **Terminal:** manually enter commands and use `CTRL-C` to interrupt them. Commands entered here are direct user actions; the catastrophic blocklist still applies.
 - **Sessions:** create, search, switch, and export chats as Markdown or JSON. User-authored history and existing generated content are preserved as entered.
