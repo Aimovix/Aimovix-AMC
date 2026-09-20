@@ -200,6 +200,11 @@ def validate_file_path(target_path_str: str, base_cwd: str = DEFAULT_CWD, for_wr
     if not target_path_str or not target_path_str.strip():
         return Path(), "A file path is required."
 
+    # Guard against shell command injection and control characters in file paths
+    forbidden_chars = {";", "&", "|", "`", "$", "\n", "\r", "\0"}
+    if any(ch in target_path_str for ch in forbidden_chars):
+        return Path(), "Security block: File path contains forbidden shell metacharacters or control characters."
+
     expanded = os.path.expanduser(target_path_str.strip())
     if not os.path.isabs(expanded):
         target = Path(base_cwd) / expanded
