@@ -35,6 +35,7 @@ import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.data.repository.ChatRepository
 import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.service.scheduler.SchedulerManager
+import com.agent.mobile.ui.settings.components.AutonomyCard
 import com.agent.mobile.ui.settings.components.CronSyncCard
 import com.agent.mobile.ui.settings.components.SecurityCockpitCard
 import com.agent.mobile.ui.theme.*
@@ -496,6 +497,14 @@ fun SettingsScreen(
                     }
                 }
             }
+
+            // Section 3b: Autonomy (step budget, heartbeat, memory, scheduled agent tasks)
+            AutonomyCard(
+                agentEngine = agentEngine,
+                preferenceManager = preferenceManager,
+                memoryStore = agentEngine.memoryStore,
+                schedulerManager = schedulerManager
+            )
 
             // Section 4: Security Cockpit & Guardrails
             SecurityCockpitCard(

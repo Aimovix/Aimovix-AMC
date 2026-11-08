@@ -762,10 +762,14 @@ class TestFeature17DeprecatedApiMigrations(unittest.TestCase):
 # Feature 18: Documentation & Version Alignment
 # ============================================================================
 class TestFeature18DocumentationAndVersionAlignment(unittest.TestCase):
-    def test_feat18_01_readme_version_is_v124(self):
+    def test_feat18_01_readme_version_matches_app(self):
+        import re
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
-        # Target version is 1.2.4 (Milestone 3 updates from 1.2.0)
-        self.assertTrue("1.2.4" in readme or "1.2.0" in readme)
+        gradle = (PROJECT_ROOT / "android" / "app" / "build.gradle.kts").read_text(encoding="utf-8")
+        version = re.search(r'versionName = "([^"]+)"', gradle).group(1)
+        # The README's pinned-install example must reference the current app version.
+        self.assertIn(f"AMC_REF=v{version}", readme)
+        self.assertTrue((PROJECT_ROOT / "docs" / "releases" / f"v{version}.md").is_file())
 
     def test_feat18_02_readme_is_all_english(self):
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")

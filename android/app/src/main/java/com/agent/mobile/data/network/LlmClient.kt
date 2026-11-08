@@ -227,10 +227,14 @@ class LlmClient(
     ) {
         val root = JSONObject()
         root.put("model", config.modelName)
-        root.put("temperature", 0.3)
+        // Reasoning models (o-series, gpt-5) reject a custom temperature.
+        if (!isReasoningModel(config.modelName)) {
+            root.put("temperature", 0.3)
+        }
         root.put("stream", true)
-        root.put("parallel_tool_calls", false)
-        root.put("stream_options", JSONObject().apply { put("include_usage", true) })
+        if (config.provider != ProviderType.LOCAL) {
+            root.put("stream_options", JSONObject().apply { put("include_usage", true) })
+        }
 
         val msgs = JSONArray()
         msgs.put(JSONObject().apply {
@@ -300,7 +304,7 @@ class LlmClient(
             msgs.put(mObj)
         }
         root.put("messages", msgs)
-        root.put("tools", getStandardToolDefinitions())
+        root.put("tools", com.agent.mobile.agent.AgentTools.openAiTools())
 
         val trimmedBase = config.baseUrl.trimEnd('/')
         val url = if (trimmedBase.endsWith("/chat/completions")) {
@@ -389,10 +393,13 @@ class LlmClient(
                                 val tc = toolCalls.getJSONObject(i)
                                 val idx = tc.optInt("index", i)
                                 val acc = toolCallsMap.getOrPut(idx) { ToolCallAccumulator() }
-                                if (tc.has("id")) acc.id += tc.getString("id")
+                                // Some OpenAI-compatible servers repeat id/name in every chunk; keep the first.
+                                val chunkId = tc.optString("id", "")
+                                if (chunkId.isNotEmpty() && acc.id.isEmpty()) acc.id = chunkId
                                 val fn = tc.optJSONObject("function")
                                 if (fn != null) {
-                                    if (fn.has("name")) acc.name += fn.getString("name")
+                                    val chunkName = fn.optString("name", "")
+                                    if (chunkName.isNotEmpty() && acc.name.isEmpty()) acc.name = chunkName
                                     if (fn.has("arguments")) acc.arguments.append(fn.getString("arguments"))
                                 }
                             }
@@ -522,7 +529,7 @@ class LlmClient(
                 m.toolResult != null -> {
                     partsArr.put(JSONObject().apply {
                         put("functionResponse", JSONObject().apply {
-                            put("name", "execute_command")
+                            put("name", m.toolResult.toolName.ifEmpty { "execute_command" })
                             if (m.toolResult.toolCallId.isNotEmpty()) {
                                 put("id", m.toolResult.toolCallId)
                             }
@@ -565,22 +572,7 @@ class LlmClient(
         }
         root.put("contents", contents)
 
-        val funcDecls = JSONArray().apply {
-            put(JSONObject().apply {
-                put("name", "execute_command")
-                put("description", "Runs a Bash command or Termux:API command on the phone.")
-                put("parameters", JSONObject().apply {
-                    put("type", "OBJECT")
-                    put("properties", JSONObject().apply {
-                        put("command", JSONObject().apply {
-                            put("type", "STRING")
-                            put("description", "The shell command to execute")
-                        })
-                    })
-                    put("required", JSONArray().put("command"))
-                })
-            })
-        }
+        val funcDecls = com.agent.mobile.agent.AgentTools.geminiFunctionDeclarations()
         root.put("tools", JSONArray().put(JSONObject().put("function_declarations", funcDecls)))
 
         val cleanKey = config.apiKey.removePrefix("Bearer ").removePrefix("bearer ").trim()
@@ -772,26 +764,16 @@ class LlmClient(
     ) {
         val root = JSONObject()
         root.put("model", config.modelName)
-        root.put("max_tokens", 4096)
-        root.put("system", systemPrompt)
+        root.put("max_tokens", 16000)
+        // The system prompt and tools are identical for every step of a task, so cache them.
+        root.put("system", JSONArray().put(JSONObject().apply {
+            put("type", "text")
+            put("text", systemPrompt)
+            put("cache_control", JSONObject().put("type", "ephemeral"))
+        }))
         root.put("stream", true)
 
-        val toolsArr = JSONArray().apply {
-            put(JSONObject().apply {
-                put("name", "execute_command")
-                put("description", "Executes a shell or Termux:API command on the phone and streams terminal output.")
-                put("input_schema", JSONObject().apply {
-                    put("type", "object")
-                    put("properties", JSONObject().apply {
-                        put("command", JSONObject().apply {
-                            put("type", "string")
-                            put("description", "The exact Bash command to execute (e.g. 'termux-battery-status', 'ls -la')")
-                        })
-                    })
-                    put("required", JSONArray().put("command"))
-                })
-            })
-        }
+        val toolsArr = com.agent.mobile.agent.AgentTools.claudeTools()
         root.put("tools", toolsArr)
 
         val msgs = JSONArray()
@@ -918,6 +900,7 @@ class LlmClient(
             val toolCallsMap = mutableMapOf<Int, ToolCallAccumulator>()
             var currentBlockIndex = -1
             var streamDone = false
+            var stopReason = ""
 
             var line: String?
             while (reader.readLine().also { line = it } != null) {
@@ -972,6 +955,8 @@ class LlmClient(
                         "message_delta" -> {
                             val usage = json.optJSONObject("usage")
                             completionTokens = usage?.optInt("output_tokens", completionTokens) ?: completionTokens
+                            val reason = json.optJSONObject("delta")?.optString("stop_reason", "").orEmpty()
+                            if (reason.isNotEmpty() && reason != "null") stopReason = reason
                         }
                         "message_stop" -> {
                             streamDone = true
@@ -986,6 +971,10 @@ class LlmClient(
 
             if (!streamDone) {
                 emit(LlmStreamEvent.Error("Claude stream closed prematurely without message_stop", 0, true))
+                return@executeCancellableCall
+            }
+            if (stopReason == "refusal") {
+                emit(LlmStreamEvent.Error("Claude declined this request (refusal). Rephrase the task or use another model.", 0, false))
                 return@executeCancellableCall
             }
 
@@ -1050,7 +1039,8 @@ class LlmClient(
 
     private fun parseArgumentsJson(rawJson: String): Map<String, String>? {
         val trimmed = rawJson.trim()
-        if (trimmed.isEmpty()) return null
+        // Tools without parameters may arrive with no argument JSON at all.
+        if (trimmed.isEmpty()) return emptyMap()
         return try {
             val obj = JSONObject(trimmed)
             val argsMap = mutableMapOf<String, String>()
@@ -1075,16 +1065,32 @@ class LlmClient(
         promptTokens: Int,
         completionTokens: Int
     ): Double {
+        val m = model.lowercase()
         val (promptRatePerM, completionRatePerM) = when (provider) {
-            ProviderType.GEMINI -> Pair(0.10, 0.40)
-            ProviderType.OPENAI -> {
-                if (model.contains("4o-mini", ignoreCase = true)) Pair(0.15, 0.60)
-                else if (model.contains("o3", ignoreCase = true) || model.contains("o1", ignoreCase = true)) Pair(1.10, 4.40)
-                else Pair(2.50, 10.00)
+            ProviderType.GEMINI -> when {
+                m.contains("flash-lite") -> Pair(0.10, 0.40)
+                m.contains("pro") -> Pair(1.25, 10.00)
+                else -> Pair(0.30, 2.50)
             }
-            ProviderType.CLAUDE -> {
-                if (model.contains("haiku", ignoreCase = true)) Pair(0.80, 4.00)
-                else Pair(3.00, 15.00)
+            ProviderType.OPENAI -> when {
+                m.contains("4o-mini") -> Pair(0.15, 0.60)
+                m.contains("4.1-nano") || m.contains("5-nano") -> Pair(0.10, 0.40)
+                m.contains("4.1-mini") -> Pair(0.40, 1.60)
+                m.contains("5-mini") -> Pair(0.25, 2.00)
+                m.contains("gpt-5") -> Pair(1.25, 10.00)
+                m.contains("4.1") -> Pair(2.00, 8.00)
+                m.startsWith("o1") -> Pair(15.00, 60.00)
+                m.startsWith("o3") || m.startsWith("o4") -> Pair(1.10, 4.40)
+                else -> Pair(2.50, 10.00)
+            }
+            ProviderType.CLAUDE -> when {
+                m.contains("fable") || m.contains("mythos") -> Pair(10.00, 50.00)
+                m.contains("opus-5-5") -> Pair(4.00, 20.00)
+                m.contains("opus") -> Pair(5.00, 25.00)
+                m.contains("haiku-5") -> Pair(0.10, 0.50)
+                m.contains("haiku") -> Pair(1.00, 5.00)
+                m.contains("sonnet-5") -> Pair(2.00, 10.00)
+                else -> Pair(3.00, 15.00)
             }
             ProviderType.OPENROUTER -> Pair(0.50, 1.50)
             ProviderType.GROQ, ProviderType.LOCAL -> Pair(0.0, 0.0)
@@ -1121,25 +1127,8 @@ class LlmClient(
         return null
     }
 
-    private fun getStandardToolDefinitions(): JSONArray {
-        return JSONArray().apply {
-            put(JSONObject().apply {
-                put("type", "function")
-                put("function", JSONObject().apply {
-                    put("name", "execute_command")
-                    put("description", "Executes a shell or Termux:API command on the phone and streams terminal output.")
-                    put("parameters", JSONObject().apply {
-                        put("type", "object")
-                        put("properties", JSONObject().apply {
-                            put("command", JSONObject().apply {
-                                put("type", "string")
-                                put("description", "The exact Bash command to execute (e.g. 'termux-battery-status', 'ls -la', 'python script.py', 'termux-camera-photo photo.jpg')")
-                            })
-                        })
-                        put("required", JSONArray().put("command"))
-                    })
-                })
-            })
-        }
+    private fun isReasoningModel(model: String): Boolean {
+        val m = model.lowercase().substringAfterLast('/')
+        return m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4") || m.startsWith("gpt-5")
     }
 }

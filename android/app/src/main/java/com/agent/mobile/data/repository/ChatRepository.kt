@@ -135,8 +135,9 @@ class ChatRepository(
                     if (m.text.isNotEmpty()) {
                         sb.append("${m.text}\n\n")
                     }
-                    if (m.toolCall != null) {
-                        sb.append("**Executed command:**\n```bash\n${m.toolCall.arguments["command"] ?: ""}\n```\n\n")
+                    val calls = m.toolCalls.ifEmpty { listOfNotNull(m.toolCall) }
+                    for (call in calls) {
+                        sb.append("**Tool `${call.name}`:**\n```bash\n${com.agent.mobile.agent.AgentTools.describe(call)}\n```\n\n")
                     }
                 }
                 MessageRole.TOOL -> {
@@ -190,7 +191,7 @@ class ChatRepository(
                     tcArr.put(JSONObject().apply {
                         put("id", tc.id)
                         put("name", tc.name)
-                        put("command", tc.arguments["command"] ?: "")
+                        put("command", com.agent.mobile.agent.AgentTools.describe(tc))
                         put("arguments", JSONObject(tc.arguments))
                         put("risk_level", tc.riskLevel)
                         put("risk_reason", tc.riskReason)
@@ -279,6 +280,7 @@ class ChatRepository(
             JSONObject().apply {
                 put("toolCallId", tr.toolCallId)
                 put("command", tr.command)
+                put("toolName", tr.toolName)
                 put("stdout", tr.stdout)
                 put("stderr", tr.stderr)
                 put("exitCode", tr.exitCode)
@@ -376,6 +378,7 @@ class ChatRepository(
                 ToolResult(
                     toolCallId = obj.optString("toolCallId", ""),
                     command = obj.optString("command", ""),
+                    toolName = obj.optString("toolName", "execute_command"),
                     stdout = obj.optString("stdout", ""),
                     stderr = obj.optString("stderr", ""),
                     exitCode = obj.optInt("exitCode", 0),

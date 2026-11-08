@@ -8,6 +8,7 @@ Aimovix-AMC (AI Mobile Center) is an autonomous on-device AI agent architecture 
 
 - **v1.2.4**: Comprehensive engine hardening, bridge keep-alive grace windows, and initial Android architecture stabilization.
 - **v1.2.5**: Connection stability hardening, full English localization, Room DB SQLite synchronization, Direct Boot keystore resiliency, and expanded E2E verification suites.
+- **v1.3.0**: Autonomous agent: Autonomous security preset (default), multi-tool agent loop (files, web, memory, plan, notifications, self-scheduling), long-term memory, heartbeat, skills folder, steering while running, configurable step budget, and provider/context-window fixes.
 
 ---
 

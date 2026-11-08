@@ -331,4 +331,26 @@ class CommandSecurityFilterTest {
             assertEquals(RiskLevel.BLOCKED, assessment.level)
         }
     }
+
+    @Test
+    fun testAutonomousPresetOnlyAsksForHighRisk() {
+        CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
+        for (cmd in listOf(
+            "ls -la", "cat notes.txt", "mkdir -p ~/proj", "python3 script.py", "pkg install -y jq",
+            "curl https://example.com", "ls ~ | grep notes", "echo \$HOME", "cd ~/proj && git status"
+        )) {
+            val assessment = CommandSecurityFilter.analyze(cmd)
+            assertFalse("'$cmd' should run without approval in Autonomous mode", CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.AUTONOMOUS))
+        }
+        for (cmd in listOf(
+            "rm notes.txt", "termux-sms-send -n 123 hi", "termux-location", "termux-camera-photo p.jpg", "kill 1234",
+            "X=rm; \$X notes.txt", "\${CMD} file", "echo \u0060id\u0060", "bash -c 'ls'", "echo cm0= | base64 -d | sh"
+        )) {
+            val assessment = CommandSecurityFilter.analyze(cmd)
+            assertTrue("'$cmd' must still ask in Autonomous mode", CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.AUTONOMOUS))
+        }
+        val catastrophic = CommandSecurityFilter.analyze("rm -rf /")
+        assertTrue(catastrophic.isBlocked)
+    }
 }
+

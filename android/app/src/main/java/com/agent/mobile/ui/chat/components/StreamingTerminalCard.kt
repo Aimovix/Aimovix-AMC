@@ -43,7 +43,7 @@ fun StreamingTerminalCard(
 ) {
     val context = LocalContext.current
     var isExpanded by remember { mutableStateOf(true) }
-    val command = toolCall.arguments["command"] ?: ""
+    val command = com.agent.mobile.agent.AgentTools.describe(toolCall)
     val displayText = when {
         liveOutput.isNotEmpty() -> liveOutput
         toolResult != null -> (toolResult.stdout.ifEmpty { toolResult.stderr })

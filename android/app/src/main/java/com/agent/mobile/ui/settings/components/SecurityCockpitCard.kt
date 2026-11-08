@@ -108,6 +108,7 @@ fun SecurityCockpitCard(
                             modifier = Modifier.weight(1f)
                         ) {
                             val presetIcon = when (currentPreset) {
+                                SecurityPreset.AUTONOMOUS -> Icons.Default.SmartToy
                                 SecurityPreset.DEFAULT -> Icons.Default.Shield
                                 SecurityPreset.FULL_MACHINE -> Icons.Default.Storage
                                 SecurityPreset.TURBO -> Icons.Default.Bolt
@@ -143,6 +144,7 @@ fun SecurityCockpitCard(
                                 Column(modifier = Modifier.padding(vertical = 4.dp)) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         val icon = when (preset) {
+                                            SecurityPreset.AUTONOMOUS -> Icons.Default.SmartToy
                                             SecurityPreset.DEFAULT -> Icons.Default.Shield
                                             SecurityPreset.FULL_MACHINE -> Icons.Default.Storage
                                             SecurityPreset.TURBO -> Icons.Default.Bolt
@@ -199,6 +201,26 @@ fun SecurityCockpitCard(
                         }
                     }
                 }
+                SecurityPreset.AUTONOMOUS -> {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = DarkSurface,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, AccentPrimary.copy(alpha = 0.3f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.SmartToy, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Autonomous mode lets the agent work on its own: reading, writing files, running scripts, installing packages and downloading run without prompts. SMS, calls, camera, location, clipboard, deleting files and killing processes still ask you first. Catastrophic commands stay blocked.",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp)
+                            )
+                        }
+                    }
+                }
                 SecurityPreset.DEFAULT -> {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -213,7 +235,7 @@ fun SecurityCockpitCard(
                             Icon(Icons.Default.Shield, contentDescription = null, tint = AccentPrimary, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Default mode requires manual review for all terminal commands and file accesses outside working directories.",
+                                text = "Supervised mode asks for your approval before every action the agent takes.",
                                 style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp)
                             )
                         }

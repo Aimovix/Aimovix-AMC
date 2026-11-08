@@ -42,17 +42,24 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
 
     fun init(context: android.content.Context) {
         if (isInitialized) return
-        preferenceManager = PreferenceManager(context.applicationContext)
-        database = AppDatabase.getInstance(context.applicationContext)
-        chatRepository = ChatRepository(database)
+        val runtime = AgentRuntime.get(context)
+        preferenceManager = runtime.preferenceManager
+        database = runtime.database
+        chatRepository = runtime.chatRepository
         val savedToken = preferenceManager.loadAuthToken()
         bridgeClient = TermuxBridgeClient.getInstance(context, savedToken)
         agentEngine = AutonomousAgentEngine(
             bridgeClient = bridgeClient,
             preferenceManager = preferenceManager,
-            chatRepository = chatRepository
+            chatRepository = chatRepository,
+            memoryStore = runtime.memoryStore,
+            platform = runtime.platform
         )
         bridgeClient.connect(savedToken)
+        // Re-arm the heartbeat after app updates or reinstalls.
+        if (preferenceManager.loadHeartbeatEnabled()) {
+            runtime.scheduler.scheduleHeartbeat(preferenceManager.loadHeartbeatIntervalMinutes())
+        }
         isInitialized = true
     }
 

@@ -3,32 +3,68 @@ package com.agent.mobile.agent
 import android.util.Log
 import com.agent.mobile.data.model.*
 import com.agent.mobile.data.network.LlmClient
-import com.agent.mobile.data.network.LlmClient.LlmResponse
 import com.agent.mobile.data.network.TermuxBridgeClient
+import com.agent.mobile.data.network.WebFetcher
 import com.agent.mobile.data.repository.ChatRepository
 import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.data.storage.db.entity.ChatSession
 import com.agent.mobile.data.storage.db.entity.CommandAuditEntity
 import com.agent.mobile.security.CommandSecurityFilter
 import com.agent.mobile.security.RiskLevel
+import com.agent.mobile.security.SecurityAssessment
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
 import java.util.UUID
+import java.util.concurrent.ConcurrentLinkedQueue
 
+/**
+ * The autonomous agent loop: model → tool calls → observations → model … until the task is done.
+ *
+ * One instance drives the interactive chat. Background runs (scheduled tasks, heartbeat) use a
+ * separate headless instance with its own bridge connection, see [runUnattended].
+ */
 class AutonomousAgentEngine(
     val bridgeClient: TermuxBridgeClient,
     val llmClient: LlmClient = LlmClient(),
     val preferenceManager: PreferenceManager? = null,
     val chatRepository: ChatRepository? = null,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob()),
+    val memoryStore: MemoryStore? = null,
+    private val platform: AgentPlatform? = null,
+    private val webFetcher: WebFetcher = WebFetcher(),
+    private val headless: Boolean = false
 ) {
     companion object {
         private const val TAG = "AgentEngine"
-        private const val MAX_LOOP_ITERATIONS = 15
+
+        /** Upper bound for unattended runs so a background job always finishes in time. */
+        const val UNATTENDED_MAX_STEPS = 25
+        const val UNATTENDED_TIMEOUT_MS = 9 * 60_000L
+
+        /** Consecutive failed tool calls after which the agent is told to rethink its approach. */
+        private const val REFLECTION_THRESHOLD = 3
+        private const val MAX_CONSECUTIVE_ERRORS = 5
+
+        private const val DEFAULT_COMMAND_TIMEOUT_MS = 90_000L
+        private const val MAX_COMMAND_TIMEOUT_MS = 30 * 60_000L
+
+        /** Only the most recent images are replayed to the model; older ones cost tokens for little value. */
+        private const val MAX_IMAGES_IN_CONTEXT = 3
+        private const val IMAGE_CHAR_WEIGHT = 4_000
+
+        private val UNTRUSTED_OUTPUT_TOOLS = setOf(AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH)
+        private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS)
     }
+
+    data class UnattendedResult(
+        val sessionId: String?,
+        val summary: String,
+        val success: Boolean,
+        val skippedApprovals: List<String>
+    )
 
     private var activeJob: Job? = null
     private var sessionCollectJob: Job? = null
@@ -47,7 +83,7 @@ class AutonomousAgentEngine(
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
     private val _securityPreset = MutableStateFlow(
-        preferenceManager?.loadSecurityPreset() ?: SecurityPreset.DEFAULT
+        preferenceManager?.loadSecurityPreset() ?: SecurityPreset.AUTONOMOUS
     )
     val securityPreset: StateFlow<SecurityPreset> = _securityPreset.asStateFlow()
 
@@ -59,6 +95,11 @@ class AutonomousAgentEngine(
     )
     val modelConfig: StateFlow<ModelConfig> = _modelConfig.asStateFlow()
 
+    private val _maxSteps = MutableStateFlow(
+        preferenceManager?.loadMaxSteps() ?: PreferenceManager.DEFAULT_MAX_STEPS
+    )
+    val maxSteps: StateFlow<Int> = _maxSteps.asStateFlow()
+
     private val _pendingApproval = MutableStateFlow<Pair<String, ToolCall>?>(null)
     val pendingApproval: StateFlow<Pair<String, ToolCall>?> = _pendingApproval.asStateFlow()
 
@@ -68,10 +109,23 @@ class AutonomousAgentEngine(
     private val _metrics = MutableStateFlow(SessionMetrics())
     val metrics: StateFlow<SessionMetrics> = _metrics.asStateFlow()
 
+    /** The agent's current plan (from the update_plan tool). */
+    private val _plan = MutableStateFlow<List<PlanStep>>(emptyList())
+    val plan: StateFlow<List<PlanStep>> = _plan.asStateFlow()
+
+    /** Number of user messages typed while the agent was busy, waiting to be picked up. */
+    private val _queuedInputs = MutableStateFlow(0)
+    val queuedInputs: StateFlow<Int> = _queuedInputs.asStateFlow()
+
+    /** Step counter of the running task (for the UI progress label). */
+    private val _currentStep = MutableStateFlow(0)
+    val currentStep: StateFlow<Int> = _currentStep.asStateFlow()
+
+    private val steeringQueue = ConcurrentLinkedQueue<ChatMessage>()
+    private val pendingWrites = java.util.Collections.synchronizedList(mutableListOf<Job>())
     private var approvalContinuation: CompletableDeferred<Boolean>? = null
 
     init {
-        // Apply custom security rules from preferences
         preferenceManager?.let { prefs ->
             CommandSecurityFilter.setCustomRules(
                 whitelist = prefs.loadWhitelist(),
@@ -79,10 +133,10 @@ class AutonomousAgentEngine(
                 strict = prefs.loadStrictMode()
             )
         }
-
-        // Initialize session from repository
-        scope.launch {
-            initSession()
+        if (headless) {
+            _isInitialized.value = true
+        } else {
+            scope.launch { initSession() }
         }
     }
 
@@ -93,6 +147,10 @@ class AutonomousAgentEngine(
         scope.cancel()
     }
 
+    // -------------------------------------------------------------------------------------------
+    // Sessions
+    // -------------------------------------------------------------------------------------------
+
     private suspend fun initSession() {
         try {
             val repo = chatRepository
@@ -101,16 +159,8 @@ class AutonomousAgentEngine(
                 return
             }
             val savedSessionId = preferenceManager?.loadActiveSessionId()
-
-            val sessionToLoad = if (savedSessionId != null) {
-                repo.getSessionById(savedSessionId)
-            } else null
-
-            if (sessionToLoad != null) {
-                loadSession(sessionToLoad)
-            } else {
-                createNewSessionInternal()
-            }
+            val sessionToLoad = if (savedSessionId != null) repo.getSessionById(savedSessionId) else null
+            if (sessionToLoad != null) loadSession(sessionToLoad) else createNewSessionInternal()
         } finally {
             _isInitialized.value = true
         }
@@ -118,7 +168,7 @@ class AutonomousAgentEngine(
 
     fun loadSession(session: ChatSession) {
         _currentSession.value = session
-        preferenceManager?.saveActiveSessionId(session.id)
+        if (!headless) preferenceManager?.saveActiveSessionId(session.id)
         _metrics.value = SessionMetrics(
             promptTokens = session.totalPromptTokens,
             completionTokens = session.totalCompletionTokens,
@@ -128,7 +178,7 @@ class AutonomousAgentEngine(
         sessionCollectJob?.cancel()
         sessionCollectJob = scope.launch {
             chatRepository?.getMessagesForSession(session.id)?.collect { dbMessages ->
-                // Update messages only if engine is not actively streaming new tokens to avoid UI flicker
+                // Only adopt DB state while idle; during a run the in-memory list is the source of truth.
                 if (!_isBusy.value) {
                     _messages.value = dbMessages
                 }
@@ -144,21 +194,21 @@ class AutonomousAgentEngine(
         }
     }
 
-    private suspend fun createNewSessionInternal() {
-        val repo = chatRepository
+    private suspend fun createNewSessionInternal(title: String = "New chat") {
         val config = _modelConfig.value
-        val session = repo?.createNewSession(
-            title = "New chat",
+        val session = chatRepository?.createNewSession(
+            title = title,
             provider = config.provider.name,
             model = config.modelName
         ) ?: ChatSession(
             id = UUID.randomUUID().toString(),
-            title = "New chat",
+            title = title,
             modelProvider = config.provider.name,
             modelName = config.modelName
         )
         _messages.value = emptyList()
         _artifacts.value = emptyList()
+        _plan.value = emptyList()
         loadSession(session)
     }
 
@@ -171,6 +221,7 @@ class AutonomousAgentEngine(
             if (session != null) {
                 _artifacts.value = emptyList()
                 _messages.value = emptyList()
+                _plan.value = emptyList()
                 loadSession(session)
             }
         }
@@ -189,6 +240,25 @@ class AutonomousAgentEngine(
         }
     }
 
+    fun clearHistory() {
+        val current = _currentSession.value
+        scope.launch {
+            sessionCollectJob?.cancel()
+            stopExecution(silent = true)
+            if (current != null && chatRepository != null) {
+                chatRepository.deleteSession(current.id)
+                createNewSessionInternal()
+            } else {
+                _messages.value = emptyList()
+                _plan.value = emptyList()
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Settings
+    // -------------------------------------------------------------------------------------------
+
     fun setSecurityPreset(preset: SecurityPreset) {
         _securityPreset.value = preset
         preferenceManager?.saveSecurityPreset(preset)
@@ -197,6 +267,12 @@ class AutonomousAgentEngine(
     fun setModelConfig(config: ModelConfig) {
         _modelConfig.value = config
         preferenceManager?.saveModelConfig(config)
+    }
+
+    fun setMaxSteps(steps: Int) {
+        val clamped = steps.coerceIn(PreferenceManager.MIN_MAX_STEPS, PreferenceManager.MAX_MAX_STEPS)
+        _maxSteps.value = clamped
+        preferenceManager?.saveMaxSteps(clamped)
     }
 
     fun reloadSecurityRules() {
@@ -209,25 +285,16 @@ class AutonomousAgentEngine(
         }
     }
 
-    fun clearHistory() {
-        val current = _currentSession.value
-        scope.launch {
-            sessionCollectJob?.cancel()
-            stopExecution(silent = true)
-            if (current != null && chatRepository != null) {
-                chatRepository.deleteSession(current.id)
-                createNewSessionInternal()
-            } else {
-                _messages.value = emptyList()
-            }
-        }
-    }
+    // -------------------------------------------------------------------------------------------
+    // Running tasks
+    // -------------------------------------------------------------------------------------------
 
+    /**
+     * Starts a task from the user. While the agent is already working, the message is queued and
+     * picked up before the next step ("steering"), so the user can add instructions mid-run.
+     */
     fun startTask(userPrompt: String, imageBase64: String? = null, imageMimeType: String? = null): Boolean {
-        if (!_isInitialized.value || _isBusy.value || _isStopping.value || userPrompt.isBlank()) return false
-
-        val targetSession = _currentSession.value
-        val executionSessionId = targetSession?.id ?: UUID.randomUUID().toString()
+        if (!_isInitialized.value || _isStopping.value || userPrompt.isBlank()) return false
 
         val userMessage = ChatMessage(
             role = MessageRole.USER,
@@ -236,22 +303,29 @@ class AutonomousAgentEngine(
             imageMimeType = imageMimeType
         )
 
+        if (_isBusy.value) {
+            steeringQueue.add(userMessage)
+            _queuedInputs.value = steeringQueue.size
+            return true
+        }
+
+        val targetSession = _currentSession.value
+        val executionSessionId = targetSession?.id ?: UUID.randomUUID().toString()
+
         _messages.value = _messages.value + userMessage
         _isBusy.value = true
+        _plan.value = emptyList()
+        _currentStep.value = 0
 
         activeJob = scope.launch {
             try {
-                // Auto-generate title on first message in session
                 if (targetSession != null && (targetSession.title == "New chat" || targetSession.title.isBlank())) {
                     val generatedTitle = chatRepository?.generateConciseTitle(userPrompt) ?: "Chat"
                     _currentSession.value = targetSession.copy(title = generatedTitle)
                     chatRepository?.updateSessionTitle(executionSessionId, generatedTitle)
                 }
-
-                // Persist user message to DB
                 chatRepository?.saveMessage(executionSessionId, userMessage)
-
-                runAgentLoop(executionSessionId)
+                runAgentLoop(executionSessionId, unattended = false)
             } catch (e: CancellationException) {
                 recoverAbortedToolCalls(executionSessionId, "Execution canceled by the user.")
                 appendSystemMessage("🛑 Execution canceled by the user.", executionSessionId)
@@ -260,12 +334,13 @@ class AutonomousAgentEngine(
                 recoverAbortedToolCalls(executionSessionId, "Agent loop error: ${e.localizedMessage}")
                 appendSystemMessage("⚠️ Agent loop error: ${e.localizedMessage}", executionSessionId)
             } finally {
-                _isBusy.value = false
-                _pendingApproval.value = null
                 withContext(NonCancellable) {
+                    // Messages typed after the run ended (or after a stop) are kept, not lost.
+                    drainSteeringQueue(executionSessionId)
+                    _isBusy.value = false
+                    _pendingApproval.value = null
                     try {
-                        val session = _currentSession.value
-                        val sessionId = session?.id ?: executionSessionId
+                        val sessionId = _currentSession.value?.id ?: executionSessionId
                         chatRepository?.getMessagesForSession(sessionId)?.firstOrNull()?.let { dbMessages ->
                             _messages.value = dbMessages
                         }
@@ -278,417 +353,747 @@ class AutonomousAgentEngine(
         return true
     }
 
-    internal fun prepareContextMessages(
-        allMessages: List<ChatMessage>,
-        maxMessages: Int = 14,
-        maxCharBudget: Int = 80_000
-    ): List<ChatMessage> {
-        val nonSystem = allMessages.filter { it.role != MessageRole.SYSTEM }
-        if (nonSystem.isEmpty()) return emptyList()
+    /**
+     * Runs one task without a user watching (scheduled task or heartbeat) in a fresh session.
+     * Must be called on a headless engine instance. Actions that need approval are refused.
+     */
+    suspend fun runUnattended(title: String, prompt: String): UnattendedResult = withContext(Dispatchers.Main) {
+        check(headless) { "runUnattended requires a headless engine" }
+        val skipped = mutableListOf<String>()
+        createNewSessionInternal(title)
+        val sessionId = _currentSession.value?.id
+            ?: return@withContext UnattendedResult(null, "Could not create a session.", false, skipped)
 
-        val latestUserMsg = nonSystem.lastOrNull { it.role == MessageRole.USER }
-        var window = nonSystem.takeLast(maxMessages).toMutableList()
-
-        // Ensure we do not start the window with an orphaned TOOL result
-        while (window.isNotEmpty() && window.first().role == MessageRole.TOOL) {
-            window.removeAt(0)
-        }
-
-        if (latestUserMsg != null && !window.contains(latestUserMsg)) {
-            window.add(0, latestUserMsg)
-        }
-
-        fun totalChars(msgs: List<ChatMessage>): Int =
-            msgs.sumOf { it.text.length + (it.toolResult?.stdout?.length ?: 0) + (it.toolResult?.stderr?.length ?: 0) }
-
-        while (window.size > 2 && totalChars(window) > maxCharBudget) {
-            val dropIdx = if (window[0] == latestUserMsg && window.size > 1) 1 else 0
-            window.removeAt(dropIdx)
-            while (window.isNotEmpty() && window.first().role == MessageRole.TOOL) {
-                window.removeAt(0)
+        val userMessage = ChatMessage(role = MessageRole.USER, text = prompt.trim())
+        _messages.value = listOf(userMessage)
+        _isBusy.value = true
+        var success = true
+        try {
+            chatRepository?.saveMessage(sessionId, userMessage)
+            val finished = withTimeoutOrNull(UNATTENDED_TIMEOUT_MS) {
+                runAgentLoop(sessionId, unattended = true, skippedApprovals = skipped)
+                true
             }
-            if (latestUserMsg != null && !window.contains(latestUserMsg)) {
-                window.add(0, latestUserMsg)
+            if (finished == null) {
+                success = false
+                bridgeClient.interruptCurrent()
+                recoverAbortedToolCalls(sessionId, "Background time limit reached.")
+                appendSystemMessage("⏱️ Background time limit reached. The task was stopped.", sessionId)
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            success = false
+            Log.e(TAG, "Unattended run failed: ${e.message}", e)
+            appendSystemMessage("⚠️ Background run failed: ${e.localizedMessage}", sessionId)
+        } finally {
+            withContext(NonCancellable) { awaitPendingWrites() }
+            _isBusy.value = false
         }
 
-        return window
+        val lastAssistant = _messages.value.lastOrNull { it.role == MessageRole.ASSISTANT && it.text.isNotBlank() }
+        val lastError = _messages.value.lastOrNull { it.role == MessageRole.SYSTEM && it.text.startsWith("⚠️") }
+        if (lastAssistant == null || lastAssistant.status == MessageStatus.ERROR) success = false
+        val summary = lastAssistant?.text?.trim()
+            ?: lastError?.text
+            ?: "The task finished without a summary."
+        UnattendedResult(sessionId, summary, success, skipped)
     }
 
-    private suspend fun runAgentLoop(executionSessionId: String) {
-        var iterations = 0
-        val commandHistory = mutableListOf<String>()
+    private fun drainSteeringQueue(sessionId: String): Boolean {
+        var drained = false
+        while (true) {
+            val queued = steeringQueue.poll() ?: break
+            // Re-stamp so DB ordering places it after the tool results that preceded it.
+            val msg = queued.copy(timestamp = System.currentTimeMillis())
+            _messages.value = _messages.value + msg
+            persistAsync { chatRepository?.saveMessage(sessionId, msg) }
+            drained = true
+        }
+        _queuedInputs.value = steeringQueue.size
+        return drained
+    }
+
+    private class LoopState {
+        val history = mutableListOf<String>()
         var consecutiveErrors = 0
+        var loopWarnings = 0
+        var stopRequested = false
+    }
 
-        while (iterations < MAX_LOOP_ITERATIONS && currentCoroutineContext().isActive) {
-            iterations++
+    private suspend fun runAgentLoop(
+        executionSessionId: String,
+        unattended: Boolean,
+        skippedApprovals: MutableList<String> = mutableListOf()
+    ) {
+        val stepLimit = if (unattended) minOf(_maxSteps.value, UNATTENDED_MAX_STEPS) else _maxSteps.value
+        // Built once per run so the prompt prefix stays identical between steps (prompt caching).
+        val systemPrompt = AgentPrompts.build(
+            memory = memoryStore?.asPromptText().orEmpty(),
+            unattended = unattended,
+            maxSteps = stepLimit
+        )
+        val state = LoopState()
+        var iterations = 0
 
-            val primaryConfig = _modelConfig.value
-            var activeConfig = primaryConfig
-            var isUsingFallback = false
-
-            val assistantMsgId = UUID.randomUUID().toString()
-            var assistantMsg = ChatMessage(
-                id = assistantMsgId,
-                role = MessageRole.ASSISTANT,
-                text = "",
-                status = MessageStatus.STREAMING
-            )
-            _messages.value = _messages.value + assistantMsg
-
-            var streamCompleted = false
-            var detectedTools: List<ToolCall> = emptyList()
-            var detectedThought: String = ""
-            var errorEvent: LlmClient.LlmStreamEvent.Error? = null
-            val textBuilder = StringBuilder()
-
-            // Stream execution loop with automatic fallback resilience
-            var streamAttempt = 0
-            while (streamAttempt < 2 && !streamCompleted && currentCoroutineContext().isActive) {
-                streamAttempt++
-                try {
-                    val contextMessages = prepareContextMessages(_messages.value.filter { it.id != assistantMsgId })
-                    llmClient.streamRequest(
-                        config = activeConfig,
-                        systemPrompt = AgentPrompts.SYSTEM_PROMPT,
-                        messages = contextMessages
-                    ).collect { event ->
-                        when (event) {
-                            is LlmClient.LlmStreamEvent.Token -> {
-                                textBuilder.append(event.textChunk)
-                                updateMessageText(assistantMsgId, textBuilder.toString(), MessageStatus.STREAMING)
-                            }
-                            is LlmClient.LlmStreamEvent.ToolCallDetected -> {
-                                detectedTools = event.toolCalls.ifEmpty { listOf(event.toolCall) }
-                                detectedThought = event.thought.ifEmpty { textBuilder.toString() }
-                                recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd, executionSessionId)
-                                streamCompleted = true
-                            }
-                            is LlmClient.LlmStreamEvent.Completed -> {
-                                val full = event.fullText.ifEmpty { textBuilder.toString() }
-                                updateMessageText(assistantMsgId, full, MessageStatus.COMPLETED)
-                                recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd, executionSessionId)
-                                streamCompleted = true
-                            }
-                            is LlmClient.LlmStreamEvent.Error -> {
-                                errorEvent = event
-                            }
-                        }
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    errorEvent = LlmClient.LlmStreamEvent.Error(e.localizedMessage ?: "Network error", 0, true)
-                }
-
-                // If retryable error occurred and fallback provider is configured, failover seamlessly!
-                if (!streamCompleted && errorEvent != null) {
-                    val fallback = primaryConfig.fallbackProvider
-                    if (fallback != null && !isUsingFallback && errorEvent!!.isRetryable) {
-                        isUsingFallback = true
-                        val fallbackModel = primaryConfig.fallbackModelName.ifEmpty { fallback.defaultModel }
-                        val fallbackUrl = primaryConfig.fallbackBaseUrl.ifEmpty { fallback.defaultBaseUrl }
-                        activeConfig = ModelConfig(
-                            provider = fallback,
-                            modelName = fallbackModel,
-                            apiKey = primaryConfig.fallbackApiKey,
-                            baseUrl = fallbackUrl
-                        )
-                        appendSystemMessage("⚠️ Primary provider ${primaryConfig.provider.displayName} failed (${errorEvent!!.message}). Switching to fallback: ${fallback.displayName} ($fallbackModel)...", executionSessionId)
-                        textBuilder.clear()
-                        errorEvent = null
-                        continue
-                    }
-                }
+        while (currentCoroutineContext().isActive) {
+            if (!unattended) drainSteeringQueue(executionSessionId)
+            if (iterations >= stepLimit) {
+                appendSystemMessage(
+                    "ℹ️ Step limit of $stepLimit reached. Send \"continue\" to let the agent keep working " +
+                        "or raise the limit in Settings → Autonomy.",
+                    executionSessionId
+                )
                 break
+            }
+            iterations++
+            _currentStep.value = iterations
+
+            val outcome = runSingleStep(executionSessionId, systemPrompt, unattended, state, skippedApprovals)
+            if (outcome == StepOutcome.STOP || state.stopRequested) break
+            if (outcome == StepOutcome.FINISHED) {
+                // The model answered without tools. Continue only if the user queued new input.
+                if (!unattended && steeringQueue.isNotEmpty()) continue
+                break
+            }
+        }
+    }
+
+    private enum class StepOutcome { CONTINUE, FINISHED, STOP }
+
+    private suspend fun runSingleStep(
+        executionSessionId: String,
+        systemPrompt: String,
+        unattended: Boolean,
+        state: LoopState,
+        skippedApprovals: MutableList<String>
+    ): StepOutcome {
+        val primaryConfig = _modelConfig.value
+        var activeConfig = primaryConfig
+        var isUsingFallback = false
+
+        val assistantMsgId = UUID.randomUUID().toString()
+        _messages.value = _messages.value + ChatMessage(
+            id = assistantMsgId,
+            role = MessageRole.ASSISTANT,
+            text = "",
+            status = MessageStatus.STREAMING
+        )
+
+        var streamCompleted = false
+        var detectedTools: List<ToolCall> = emptyList()
+        var detectedThought = ""
+        var errorEvent: LlmClient.LlmStreamEvent.Error? = null
+        val textBuilder = StringBuilder()
+
+        var streamAttempt = 0
+        while (streamAttempt < 2 && !streamCompleted && currentCoroutineContext().isActive) {
+            streamAttempt++
+            try {
+                val contextMessages = prepareContextMessages(_messages.value.filter { it.id != assistantMsgId })
+                llmClient.streamRequest(
+                    config = activeConfig,
+                    systemPrompt = systemPrompt,
+                    messages = contextMessages
+                ).collect { event ->
+                    when (event) {
+                        is LlmClient.LlmStreamEvent.Token -> {
+                            textBuilder.append(event.textChunk)
+                            updateMessageText(assistantMsgId, textBuilder.toString(), MessageStatus.STREAMING)
+                        }
+                        is LlmClient.LlmStreamEvent.ToolCallDetected -> {
+                            detectedTools = event.toolCalls.ifEmpty { listOf(event.toolCall) }
+                            detectedThought = event.thought.ifEmpty { textBuilder.toString() }
+                            recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd, executionSessionId)
+                            streamCompleted = true
+                        }
+                        is LlmClient.LlmStreamEvent.Completed -> {
+                            val full = event.fullText.ifEmpty { textBuilder.toString() }
+                            updateMessageText(assistantMsgId, full, MessageStatus.COMPLETED)
+                            recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd, executionSessionId)
+                            streamCompleted = true
+                        }
+                        is LlmClient.LlmStreamEvent.Error -> errorEvent = event
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                errorEvent = LlmClient.LlmStreamEvent.Error(e.localizedMessage ?: "Network error", 0, true)
             }
 
             if (!streamCompleted && errorEvent != null) {
-                updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
-                val failedAssistantMsg = _messages.value.firstOrNull { it.id == assistantMsgId }
-                if (failedAssistantMsg != null) {
-                    chatRepository?.saveMessage(executionSessionId, failedAssistantMsg)
+                val fallback = primaryConfig.fallbackProvider
+                if (fallback != null && !isUsingFallback && errorEvent!!.isRetryable) {
+                    isUsingFallback = true
+                    val fallbackModel = primaryConfig.fallbackModelName.ifEmpty { fallback.defaultModel }
+                    activeConfig = ModelConfig(
+                        provider = fallback,
+                        modelName = fallbackModel,
+                        apiKey = primaryConfig.fallbackApiKey,
+                        baseUrl = primaryConfig.fallbackBaseUrl.ifEmpty { fallback.defaultBaseUrl }
+                    )
+                    appendSystemMessage(
+                        "⚠️ Primary provider ${primaryConfig.provider.displayName} failed (${errorEvent!!.message}). " +
+                            "Switching to fallback: ${fallback.displayName} ($fallbackModel)...",
+                        executionSessionId
+                    )
+                    textBuilder.clear()
+                    errorEvent = null
+                    continue
                 }
-                appendSystemMessage("⚠️ AI API error: ${errorEvent!!.message}", executionSessionId)
-                break
             }
+            break
+        }
 
-            // If tool calls were detected, execute and process tool observations
-            if (detectedTools.isNotEmpty()) {
-                if (detectedThought.isNotEmpty()) {
-                    updateMessageText(assistantMsgId, detectedThought, MessageStatus.EXECUTING_TOOL)
+        if (!streamCompleted) {
+            updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
+            _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
+            if (errorEvent != null) {
+                appendSystemMessage("⚠️ AI API error: ${errorEvent!!.message}", executionSessionId)
+            }
+            return StepOutcome.STOP
+        }
+
+        if (detectedTools.isEmpty()) {
+            _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
+            return StepOutcome.FINISHED
+        }
+
+        if (detectedThought.isNotEmpty()) {
+            updateMessageText(assistantMsgId, detectedThought, MessageStatus.EXECUTING_TOOL)
+        }
+        val tools = detectedTools.toMutableList()
+        updateMessageToolCalls(assistantMsgId, tools, MessageStatus.EXECUTING_TOOL)
+        _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
+
+        val pendingVisionObservations = mutableListOf<ChatMessage>()
+        for ((index, toolCall) in tools.withIndex()) {
+            if (!currentCoroutineContext().isActive) break
+            if (state.stopRequested) {
+                // A previous call in this batch ended the run; answer the remaining calls so the
+                // conversation stays valid for every provider.
+                appendToolMessage(executionSessionId, toolCall, toolCall.name, AgentTools.describe(toolCall), "", "Skipped: execution was stopped.", -1, isError = true)
+                continue
+            }
+            executeToolCall(
+                executionSessionId, assistantMsgId, toolCall, index, tools,
+                unattended, state, skippedApprovals, pendingVisionObservations
+            )
+        }
+
+        for (vision in pendingVisionObservations) {
+            _messages.value = _messages.value + vision
+            chatRepository?.saveMessage(executionSessionId, vision)
+        }
+        _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
+
+        return if (state.stopRequested) StepOutcome.STOP else StepOutcome.CONTINUE
+    }
+
+    private suspend fun executeToolCall(
+        sessionId: String,
+        assistantMsgId: String,
+        toolCall: ToolCall,
+        index: Int,
+        tools: MutableList<ToolCall>,
+        unattended: Boolean,
+        state: LoopState,
+        skippedApprovals: MutableList<String>,
+        pendingVision: MutableList<ChatMessage>
+    ) {
+        val description = AgentTools.describe(toolCall)
+
+        if (!AgentTools.isKnown(toolCall.name)) {
+            appendToolMessage(
+                sessionId, toolCall, toolCall.name, description, "",
+                "Unknown tool '${toolCall.name}'. Available tools: ${AgentTools.ALL.joinToString { it.name }}.",
+                -1, isError = true
+            )
+            state.consecutiveErrors++
+            return
+        }
+
+        // 1. Loop protection: warn once, then stop.
+        if (toolCall.name !in LOOP_EXEMPT_TOOLS &&
+            isRunawayOrLoopDetected(description, state.history, state.consecutiveErrors)
+        ) {
+            if (state.loopWarnings == 0) {
+                state.loopWarnings++
+                appendToolMessage(
+                    sessionId, toolCall, toolCall.name, description, "",
+                    "Loop protection: this action was NOT executed because you are repeating yourself or failing " +
+                        "repeatedly. Stop, analyse the previous outputs, and either try a clearly different approach " +
+                        "or report the problem to the user.",
+                    -1, isError = true
+                )
+                return
+            }
+            appendSystemMessage("🛑 Loop protection: repeated actions or persistent failures (`$description`). Execution stopped.", sessionId)
+            updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
+            appendToolMessage(sessionId, toolCall, toolCall.name, description, "", "Loop protection stopped execution.", -1, isError = true)
+            state.stopRequested = true
+            return
+        }
+        state.history.add(description)
+
+        // 2. Risk assessment.
+        val assessment = AgentTools.assess(toolCall)
+        val securedToolCall = toolCall.copy(riskLevel = assessment.level.name, riskReason = assessment.reason)
+        tools[index] = securedToolCall
+        updateMessageToolCalls(assistantMsgId, tools.toList(), MessageStatus.EXECUTING_TOOL)
+
+        if (assessment.isBlocked) {
+            appendSystemMessage("🛡️ Security block: `$description` was blocked.\nReason: ${assessment.reason}", sessionId)
+            val blocked = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "", "Security block active: ${assessment.reason}", -1, isError = true)
+            updateMessageToolResult(assistantMsgId, blocked, MessageStatus.ERROR)
+            recordAudit(sessionId, description, RiskLevel.BLOCKED.name, assessment.reason, blocked, 0, approved = false)
+            state.consecutiveErrors++
+            return
+        }
+
+        // 3. Approval.
+        if (CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value)) {
+            val approved = if (unattended) {
+                skippedApprovals += description
+                false
+            } else {
+                updateMessageToolCalls(assistantMsgId, tools.toList(), MessageStatus.WAITING_FOR_APPROVAL)
+                _pendingApproval.value = Pair(assistantMsgId, securedToolCall)
+                platformNotifyApprovalNeeded(description)
+                val deferred = CompletableDeferred<Boolean>()
+                approvalContinuation = deferred
+                try {
+                    deferred.await()
+                } finally {
+                    _pendingApproval.value = null
+                    approvalContinuation = null
                 }
-                updateMessageToolCalls(assistantMsgId, detectedTools, MessageStatus.EXECUTING_TOOL)
-                val preMsg = _messages.value.firstOrNull { it.id == assistantMsgId }
-                if (preMsg != null) {
-                    chatRepository?.saveMessage(executionSessionId, preMsg)
+            }
+            if (!approved) {
+                val reason = if (unattended) {
+                    "Not executed: this action requires the user's approval, and the user is not present during a " +
+                        "background run. Skip it and mention it in your summary."
+                } else {
+                    "Execution rejected by the user. Do not retry this action; choose another approach or ask the user."
                 }
+                val rejected = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "", reason, -1, isError = true)
+                updateMessageToolResult(assistantMsgId, rejected, MessageStatus.ERROR)
+                recordAudit(sessionId, description, assessment.level.name, if (unattended) "Needs approval (background run)" else "Rejected by the user", rejected, 0, approved = false)
+                return
+            }
+        }
 
-                val pendingVisionObservations = mutableListOf<ChatMessage>()
-                for (toolCall in detectedTools) {
-                    if (!currentCoroutineContext().isActive) break
-                    val cmd = toolCall.arguments["command"]?.trim() ?: ""
+        // 4. Execute.
+        updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
+        val start = System.currentTimeMillis()
+        val raw = try {
+            dispatchTool(securedToolCall, assistantMsgId, pendingVision)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            ToolResult(toolCallId = securedToolCall.id, command = description, stderr = e.localizedMessage ?: e.toString(), exitCode = -1, isError = true)
+        }
+        val duration = System.currentTimeMillis() - start
+        val failed = raw.isError || raw.exitCode != 0
+        if (failed) state.consecutiveErrors++ else state.consecutiveErrors = 0
 
-                    // 1. RUNAWAY & LOOP DETECTION GUARDRAILS
-                    if (isRunawayOrLoopDetected(cmd, commandHistory, consecutiveErrors)) {
-                        val runawayMsg = "🛑 Loop protection: repeated execution or persistent failures detected for `$cmd` . Execution stopped."
-                        appendSystemMessage(runawayMsg, executionSessionId)
-                        updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
-                        recoverAbortedToolCalls(executionSessionId, "Loop protection stopped execution.")
-                        val stoppedMsg = _messages.value.firstOrNull { it.id == assistantMsgId }
-                        if (stoppedMsg != null) {
-                            chatRepository?.saveMessage(executionSessionId, stoppedMsg)
-                        }
-                        return
-                    }
-                    commandHistory.add(cmd)
+        recordAudit(sessionId, description, assessment.level.name, assessment.reason, raw, duration, approved = true)
+        if (toolCall.name == AgentTools.EXECUTE_COMMAND) {
+            detectAndRegisterArtifacts(description, raw)
+        }
 
-                    val assessment = CommandSecurityFilter.analyze(cmd)
-                    val securedToolCall = toolCall.copy(
-                        riskLevel = assessment.level.name,
-                        riskReason = assessment.reason
+        // 5. Observation for the model.
+        val untrusted = toolCall.name in UNTRUSTED_OUTPUT_TOOLS
+        fun guard(text: String): String =
+            if (text.isEmpty()) "" else if (untrusted) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(text)}\n[UNTRUSTED_OUTPUT_END]" else compactToolOutput(text)
+
+        var stderr = raw.stderr
+        if (failed && state.consecutiveErrors >= REFLECTION_THRESHOLD) {
+            stderr = guard(stderr) + "\n\n[AMC] ${state.consecutiveErrors} consecutive failures. Step back: read the errors, " +
+                "find the root cause, and try a clearly different approach instead of small variations."
+        } else {
+            stderr = guard(stderr)
+        }
+        val result = raw.copy(
+            toolCallId = securedToolCall.id,
+            toolName = toolCall.name,
+            command = description,
+            stdout = guard(raw.stdout),
+            stderr = stderr
+        )
+        val status = if (failed) MessageStatus.ERROR else MessageStatus.COMPLETED
+        updateMessageToolResult(assistantMsgId, result, status)
+        val observation = if (raw.stdout.isNotEmpty()) raw.stdout else raw.stderr
+        val toolMsg = ChatMessage(
+            role = MessageRole.TOOL,
+            text = if (untrusted) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(observation)}\n[UNTRUSTED_OUTPUT_END]" else compactToolOutput(observation),
+            toolResult = result,
+            status = status
+        )
+        _messages.value = _messages.value + toolMsg
+        chatRepository?.saveMessage(sessionId, toolMsg)
+    }
+
+    private fun platformNotifyApprovalNeeded(description: String) {
+        // Only useful when the user left the app while the agent works.
+        val p = platform ?: return
+        if (!headless && !p.isAppInForeground()) {
+            try {
+                p.notifyUser("AMC needs your approval", description.take(200))
+            } catch (e: Exception) {
+                Log.w(TAG, "Approval notification failed: ${e.message}")
+            }
+        }
+    }
+
+    /** Runs a tool and returns the raw (unguarded) result. */
+    private suspend fun dispatchTool(
+        call: ToolCall,
+        assistantMsgId: String,
+        pendingVision: MutableList<ChatMessage>
+    ): ToolResult {
+        val a = call.arguments
+        val description = AgentTools.describe(call)
+        fun ok(text: String) = ToolResult(toolCallId = call.id, command = description, toolName = call.name, stdout = text)
+        fun fail(text: String) = ToolResult(toolCallId = call.id, command = description, toolName = call.name, stderr = text, exitCode = 1, isError = true)
+
+        return when (call.name) {
+            AgentTools.EXECUTE_COMMAND -> {
+                val cmd = a["command"]?.trim().orEmpty()
+                val timeoutMs = a["timeout_seconds"]?.trim()?.toLongOrNull()
+                    ?.let { (it * 1000).coerceIn(5_000L, MAX_COMMAND_TIMEOUT_MS) }
+                    ?: DEFAULT_COMMAND_TIMEOUT_MS
+                val result = bridgeClient.executeCommand(cmd, timeoutMs) { chunk ->
+                    updateStreamingOutput(assistantMsgId, chunk)
+                }
+                if (cmd.contains("termux-camera-photo") && result.exitCode == 0) {
+                    captureVisionObservation(cmd, pendingVision)
+                }
+                result.copy(toolName = call.name)
+            }
+            AgentTools.READ_FILE -> {
+                val path = a["path"].orEmpty()
+                val text = bridgeClient.readFile(path, timeoutMs = 20_000L)
+                ok(text.ifEmpty { "(empty file)" })
+            }
+            AgentTools.WRITE_FILE -> {
+                val path = a["path"].orEmpty()
+                val content = a["content"].orEmpty()
+                val append = a["mode"].equals("append", ignoreCase = true)
+                val finalContent = if (append) {
+                    val existing = try { bridgeClient.readFile(path, timeoutMs = 20_000L) } catch (e: Exception) { "" }
+                    existing + content
+                } else content
+                val written = bridgeClient.writeFile(path, finalContent, timeoutMs = 20_000L)
+                if (written) {
+                    registerArtifactForPath(path, finalContent)
+                    ok("${if (append) "Appended" else "Wrote"} ${content.length} characters to $path.")
+                } else fail("Could not write $path.")
+            }
+            AgentTools.WEB_FETCH -> {
+                val res = webFetcher.fetch(a["url"].orEmpty())
+                if (res.ok) ok(res.text) else fail(res.text.ifEmpty { "HTTP ${res.statusCode}" })
+            }
+            AgentTools.REMEMBER -> {
+                val store = memoryStore ?: return fail("Long-term memory is not available.")
+                ok(store.remember(a["note"].orEmpty()))
+            }
+            AgentTools.FORGET -> {
+                val store = memoryStore ?: return fail("Long-term memory is not available.")
+                val removed = store.forget(a["text"].orEmpty())
+                ok(if (removed == 0) "No matching memory entries." else "Removed $removed memory entr${if (removed == 1) "y" else "ies"}.")
+            }
+            AgentTools.UPDATE_PLAN -> {
+                val steps = parsePlan(a["plan"].orEmpty())
+                _plan.value = steps
+                val done = steps.count { it.status == PlanStepStatus.DONE }
+                ok("Plan updated: $done/${steps.size} steps done.")
+            }
+            AgentTools.NOTIFY_USER -> {
+                val p = platform ?: return fail("Notifications are not available.")
+                p.notifyUser(a["title"].orEmpty().ifBlank { "AMC" }, a["message"].orEmpty())
+                ok("Notification shown.")
+            }
+            AgentTools.SCHEDULE_TASK -> {
+                val p = platform ?: return fail("Scheduling is not available.")
+                val delay = a["delay_minutes"]?.trim()?.toDoubleOrNull()?.toLong()?.coerceAtLeast(0) ?: 0L
+                val repeat = a["repeat_every_minutes"]?.trim()?.toDoubleOrNull()?.toLong()?.coerceAtLeast(0) ?: 0L
+                val id = p.scheduleAgentTask(
+                    title = a["title"].orEmpty().ifBlank { "Scheduled task" },
+                    prompt = a["prompt"].orEmpty(),
+                    delayMinutes = delay,
+                    repeatEveryMinutes = if (repeat in 1 until 15) 15 else repeat
+                )
+                val repeatText = if (repeat > 0) ", repeating every ${maxOf(repeat, 15)} minutes" else ""
+                ok("Scheduled (id: $id). First run in about $delay minutes$repeatText. Android may delay background runs slightly.")
+            }
+            AgentTools.LIST_SCHEDULED_TASKS -> {
+                val p = platform ?: return fail("Scheduling is not available.")
+                ok(p.listAgentTasks().ifBlank { "No scheduled tasks." })
+            }
+            AgentTools.CANCEL_SCHEDULED_TASK -> {
+                val p = platform ?: return fail("Scheduling is not available.")
+                val id = a["task_id"].orEmpty().trim()
+                if (p.cancelAgentTask(id)) ok("Cancelled task $id.") else fail("No scheduled task with id '$id'.")
+            }
+            else -> fail("Unknown tool '${call.name}'.")
+        }
+    }
+
+    private suspend fun captureVisionObservation(cmd: String, pendingVision: MutableList<ChatMessage>) {
+        val photoPath = extractPhotoPathFromCommand(cmd) ?: return
+        try {
+            val base64Img = bridgeClient.readFileBase64(photoPath)
+            if (base64Img.isNotEmpty()) {
+                pendingVision += ChatMessage(
+                    role = MessageRole.USER,
+                    text = "📸 Photo captured in Termux (`$photoPath`):",
+                    imageBase64 = base64Img,
+                    imageMimeType = "image/jpeg",
+                    status = MessageStatus.COMPLETED
+                )
+                appendArtifact(
+                    ArtifactItem(
+                        filename = photoPath.substringAfterLast('/'),
+                        path = photoPath,
+                        type = ArtifactType.IMAGE,
+                        base64Data = base64Img
                     )
-                    val updatedTools = detectedTools.map { if (it.id == securedToolCall.id) securedToolCall else it }
-                    updateMessageToolCalls(assistantMsgId, updatedTools, MessageStatus.EXECUTING_TOOL)
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Termux vision: could not read photo: ${e.message}")
+        }
+    }
 
-                    // 2. Blacklist Check
-                    if (assessment.isBlocked) {
-                        val blockedMsg = "🛡️ Security block: command `$cmd` was blocked.\nReason: ${assessment.reason}"
-                        appendSystemMessage(blockedMsg, executionSessionId)
+    private fun appendToolMessage(
+        sessionId: String,
+        call: ToolCall,
+        toolName: String,
+        description: String,
+        stdout: String,
+        stderr: String,
+        exitCode: Int,
+        isError: Boolean
+    ): ToolResult {
+        val result = ToolResult(
+            toolCallId = call.id,
+            command = description,
+            toolName = toolName,
+            stdout = stdout,
+            stderr = stderr,
+            exitCode = exitCode,
+            isError = isError
+        )
+        val msg = ChatMessage(
+            role = MessageRole.TOOL,
+            text = stderr.ifEmpty { stdout },
+            toolResult = result,
+            status = if (isError) MessageStatus.ERROR else MessageStatus.COMPLETED
+        )
+        _messages.value = _messages.value + msg
+        persistAsync { chatRepository?.saveMessage(sessionId, msg) }
+        return result
+    }
 
-                        val blockedResult = ToolResult(
-                            toolCallId = securedToolCall.id,
-                            command = cmd,
-                            stderr = "Security block active: ${assessment.reason}",
-                            isError = true,
-                            exitCode = -1
-                        )
-                        updateMessageToolResult(assistantMsgId, blockedResult, MessageStatus.ERROR)
+    private suspend fun recordAudit(
+        sessionId: String,
+        description: String,
+        riskLevel: String,
+        riskReason: String,
+        result: ToolResult,
+        durationMs: Long,
+        approved: Boolean
+    ) {
+        try {
+            chatRepository?.recordAudit(
+                CommandAuditEntity(
+                    sessionId = sessionId,
+                    command = description,
+                    riskLevel = riskLevel,
+                    riskReason = riskReason,
+                    executionDurationMs = durationMs,
+                    exitCode = result.exitCode,
+                    stdout = result.stdout.take(500),
+                    stderr = result.stderr.take(500),
+                    timestamp = System.currentTimeMillis(),
+                    wasApproved = approved
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Audit write failed: ${e.message}")
+        }
+    }
 
-                        val toolRejectedMsg = ChatMessage(
-                            role = MessageRole.TOOL,
-                            text = "Execution blocked: ${assessment.reason}",
-                            toolResult = blockedResult,
-                            status = MessageStatus.ERROR
-                        )
-                        _messages.value = _messages.value + toolRejectedMsg
-                        chatRepository?.saveMessage(executionSessionId, toolRejectedMsg)
+    // -------------------------------------------------------------------------------------------
+    // Context window
+    // -------------------------------------------------------------------------------------------
 
-                        // Record Audit Entity
-                        chatRepository?.recordAudit(
-                            CommandAuditEntity(
-                                sessionId = executionSessionId,
-                                command = cmd,
-                                riskLevel = RiskLevel.BLOCKED.name,
-                                riskReason = assessment.reason,
-                                exitCode = -1,
-                                stderr = "Security block active",
-                                wasApproved = false
-                            )
-                        )
-                        consecutiveErrors++
-                        continue
-                    }
+    /**
+     * Selects the messages sent to the model. Guarantees, for every provider:
+     * - the window starts with a USER message;
+     * - every assistant tool call is followed by exactly one matching TOOL result (missing ones,
+     *   e.g. after the app was killed mid-command, are synthesised) and no TOOL result is orphaned;
+     * - only the latest few images are replayed;
+     * - the total size stays within [maxCharBudget], dropping the oldest exchanges first.
+     */
+    internal fun prepareContextMessages(
+        allMessages: List<ChatMessage>,
+        maxMessages: Int = 40,
+        maxCharBudget: Int = 120_000
+    ): List<ChatMessage> {
+        val nonSystem = repairToolPairs(allMessages.filter { it.role != MessageRole.SYSTEM })
+        if (nonSystem.isEmpty()) return emptyList()
 
-                    // 3. Approval Check (Preset-based evaluation)
-                    val mustApprove = CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value)
-                    if (mustApprove) {
-                        updateMessageToolCalls(assistantMsgId, updatedTools, MessageStatus.WAITING_FOR_APPROVAL)
-                        _pendingApproval.value = Pair(assistantMsgId, securedToolCall)
-                        val deferred = CompletableDeferred<Boolean>()
-                        approvalContinuation = deferred
+        var window = nonSystem.takeLast(maxMessages).toMutableList()
+        trimToUserStart(window)
+        if (window.isEmpty()) {
+            // The latest user request is older than the window (long autonomous run): keep it and
+            // the most recent progress after it.
+            val latestUserIdx = nonSystem.indexOfLast { it.role == MessageRole.USER }
+            if (latestUserIdx < 0) return emptyList()
+            val tail = nonSystem.subList(latestUserIdx + 1, nonSystem.size).takeLast(maxMessages - 1).toMutableList()
+            dropLeadingOrphans(tail)
+            window = (listOf(nonSystem[latestUserIdx]) + tail).toMutableList()
+        }
 
-                        val approved = deferred.await()
-                        _pendingApproval.value = null
-                        approvalContinuation = null
+        fun weight(m: ChatMessage): Int =
+            m.text.length + (m.toolResult?.stdout?.length ?: 0) + (m.toolResult?.stderr?.length ?: 0) +
+                m.toolCalls.sumOf { tc -> tc.arguments.values.sumOf { it.length } } +
+                (if (m.imageBase64 != null) IMAGE_CHAR_WEIGHT else 0)
 
-                        if (!approved) {
-                            val rejectedResult = ToolResult(
-                                toolCallId = securedToolCall.id,
-                                command = cmd,
-                                stderr = "Execution rejected by the user.",
-                                isError = true,
-                                exitCode = -1
-                            )
-                            updateMessageToolResult(assistantMsgId, rejectedResult, MessageStatus.ERROR)
+        while (window.size > 2 && window.sumOf { weight(it) } > maxCharBudget) {
+            val nextUser = (1 until window.size).firstOrNull { window[it].role == MessageRole.USER && window[it].toolResult == null }
+            if (nextUser != null && nextUser < window.size - 1) {
+                // Drop the whole oldest exchange.
+                repeat(nextUser) { window.removeAt(0) }
+            } else {
+                // Only one user turn: drop the oldest step after it.
+                window.removeAt(1)
+                val rest = window.subList(1, window.size)
+                dropLeadingOrphans(rest)
+            }
+        }
 
-                            val rejectedMsg = ChatMessage(
-                                role = MessageRole.TOOL,
-                                text = "Command rejected by the user.",
-                                toolResult = rejectedResult,
-                                status = MessageStatus.ERROR
-                            )
-                            _messages.value = _messages.value + rejectedMsg
-                            chatRepository?.saveMessage(executionSessionId, rejectedMsg)
+        // Keep images only on the most recent messages.
+        val imageIndices = window.indices.filter { window[it].imageBase64 != null }
+        val stripImages = imageIndices.dropLast(MAX_IMAGES_IN_CONTEXT).toSet()
+        return window.mapIndexed { i, m ->
+            if (i in stripImages) m.copy(imageBase64 = null, imageMimeType = null, text = (m.text + "\n[earlier image omitted]").trim()) else m
+        }
+    }
 
-                            chatRepository?.recordAudit(
-                                CommandAuditEntity(
-                                    sessionId = executionSessionId,
-                                    command = cmd,
-                                    riskLevel = assessment.level.name,
-                                    riskReason = "Rejected by the user",
-                                    exitCode = -1,
-                                    stderr = "Rejected",
-                                    wasApproved = false
+    private fun trimToUserStart(window: MutableList<ChatMessage>) {
+        while (window.isNotEmpty() && window.first().role != MessageRole.USER) window.removeAt(0)
+    }
+
+    /** Removes TOOL results at the start of [list] whose assistant tool call is gone. */
+    private fun dropLeadingOrphans(list: MutableList<ChatMessage>) {
+        while (list.isNotEmpty() && list.first().role == MessageRole.TOOL) list.removeAt(0)
+    }
+
+    /** Makes tool call/result pairing consistent (see [prepareContextMessages]). */
+    private fun repairToolPairs(messages: List<ChatMessage>): List<ChatMessage> {
+        val out = mutableListOf<ChatMessage>()
+        var i = 0
+        while (i < messages.size) {
+            val m = messages[i]
+            when (m.role) {
+                MessageRole.ASSISTANT -> {
+                    out += m
+                    val calls = m.toolCalls.ifEmpty { listOfNotNull(m.toolCall) }
+                    if (calls.isNotEmpty()) {
+                        val ids = calls.map { it.id }.toSet()
+                        val answered = mutableSetOf<String>()
+                        var j = i + 1
+                        while (j < messages.size && messages[j].role == MessageRole.TOOL) {
+                            val t = messages[j]
+                            val id = t.toolResult?.toolCallId
+                            if (id != null && id in ids && answered.add(id)) out += t
+                            j++
+                        }
+                        for (call in calls) {
+                            if (call.id !in answered) {
+                                out += ChatMessage(
+                                    role = MessageRole.TOOL,
+                                    text = "Result unavailable: execution was interrupted.",
+                                    toolResult = ToolResult(
+                                        toolCallId = call.id,
+                                        command = AgentTools.describe(call),
+                                        toolName = call.name,
+                                        stderr = "Result unavailable: execution was interrupted.",
+                                        exitCode = -1,
+                                        isError = true
+                                    ),
+                                    status = MessageStatus.ERROR,
+                                    timestamp = m.timestamp
                                 )
-                            )
-                            continue
-                        }
-                    }
-
-                    // 4. Command Execution via Termux Bridge
-                    updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
-                    val startTime = System.currentTimeMillis()
-
-                    val result = bridgeClient.executeCommand(cmd) { chunk ->
-                        updateStreamingOutput(assistantMsgId, chunk)
-                    }
-
-                    val duration = System.currentTimeMillis() - startTime
-
-                    if (result.isError || result.exitCode != 0) consecutiveErrors++ else consecutiveErrors = 0
-
-                    // 5. Record Audit Entity in Room
-                    chatRepository?.recordAudit(
-                        CommandAuditEntity(
-                            sessionId = executionSessionId,
-                            command = cmd,
-                            riskLevel = assessment.level.name,
-                            riskReason = assessment.reason,
-                            executionDurationMs = duration,
-                            exitCode = result.exitCode,
-                            stdout = result.stdout.take(500),
-                            stderr = result.stderr.take(500),
-                            timestamp = System.currentTimeMillis(),
-                            wasApproved = true
-                        )
-                    )
-
-                    // 6. Termux-Vision-Loop Detection
-                    if (cmd.contains("termux-camera-photo") && result.exitCode == 0) {
-                        val photoPath = extractPhotoPathFromCommand(cmd)
-                        if (photoPath != null) {
-                            try {
-                                val base64Img = bridgeClient.readFileBase64(photoPath)
-                                if (base64Img.isNotEmpty()) {
-                                    pendingVisionObservations.add(
-                                        ChatMessage(
-                                            role = MessageRole.USER,
-                                            text = "📸 Photo captured in Termux (`$photoPath`):",
-                                            imageBase64 = base64Img,
-                                            imageMimeType = "image/jpeg",
-                                            status = MessageStatus.COMPLETED
-                                        )
-                                    )
-                                    appendArtifact(
-                                        ArtifactItem(
-                                            filename = photoPath.substringAfterLast('/'),
-                                            path = photoPath,
-                                            type = ArtifactType.IMAGE,
-                                            base64Data = base64Img
-                                        )
-                                    )
-                                }
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Termux vision: could not read photo: ${e.message}")
                             }
                         }
+                        i = j
+                        continue
                     }
-
-                    // 7. Generic Artifact Scanner
-                    detectAndRegisterArtifacts(cmd, result)
-
-                    // 8. Add Tool Observation to Context & Bind to Assistant Card
-                    val rawOutput = if (result.stdout.isNotEmpty()) result.stdout else result.stderr
-                    val compactedOutput = compactToolOutput(rawOutput)
-                    val guardedResult = result.copy(
-                        toolCallId = securedToolCall.id,
-                        command = cmd,
-                        stdout = if (result.stdout.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(result.stdout)}\n[UNTRUSTED_OUTPUT_END]" else "",
-                        stderr = if (result.stderr.isNotEmpty()) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(result.stderr)}\n[UNTRUSTED_OUTPUT_END]" else ""
-                    )
-
-                    val execStatus = if (result.isError || result.exitCode != 0) MessageStatus.ERROR else MessageStatus.COMPLETED
-                    updateMessageToolResult(assistantMsgId, guardedResult, execStatus)
-
-                    val toolMsg = ChatMessage(
-                        role = MessageRole.TOOL,
-                        text = "[UNTRUSTED_OUTPUT_START]\n$compactedOutput\n[UNTRUSTED_OUTPUT_END]",
-                        toolResult = guardedResult,
-                        status = execStatus
-                    )
-                    _messages.value = _messages.value + toolMsg
-                    chatRepository?.saveMessage(executionSessionId, toolMsg)
                 }
-
-                for (visionObservation in pendingVisionObservations) {
-                    _messages.value = _messages.value + visionObservation
-                    chatRepository?.saveMessage(executionSessionId, visionObservation)
+                MessageRole.TOOL -> {
+                    // A TOOL message not directly after its assistant turn is an orphan: skip it.
                 }
-
-                val completedAssistant = _messages.value.firstOrNull { it.id == assistantMsgId }
-                if (completedAssistant != null) {
-                    chatRepository?.saveMessage(executionSessionId, completedAssistant)
-                }
-            } else {
-                // Persist the completed assistant text message when no tool call
-                val finalAssistantMsg = _messages.value.firstOrNull { it.id == assistantMsgId }
-                if (finalAssistantMsg != null) {
-                    chatRepository?.saveMessage(executionSessionId, finalAssistantMsg)
-                }
-                // Normal message completion reached, end loop
-                break
+                else -> out += m
             }
+            i++
         }
-
-        if (iterations >= MAX_LOOP_ITERATIONS) {
-            appendSystemMessage("ℹ️ Step limit of $MAX_LOOP_ITERATIONS reached. Execution ended.", executionSessionId)
-        }
+        return out
     }
 
     internal fun compactToolOutput(
         text: String,
-        maxChars: Int = 4000,
-        headChars: Int = 2000,
-        tailChars: Int = 1500
+        maxChars: Int = 6000,
+        headChars: Int = 3000,
+        tailChars: Int = 2500
     ): String {
-        if (text.length <= maxChars) {
-            return text
-        }
+        if (text.length <= maxChars) return text
         val omitted = text.length - (headChars + tailChars)
-        if (omitted <= 0) {
-            return text.take(maxChars)
-        }
-        val head = text.take(headChars)
-        val tail = text.takeLast(tailChars)
-        return "$head\n\n... [Output truncated: $omitted characters omitted to conserve context] ...\n\n$tail"
+        if (omitted <= 0) return text.take(maxChars)
+        return "${text.take(headChars)}\n\n... [Output truncated: $omitted characters omitted to conserve context] ...\n\n${text.takeLast(tailChars)}"
     }
 
     internal fun isRunawayOrLoopDetected(
         cmd: String,
         history: List<String>,
-        consecutiveErrors: Int
+        consecutiveErrors: Int,
+        maxConsecutiveErrors: Int = MAX_CONSECUTIVE_ERRORS
     ): Boolean {
-        // 1. Persistent failure: 3 consecutive commands failed
-        if (consecutiveErrors >= 3) return true
-
-        // 2. Exact command repetition: same command executed 3 times consecutively
-        if (history.size >= 2 && history.takeLast(2).all { it.equals(cmd, ignoreCase = true) }) {
-            return true
-        }
-
-        // 3. Ping-pong alternating cycle: A -> B -> A -> B
+        if (consecutiveErrors >= maxConsecutiveErrors) return true
+        // Same action three times in a row.
+        if (history.size >= 2 && history.takeLast(2).all { it.equals(cmd, ignoreCase = true) }) return true
+        // Ping-pong: A -> B -> A -> B
         if (history.size >= 3) {
             val last = history.last()
             val secondLast = history[history.size - 2]
             val thirdLast = history[history.size - 3]
-            if (cmd.equals(secondLast, ignoreCase = true) && last.equals(thirdLast, ignoreCase = true)) {
+            if (cmd.equals(secondLast, ignoreCase = true) && last.equals(thirdLast, ignoreCase = true) && !cmd.equals(last, ignoreCase = true)) {
                 return true
             }
         }
-
         return false
     }
+
+    internal fun parsePlan(text: String): List<PlanStep> =
+        text.lines().map { it.trim() }.filter { it.isNotEmpty() }.map { line ->
+            val m = Regex("""^(?:[-*]\s*)?\[([ xX>~\-/])]\s*(.*)$""").find(line)
+            if (m != null) {
+                val status = when (m.groupValues[1]) {
+                    "x", "X" -> PlanStepStatus.DONE
+                    ">", "~", "-", "/" -> PlanStepStatus.IN_PROGRESS
+                    else -> PlanStepStatus.PENDING
+                }
+                PlanStep(m.groupValues[2].trim(), status)
+            } else {
+                PlanStep(line.removePrefix("-").removePrefix("*").trim(), PlanStepStatus.PENDING)
+            }
+        }.filter { it.text.isNotEmpty() }.take(30)
 
     internal fun extractPhotoPathFromCommand(cmd: String): String? {
         val regex = Regex("""termux-camera-photo(?:\s+-[a-zA-Z0-9]+(?:\s+\S+)?)*\s+(?:["']([^"']+)["']|(\S+))""")
@@ -722,35 +1127,44 @@ class AutonomousAgentEngine(
         return candidate ?: "photo.jpg"
     }
 
+    // -------------------------------------------------------------------------------------------
+    // Artifacts
+    // -------------------------------------------------------------------------------------------
+
+    private fun artifactTypeFor(path: String): ArtifactType? {
+        val lower = path.lowercase()
+        return when {
+            lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> ArtifactType.IMAGE
+            lower.endsWith(".md") -> ArtifactType.MARKDOWN
+            lower.endsWith(".html") -> ArtifactType.HTML
+            listOf(".py", ".sh", ".js", ".json", ".kt").any { lower.endsWith(it) } -> ArtifactType.CODE
+            lower.endsWith(".txt") || lower.endsWith(".csv") -> ArtifactType.TEXT
+            else -> null
+        }
+    }
+
+    private fun registerArtifactForPath(path: String, content: String?) {
+        val type = artifactTypeFor(path) ?: return
+        appendArtifact(
+            ArtifactItem(
+                filename = path.substringAfterLast('/'),
+                path = path,
+                type = type,
+                content = if (type == ArtifactType.IMAGE) null else content
+            )
+        )
+    }
+
     private fun detectAndRegisterArtifacts(command: String, result: ToolResult) {
-        val fileExtensions = listOf(".py", ".sh", ".js", ".json", ".md", ".html", ".txt", ".png", ".jpg", ".jpeg")
-        val tokens = mutableListOf<String>()
+        if (result.isError) return
         val tokenMatcher = java.util.regex.Pattern.compile(""""([^"]*)"|'([^']*)'|(\S+)""").matcher(command)
         while (tokenMatcher.find()) {
-            val token = tokenMatcher.group(1) ?: tokenMatcher.group(2) ?: tokenMatcher.group(3)
-            if (token != null) tokens.add(token)
-        }
-
-        for (token in tokens) {
+            val token = tokenMatcher.group(1) ?: tokenMatcher.group(2) ?: tokenMatcher.group(3) ?: continue
             val clean = token.trim('"', '\'', '>', '<', ';', '&', ' ')
-            val ext = fileExtensions.firstOrNull { clean.endsWith(it, ignoreCase = true) }
-            if (ext != null && clean.length > ext.length && !clean.contains('\n')) {
-                val type = when {
-                    ext in listOf(".png", ".jpg", ".jpeg") -> ArtifactType.IMAGE
-                    ext == ".md" -> ArtifactType.MARKDOWN
-                    ext == ".html" -> ArtifactType.HTML
-                    ext in listOf(".py", ".sh", ".js", ".json") -> ArtifactType.CODE
-                    else -> ArtifactType.TEXT
-                }
-                appendArtifact(
-                    ArtifactItem(
-                        filename = clean.substringAfterLast('/'),
-                        path = clean,
-                        type = type,
-                        content = null
-                    )
-                )
-            }
+            if (clean.contains('\n') || clean.length < 3) continue
+            val type = artifactTypeFor(clean) ?: continue
+            if (clean.substringAfterLast('/').substringBeforeLast('.').isEmpty()) continue
+            appendArtifact(ArtifactItem(filename = clean.substringAfterLast('/'), path = clean, type = type, content = null))
         }
     }
 
@@ -777,12 +1191,10 @@ class AutonomousAgentEngine(
 
     private fun appendArtifact(item: ArtifactItem) {
         val existingIndex = _artifacts.value.indexOfFirst { it.path == item.path }
-        if (existingIndex >= 0) {
-            _artifacts.value = _artifacts.value.mapIndexed { idx, existing ->
-                if (idx == existingIndex) item else existing
-            }
+        _artifacts.value = if (existingIndex >= 0) {
+            _artifacts.value.mapIndexed { idx, existing -> if (idx == existingIndex) item else existing }
         } else {
-            _artifacts.value = _artifacts.value + item
+            _artifacts.value + item
         }
     }
 
@@ -794,11 +1206,13 @@ class AutonomousAgentEngine(
         )
         val targetId = sessionId ?: _currentSession.value?.id
         if (targetId != null) {
-            scope.launch {
-                chatRepository?.addMetrics(targetId, promptTokens, completionTokens, costUsd)
-            }
+            scope.launch { chatRepository?.addMetrics(targetId, promptTokens, completionTokens, costUsd) }
         }
     }
+
+    // -------------------------------------------------------------------------------------------
+    // Approvals & stopping
+    // -------------------------------------------------------------------------------------------
 
     fun approvePendingAction(toolCallId: String? = null) {
         val pending = _pendingApproval.value
@@ -840,9 +1254,7 @@ class AutonomousAgentEngine(
     fun emergencyStop() {
         _isStopping.value = true
         if (stopJob?.isActive == true) return
-        stopJob = scope.launch {
-            stopExecution(silent = false)
-        }
+        stopJob = scope.launch { stopExecution(silent = false) }
     }
 
     private fun recoverAbortedToolCalls(executionSessionId: String, reason: String) {
@@ -854,86 +1266,73 @@ class AutonomousAgentEngine(
         for (toolCall in toolCalls) {
             val alreadyAnswered = currentMessages.any { it.role == MessageRole.TOOL && it.toolResult?.toolCallId == toolCall.id }
             if (!alreadyAnswered) {
-                val abortedResult = ToolResult(
-                    toolCallId = toolCall.id,
-                    command = toolCall.arguments["command"] ?: "",
-                    stderr = reason,
-                    isError = true,
-                    exitCode = -1
-                )
                 val abortedMsg = ChatMessage(
                     role = MessageRole.TOOL,
                     text = reason,
-                    toolResult = abortedResult,
+                    toolResult = ToolResult(
+                        toolCallId = toolCall.id,
+                        command = AgentTools.describe(toolCall),
+                        toolName = toolCall.name,
+                        stderr = reason,
+                        isError = true,
+                        exitCode = -1
+                    ),
                     status = MessageStatus.ERROR
                 )
                 _messages.value = _messages.value + abortedMsg
-                scope.launch(NonCancellable) {
-                    chatRepository?.saveMessage(executionSessionId, abortedMsg)
-                }
+                persistAsync { chatRepository?.saveMessage(executionSessionId, abortedMsg) }
             }
         }
     }
 
-    private fun updateMessageToolCalls(messageId: String, toolCalls: List<ToolCall>, status: MessageStatus) {
-        _messages.value = _messages.value.map { msg ->
-            if (msg.id == messageId) {
-                msg.copy(toolCalls = toolCalls, toolCall = toolCalls.firstOrNull(), status = status)
-            } else msg
-        }
+    // -------------------------------------------------------------------------------------------
+    // Message state helpers
+    // -------------------------------------------------------------------------------------------
+
+    private fun updateMessage(messageId: String, transform: (ChatMessage) -> ChatMessage) {
+        _messages.value = _messages.value.map { if (it.id == messageId) transform(it) else it }
     }
 
-    private fun updateMessageText(messageId: String, text: String, status: MessageStatus) {
-        _messages.value = _messages.value.map { msg ->
-            if (msg.id == messageId) {
-                msg.copy(text = text, status = status)
-            } else msg
+    private fun updateMessageToolCalls(messageId: String, toolCalls: List<ToolCall>, status: MessageStatus) =
+        updateMessage(messageId) { it.copy(toolCalls = toolCalls, toolCall = toolCalls.firstOrNull(), status = status) }
+
+    private fun updateMessageText(messageId: String, text: String, status: MessageStatus) =
+        updateMessage(messageId) { it.copy(text = text, status = status) }
+
+    private fun updateMessageToolResult(messageId: String, toolResult: ToolResult, status: MessageStatus) =
+        updateMessage(messageId) { it.copy(toolResult = toolResult, status = status) }
+
+    private fun updateStreamingOutput(messageId: String, newChunk: String) =
+        updateMessage(messageId) { it.copy(streamingTerminalOutput = (it.streamingTerminalOutput + newChunk).takeLast(50_000)) }
+
+    private fun updateMessageStatus(messageId: String, status: MessageStatus) =
+        updateMessage(messageId) { it.copy(status = status) }
+
+    /** Fire-and-forget DB write that survives cancellation and never crashes the app. */
+    private fun persistAsync(block: suspend () -> Unit) {
+        val job = scope.launch(NonCancellable) {
+            try {
+                block()
+            } catch (e: Exception) {
+                Log.w(TAG, "Persisting message failed: ${e.message}")
+            }
         }
+        pendingWrites += job
+        job.invokeOnCompletion { pendingWrites.remove(job) }
     }
 
-    private fun updateMessageToolCall(messageId: String, toolCall: ToolCall, status: MessageStatus) {
-        _messages.value = _messages.value.map { msg ->
-            if (msg.id == messageId) {
-                msg.copy(toolCall = toolCall, status = status)
-            } else msg
-        }
-    }
-
-    private fun updateMessageToolResult(messageId: String, toolResult: ToolResult, status: MessageStatus) {
-        _messages.value = _messages.value.map { msg ->
-            if (msg.id == messageId) {
-                msg.copy(toolResult = toolResult, status = status)
-            } else msg
-        }
-    }
-
-    private fun updateStreamingOutput(messageId: String, newChunk: String) {
-        _messages.value = _messages.value.map { msg ->
-            if (msg.id == messageId) {
-                val updatedOutput = (msg.streamingTerminalOutput + newChunk).takeLast(50_000)
-                msg.copy(streamingTerminalOutput = updatedOutput)
-            } else msg
-        }
-    }
-
-    private fun updateMessageStatus(messageId: String, status: MessageStatus) {
-        _messages.value = _messages.value.map { msg ->
-            if (msg.id == messageId) {
-                msg.copy(status = status)
-            } else msg
-        }
+    /** Waits until every queued DB write has finished. */
+    suspend fun awaitPendingWrites() {
+        val jobs = synchronized(pendingWrites) { pendingWrites.toList() }
+        jobs.joinAll()
     }
 
     private fun appendSystemMessage(text: String, sessionId: String? = null) {
-        val sysMsg = ChatMessage(
-            role = MessageRole.SYSTEM,
-            text = text,
-            status = MessageStatus.COMPLETED
-        )
+        val sysMsg = ChatMessage(role = MessageRole.SYSTEM, text = text, status = MessageStatus.COMPLETED)
         _messages.value = _messages.value + sysMsg
         val targetId = sessionId ?: _currentSession.value?.id
         if (targetId != null) {
-            scope.launch { chatRepository?.saveMessage(targetId, sysMsg) }
+            persistAsync { chatRepository?.saveMessage(targetId, sysMsg) }
         }
     }
 }
