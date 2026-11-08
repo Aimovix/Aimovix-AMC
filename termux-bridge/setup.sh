@@ -53,6 +53,16 @@ You can add, edit or delete skills yourself at any time.
 SKILLS
 fi
 
+# Let the AMC app start the bridge and pair itself through Termux's RUN_COMMAND intent.
+# Only apps holding the user-granted RUN_COMMAND permission can use it. Opt out with AMC_ALLOW_EXTERNAL_APPS=0.
+if [ "${AMC_ALLOW_EXTERNAL_APPS:-1}" = "1" ]; then
+    mkdir -p "$HOME/.termux"
+    if ! grep -qE '^[[:space:]]*allow-external-apps[[:space:]]*=[[:space:]]*true' "$HOME/.termux/termux.properties" 2>/dev/null; then
+        printf '\n# Lets the AMC app start the bridge and pair itself (Termux RUN_COMMAND).\nallow-external-apps = true\n' >> "$HOME/.termux/termux.properties"
+    fi
+    command -v termux-reload-settings >/dev/null 2>&1 && termux-reload-settings >/dev/null 2>&1 || true
+fi
+
 echo "[4/5] Enabling background startup..."
 amc autostart
 amc restart
@@ -68,7 +78,7 @@ echo ""
 echo "Setup complete."
 echo "1. Set Termux battery usage to Unrestricted / Not optimized."
 echo "2. Allow Termux notifications and leave it running in the background."
-echo "3. Run 'amc token' and enter the token in AMC -> Setup."
+echo "3. In AMC -> Setup, tap 'Auto-connect' (or run 'amc token' and enter the token)."
 echo "Authentication is required, including connections from the same phone."
 echo "Use 'amc status', 'amc logs', or 'amc boost' for troubleshooting."
 echo "Android and manufacturer restrictions can still stop background processes."

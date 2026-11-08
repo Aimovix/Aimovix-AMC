@@ -42,6 +42,8 @@ class TermuxBridgeClient(
         const val MAX_JITTER_MS = 1000L
         const val PING_TIMEOUT_MS = 10_000L
         const val HEARTBEAT_INTERVAL_MS = 15_000L
+        /** Time the bridge has to answer the auth handshake after the socket opened. */
+        const val AUTH_TIMEOUT_MS = 8_000L
 
         @Volatile
         private var singletonInstance: TermuxBridgeClient? = null
@@ -138,6 +140,16 @@ class TermuxBridgeClient(
         .build()
 
     private var webSocket: WebSocket? = null
+
+    /**
+     * True only while a socket is being opened or authenticated. Callers set the status to
+     * Connecting before calling doConnect, so the status alone can't tell whether an attempt is
+     * really running; relying on it left the client stuck in "Connecting" forever after a
+     * failed attempt (e.g. when the bridge was started after the app, or after a wrong token).
+     */
+    @Volatile
+    private var connectAttemptInFlight = false
+    private var authWatchdog: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
@@ -480,11 +492,12 @@ class TermuxBridgeClient(
 
     private suspend fun doConnect(authToken: String, force: Boolean = false) = connectionMutex.withLock {
         val currentStatus = _connectionStatus.value
-        if (!force && (currentStatus is ConnectionStatus.Connected || currentStatus is ConnectionStatus.Connecting) && webSocket != null) {
+        if (!force && webSocket != null && (currentStatus is ConnectionStatus.Connected || connectAttemptInFlight)) {
             Log.d(TAG, "Connection attempt already in progress or connected ($currentStatus), skipping doConnect")
             return@withLock
         }
         stopHeartbeat()
+        authWatchdog?.cancel()
         val currentGen = connectionGeneration.incrementAndGet()
         failAllPendingExecutions("Reconnecting to Termux bridge...")
 
@@ -497,6 +510,7 @@ class TermuxBridgeClient(
         webSocket = null
 
         _connectionStatus.value = ConnectionStatus.Connecting
+        connectAttemptInFlight = true
 
         // Try primary IP (127.0.0.1)
         val url = "ws://$host:$port"
@@ -512,6 +526,26 @@ class TermuxBridgeClient(
                     put("token", authToken)
                 }
                 ws.send(authMsg.toString())
+                // A bridge that accepts the socket but never answers would otherwise keep us in
+                // "Connecting" forever.
+                authWatchdog?.cancel()
+                authWatchdog = scope.launch {
+                    delay(AUTH_TIMEOUT_MS)
+                    if (connectionGeneration.get() == currentGen && connectAttemptInFlight &&
+                        _connectionStatus.value !is ConnectionStatus.Connected
+                    ) {
+                        Log.w(TAG, "Bridge did not answer the auth handshake in time")
+                        connectionGeneration.incrementAndGet()
+                        connectAttemptInFlight = false
+                        if (webSocket === ws) webSocket = null
+                        ws.cancel()
+                        failAllPendingExecutions("The bridge did not answer the login")
+                        _connectionStatus.value = ConnectionStatus.Error(
+                            "The bridge accepted the connection but did not answer the login. Restart it with 'amc restart'."
+                        )
+                        scheduleReconnect()
+                    }
+                }
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
@@ -522,6 +556,9 @@ class TermuxBridgeClient(
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 if (connectionGeneration.get() != currentGen) return
                 Log.w(TAG, "WebSocket closed ($code): $reason")
+                connectAttemptInFlight = false
+                authWatchdog?.cancel()
+                if (webSocket === ws) webSocket = null
                 stopHeartbeat()
                 failAllPendingExecutions("Connection to Termux closed ($reason)")
                 if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
@@ -533,14 +570,24 @@ class TermuxBridgeClient(
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 if (connectionGeneration.get() != currentGen) return
                 Log.w(TAG, "WebSocket error: ${t.message}")
+                connectAttemptInFlight = false
+                authWatchdog?.cancel()
+                if (webSocket === ws) webSocket = null
                 stopHeartbeat()
                 failAllPendingExecutions("Connection error: ${t.localizedMessage}")
                 if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
-                    _connectionStatus.value = ConnectionStatus.Error(t.localizedMessage ?: "Connection to Termux failed")
+                    _connectionStatus.value = ConnectionStatus.Error(describeConnectFailure(t))
                     scheduleReconnect()
                 }
             }
         })
+    }
+
+    private fun describeConnectFailure(t: Throwable): String = when {
+        t is java.net.ConnectException || t.message.orEmpty().contains("Failed to connect", ignoreCase = true) ->
+            "The AMC bridge is not running in Termux (nothing listens on $host:$port). Start it with 'amc start'."
+        t is java.net.SocketTimeoutException -> "Timed out connecting to the AMC bridge."
+        else -> t.localizedMessage ?: "Connection to Termux failed"
     }
 
     private fun scheduleReconnect() {
@@ -607,6 +654,8 @@ class TermuxBridgeClient(
 
             when (type) {
                 "auth_ok" -> {
+                    connectAttemptInFlight = false
+                    authWatchdog?.cancel()
                     reconnectAttempts = 0
                     val info = parseSystemInfo(json)
                     _connectionStatus.value = ConnectionStatus.Connected(info)
@@ -626,6 +675,8 @@ class TermuxBridgeClient(
                     }
                 }
                 "auth_fail" -> {
+                    connectAttemptInFlight = false
+                    authWatchdog?.cancel()
                     stopHeartbeat()
                     val error = json.optString("error", "Authentication failed: invalid token")
                     isAutoReconnectEnabled = false
@@ -953,6 +1004,8 @@ class TermuxBridgeClient(
     }
 
     fun disconnect() {
+        connectAttemptInFlight = false
+        authWatchdog?.cancel()
         isManualDisconnect = true
         isAutoReconnectEnabled = false
         stopHeartbeat()
