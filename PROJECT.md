@@ -10,6 +10,7 @@ Aimovix-AMC (AI Mobile Center) is an autonomous on-device AI agent architecture 
 - **v1.2.5**: Connection stability hardening, full English localization, Room DB SQLite synchronization, Direct Boot keystore resiliency, and expanded E2E verification suites.
 - **v1.3.0**: Autonomous agent: Autonomous security preset (default), multi-tool agent loop (files, web, memory, plan, notifications, self-scheduling), long-term memory, heartbeat, skills folder, steering while running, configurable step budget, and provider/context-window fixes.
 - **v1.4.0**: Remote channel and sub-agents: Telegram channel gateway on the phone (pairing, approvals as buttons, persistent sessions, steering, photos, file delivery), `delegate_task` sub-agents, keyless `web_search`, `search_history`, `send_file`, persona (SOUL.md), installed-skills index in the prompt (incl. SKILL.md folders), voice input in the device language, legal texts version 2.
+- **v1.5.0**: Calmer design: tone-based dark palette without borders or glows, one sans-serif type scale (monospace only for code and output), one corner-radius scale, equal-weight approval answers, single-line tool activity that folds away after success, plain-text agent replies, short reduced-motion-aware springs and press feedback, one-line connection banner.
 - **v1.4.1**: Reliable Termux connection: fixes the bridge client staying in "Connecting" forever after a failed attempt or a wrong token, adds an auth watchdog and clearer errors, and adds Termux `RUN_COMMAND` integration (Quick connect pairing and automatic bridge start).
 
 ---
@@ -87,3 +88,6 @@ Adversarial test cases verify resilience against malformed WebSocket frames, tok
 
 ### Feature 24: Termux RUN_COMMAND Integration
 `TermuxRunCommand` uses Termux's official RunCommandService intent (runtime permission `com.termux.permission.RUN_COMMAND`, `allow-external-apps = true`) to start the bridge and read the pairing token with a result `PendingIntent`. `BridgeStarter` restarts an unreachable bridge (rate-limited) for the app, background tasks and the Telegram channel. The WebSocket bridge remains the command channel.
+
+### Feature 25: Calm Design System
+The theme keeps its token names (`DarkBackground`, `DarkCard`, `AccentPrimary`, ...) but builds depth from three surface tones, not from borders or glows. `Typography` uses one sans-serif family with a small scale and nothing below 11 sp; `CodeStyle` is the only monospace style. `AmcShapes` is the single corner-radius scale. `ui/theme/Motion.kt` provides `amcSpring`, `amcEnter`, `amcExit` and `Modifier.pressScale`; all of them respect the system "Remove animations" setting. Design rules: no dark patterns (no artificial urgency, no hidden or weakened answers in approvals, no looping attention animations), and both approval answers keep the same size and weight.

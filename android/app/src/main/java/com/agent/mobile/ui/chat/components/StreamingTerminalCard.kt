@@ -1,38 +1,39 @@
 package com.agent.mobile.ui.chat.components
 
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.agent.mobile.agent.AgentTools
 import com.agent.mobile.data.model.MessageStatus
 import com.agent.mobile.data.model.ToolCall
 import com.agent.mobile.data.model.ToolResult
 import com.agent.mobile.ui.theme.*
 
+/**
+ * One tool call as a single line (status, command, chevron). It is open while it runs and when it
+ * failed, so the output and the error are visible. Once it succeeded it folds away. A tap on the
+ * line opens or closes it.
+ */
 @Composable
 fun StreamingTerminalCard(
     toolCall: ToolCall,
@@ -42,135 +43,90 @@ fun StreamingTerminalCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var isExpanded by remember { mutableStateOf(true) }
-    val command = com.agent.mobile.agent.AgentTools.describe(toolCall)
-    val displayText = when {
+    val command = AgentTools.describe(toolCall)
+    val output = when {
         liveOutput.isNotEmpty() -> liveOutput
-        toolResult != null -> (toolResult.stdout.ifEmpty { toolResult.stderr })
-        else -> "Waiting for execution..."
+        toolResult != null -> toolResult.stdout.ifEmpty { toolResult.stderr }
+        else -> ""
+    }
+    val running = toolResult == null
+    val failed = toolResult != null && (toolResult.isError || toolResult.exitCode != 0)
+
+    // Null means "follow the default"; a tap stores the choice.
+    var userChoice by remember { mutableStateOf<Boolean?>(null) }
+    val expanded = userChoice ?: (running || failed)
+    val chevronAngle by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = amcSpring<Float>(),
+        label = "chevron"
+    )
+    val scroll = rememberScrollState()
+
+    LaunchedEffect(output, expanded) {
+        if (expanded && output.isNotEmpty()) scroll.animateScrollTo(scroll.maxValue)
     }
 
-    val scrollState = rememberScrollState()
-
-    LaunchedEffect(displayText) {
-        if (isExpanded && displayText.isNotEmpty()) {
-            scrollState.animateScrollTo(scrollState.maxValue)
-        }
-    }
-
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp)),
-        color = TerminalBg,
-        border = BorderStroke(1.dp, BorderSubtle)
-    ) {
+    Surface(modifier = modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small, color = DarkCard) {
         Column {
-            // macOS-style Header bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(TerminalBar)
-                    .clickable { isExpanded = !isExpanded }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .clickable { userChoice = !expanded }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                when {
+                    running -> CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = AccentPrimary)
+                    failed -> Icon(Icons.Default.ErrorOutline, contentDescription = "Failed", tint = RedText, modifier = Modifier.size(16.dp))
+                    else -> Icon(Icons.Default.Check, contentDescription = "Done", tint = StatusOnline, modifier = Modifier.size(16.dp))
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = command,
+                    style = CodeStyle.copy(fontSize = 13.sp),
+                    color = TextWhite,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
-                ) {
-                    // Minimal window dots
-                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFFF5F56)))
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFFFBD2E)))
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF27C93F)))
-                    Spacer(modifier = Modifier.width(10.dp))
-
-                    Text(
-                        text = "$ $command",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            color = TextWhite,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 10.5.sp
-                        ),
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
+                )
+                if (failed) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = "Failed", style = MaterialTheme.typography.labelMedium, color = RedText)
                 }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (status == MessageStatus.EXECUTING_TOOL) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(12.dp),
-                            strokeWidth = 1.5.dp,
-                            color = AccentPrimary
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                    } else if (toolResult != null) {
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = if (toolResult.exitCode == 0) AccentPrimary.copy(alpha = 0.15f) else RedEmergency.copy(alpha = 0.15f)
-                        ) {
-                            Text(
-                                text = if (toolResult.exitCode == 0) "0" else "${toolResult.exitCode}",
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                                fontSize = 10.sp,
-                                color = if (toolResult.exitCode == 0) AccentPrimary else RedEmergency,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(6.dp))
-                    }
-
-                    // Copy output button
-                    IconButton(
-                        onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Terminal Output", displayText))
-                            Toast.makeText(context, "Terminal output copied", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "Copy",
-                            tint = TextMuted,
-                            modifier = Modifier.size(13.dp)
-                        )
-                    }
-
-                    Icon(
-                        imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                        contentDescription = "Expand/Collapse",
-                        tint = TextMuted,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
+                Spacer(modifier = Modifier.width(6.dp))
+                Icon(
+                    imageVector = Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Hide output" else "Show output",
+                    tint = TextMuted,
+                    modifier = Modifier.size(18.dp).rotate(chevronAngle)
+                )
             }
 
-            // Expanded Terminal Body
-            AnimatedVisibility(visible = isExpanded) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 40.dp, max = 240.dp)
-                        .padding(10.dp)
-                ) {
-                    Text(
-                        text = displayText,
-                        color = TerminalText,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        lineHeight = 15.5.sp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(scrollState)
-                    )
+            AnimatedVisibility(visible = expanded, enter = amcEnter(), exit = amcExit()) {
+                Column(modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) {
+                    Surface(shape = MaterialTheme.shapes.extraSmall, color = TerminalBg, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = output.ifEmpty { if (running) "Waiting for output…" else "No output." },
+                            style = CodeStyle,
+                            color = if (output.isEmpty()) TextMuted else TerminalText,
+                            modifier = Modifier
+                                .padding(10.dp)
+                                .heightIn(max = 220.dp)
+                                .verticalScroll(scroll)
+                        )
+                    }
+                    if (output.isNotEmpty()) {
+                        TextButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("Command output", output))
+                                Toast.makeText(context, "Output copied", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Text("Copy output", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                        }
+                    }
                 }
             }
         }

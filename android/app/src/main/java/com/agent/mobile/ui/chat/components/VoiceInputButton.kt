@@ -114,7 +114,7 @@ private fun startListening(
     speechRecognizer.setRecognitionListener(object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
             onListeningChange(true)
-            Toast.makeText(context, "🎤 Speak now...", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Speak now…", Toast.LENGTH_SHORT).show()
         }
 
         override fun onResults(results: Bundle?) {
