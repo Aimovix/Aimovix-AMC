@@ -36,6 +36,7 @@ import com.agent.mobile.data.repository.ChatRepository
 import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.service.scheduler.SchedulerManager
 import com.agent.mobile.ui.settings.components.AutonomyCard
+import com.agent.mobile.ui.settings.components.PolicySimulatorCard
 import com.agent.mobile.ui.settings.components.CronSyncCard
 import com.agent.mobile.ui.settings.components.SecurityCockpitCard
 import com.agent.mobile.ui.theme.*
@@ -523,6 +524,9 @@ fun SettingsScreen(
                 preferenceManager = preferenceManager,
                 chatRepository = chatRepository
             )
+
+            // Section 4b: try a command against every security mode
+            PolicySimulatorCard()
 
             // Section 5: Cron-Sync & Hybrid Scheduler
             if (bridgeClient != null) {

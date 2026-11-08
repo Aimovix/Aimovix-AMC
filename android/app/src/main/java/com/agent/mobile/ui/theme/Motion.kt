@@ -1,6 +1,7 @@
 package com.agent.mobile.ui.theme
 
 import android.provider.Settings
+import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -14,6 +15,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.Composable
@@ -24,9 +26,9 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalContext
 
 /**
- * Motion rules. Movement explains a change: where something came from, or that a touch was
- * registered. It never delays the user, never loops to hold attention, and is switched off when
- * the system setting "Remove animations" is on.
+ * Motion rules. Movement explains a change: where something came from, that a touch registered,
+ * or that content was swapped. It never delays the user, never loops to hold attention, and is
+ * switched off when the system setting "Remove animations" is on.
  */
 @Composable
 fun rememberReducedMotion(): Boolean {
@@ -57,6 +59,19 @@ fun amcEnter(): EnterTransition =
 fun amcExit(): ExitTransition =
     if (rememberReducedMotion()) ExitTransition.None
     else fadeOut(tween(120)) + shrinkVertically(tween(180, easing = FastOutSlowInEasing))
+
+/** Content swapped in place (for example an approval request turning into its result). */
+@Composable
+fun amcContentTransform(): ContentTransform {
+    val reduced = rememberReducedMotion()
+    return remember(reduced) {
+        if (reduced) {
+            EnterTransition.None togetherWith ExitTransition.None
+        } else {
+            fadeIn(tween(180)) togetherWith fadeOut(tween(120))
+        }
+    }
+}
 
 /** Immediate tactile feedback: the element eases down while it is pressed. */
 @Composable
