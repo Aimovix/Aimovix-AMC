@@ -114,7 +114,7 @@ jobs:
           if gh release view "$TAG" --json targetCommitish,isPrerelease,isDraft > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
             echo "Release $TAG exists. Updating release assets and notes."
           else
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "AMC $TAG - Bridge stability, keep-alive and English localization" --notes-file "$RUNNER_TEMP/release-notes.md" --draft
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "AMC $TAG - Autonomous agent" --notes-file "$RUNNER_TEMP/release-notes.md" --draft
           fi
           gh release upload "$TAG" dist/*.apk dist/*.zip dist/SHA256SUMS.txt --clobber
           if [[ "$SIGNED_RELEASE" == "true" ]]; then
