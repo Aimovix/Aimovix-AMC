@@ -59,6 +59,17 @@ class PreferenceManager(
         private const val KEY_STRICT_MODE = "key_strict_mode"
         private const val KEY_ACTIVE_SESSION_ID = "key_active_session_id"
         private const val KEY_HAS_COMPLETED_TUTORIAL = "key_has_completed_tutorial"
+        private const val KEY_MAX_STEPS = "key_agent_max_steps"
+        private const val KEY_HEARTBEAT_ENABLED = "key_heartbeat_enabled"
+        private const val KEY_HEARTBEAT_INTERVAL_MIN = "key_heartbeat_interval_min"
+        private const val KEY_HEARTBEAT_CHECKLIST = "key_heartbeat_checklist"
+        private const val KEY_ACCEPTED_LEGAL_VERSION = "key_accepted_legal_version"
+        private const val KEY_ACCEPTED_LEGAL_AT = "key_accepted_legal_at"
+
+        const val DEFAULT_MAX_STEPS = 30
+        const val MIN_MAX_STEPS = 5
+        const val MAX_MAX_STEPS = 100
+        const val DEFAULT_HEARTBEAT_INTERVAL_MIN = 60L
     }
 
     data class ProviderProfile(
@@ -189,7 +200,7 @@ class PreferenceManager(
             return try {
                 SecurityPreset.valueOf(presetName)
             } catch (e: Exception) {
-                SecurityPreset.DEFAULT
+                SecurityPreset.AUTONOMOUS
             }
         }
         val legacyMode = prefs.getString(KEY_LEGACY_EXEC_MODE, null)
@@ -199,7 +210,7 @@ class PreferenceManager(
             prefs.edit().remove(KEY_LEGACY_EXEC_MODE).apply()
             return migrated
         }
-        return SecurityPreset.DEFAULT
+        return SecurityPreset.AUTONOMOUS
     }
 
     fun saveAuthToken(token: String) {
@@ -251,4 +262,47 @@ class PreferenceManager(
     fun setTutorialCompleted(completed: Boolean = true) {
         prefs.edit().putBoolean(KEY_HAS_COMPLETED_TUTORIAL, completed).apply()
     }
+
+    // --- Autonomy ---------------------------------------------------------------------------
+
+    fun saveMaxSteps(steps: Int) {
+        prefs.edit().putInt(KEY_MAX_STEPS, steps.coerceIn(MIN_MAX_STEPS, MAX_MAX_STEPS)).apply()
+    }
+
+    fun loadMaxSteps(): Int =
+        prefs.getInt(KEY_MAX_STEPS, DEFAULT_MAX_STEPS).coerceIn(MIN_MAX_STEPS, MAX_MAX_STEPS)
+
+    fun saveHeartbeatEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_HEARTBEAT_ENABLED, enabled).apply()
+    }
+
+    fun loadHeartbeatEnabled(): Boolean = prefs.getBoolean(KEY_HEARTBEAT_ENABLED, false)
+
+    fun saveHeartbeatIntervalMinutes(minutes: Long) {
+        prefs.edit().putLong(KEY_HEARTBEAT_INTERVAL_MIN, minutes.coerceAtLeast(15L)).apply()
+    }
+
+    fun loadHeartbeatIntervalMinutes(): Long =
+        prefs.getLong(KEY_HEARTBEAT_INTERVAL_MIN, DEFAULT_HEARTBEAT_INTERVAL_MIN).coerceAtLeast(15L)
+
+    fun saveHeartbeatChecklist(checklist: String) {
+        prefs.edit().putString(KEY_HEARTBEAT_CHECKLIST, checklist).apply()
+    }
+
+    fun loadHeartbeatChecklist(): String =
+        prefs.getString(KEY_HEARTBEAT_CHECKLIST, null) ?: com.agent.mobile.agent.AgentPrompts.DEFAULT_HEARTBEAT_CHECKLIST
+
+    // --- Legal consent ------------------------------------------------------------------------
+
+    /** Records acceptance of the terms/privacy notice in [version], with a timestamp. */
+    fun saveAcceptedLegalVersion(version: Int) {
+        prefs.edit()
+            .putInt(KEY_ACCEPTED_LEGAL_VERSION, version)
+            .putLong(KEY_ACCEPTED_LEGAL_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun loadAcceptedLegalVersion(): Int = prefs.getInt(KEY_ACCEPTED_LEGAL_VERSION, 0)
+
+    fun loadAcceptedLegalAt(): Long = prefs.getLong(KEY_ACCEPTED_LEGAL_AT, 0L)
 }

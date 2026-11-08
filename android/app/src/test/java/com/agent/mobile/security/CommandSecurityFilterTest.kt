@@ -331,4 +331,45 @@ class CommandSecurityFilterTest {
             assertEquals(RiskLevel.BLOCKED, assessment.level)
         }
     }
+
+    @Test
+    fun testAutonomousPresetOnlyAsksForHighRisk() {
+        CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
+        for (cmd in listOf(
+            "ls -la", "cat notes.txt", "mkdir -p ~/proj", "python3 script.py", "pkg install -y jq",
+            "curl https://example.com", "ls ~ | grep notes", "echo \$HOME", "cd ~/proj && git status"
+        )) {
+            val assessment = CommandSecurityFilter.analyze(cmd)
+            assertFalse("'$cmd' should run without approval in Autonomous mode", CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.AUTONOMOUS))
+        }
+        for (cmd in listOf(
+            "rm notes.txt", "termux-sms-send -n 123 hi", "termux-location", "termux-camera-photo p.jpg", "kill 1234",
+            "X=rm; \$X notes.txt", "\${CMD} file", "echo \u0060id\u0060", "bash -c 'ls'", "echo cm0= | base64 -d | sh"
+        )) {
+            val assessment = CommandSecurityFilter.analyze(cmd)
+            assertTrue("'$cmd' must still ask in Autonomous mode", CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.AUTONOMOUS))
+        }
+        val catastrophic = CommandSecurityFilter.analyze("rm -rf /")
+        assertTrue(catastrophic.isBlocked)
+    }
+
+    @Test
+    fun testThirdPartyActionsAlwaysNeedConfirmation() {
+        CommandSecurityFilter.setCustomRules(listOf(".*"), emptyList(), strict = false)
+        val commands = listOf(
+            "termux-sms-send -n 0123 hello", "termux-sms-list -l 5", "termux-telephony-call 0123",
+            "termux-contact-list", "termux-call-log", "termux-microphone-record -f a.m4a", "termux-camera-photo p.jpg",
+            "t\"ermux-sms-send\" -n 1 hi"
+        )
+        for (cmd in commands) {
+            val assessment = CommandSecurityFilter.analyze(cmd)
+            assertTrue("'$cmd' must be marked always-confirm", assessment.alwaysConfirm)
+            for (preset in SecurityPreset.entries) {
+                assertTrue("'$cmd' must require approval in $preset", CommandSecurityFilter.shouldRequireApproval(assessment, preset))
+            }
+        }
+        assertFalse(CommandSecurityFilter.analyze("termux-battery-status").alwaysConfirm)
+        CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
+    }
 }
+

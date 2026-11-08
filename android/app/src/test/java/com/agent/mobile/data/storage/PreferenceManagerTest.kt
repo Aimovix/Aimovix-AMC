@@ -44,4 +44,32 @@ class PreferenceManagerTest {
         assertTrue(ApkDownloadHelper.TERMUX_API_APK_URL.startsWith("https://"))
         assertTrue(ApkDownloadHelper.TERMUX_API_APK_URL.endsWith(".apk"))
     }
+
+    @Test
+    fun testLegalConsentAndAutonomyDefaults() {
+        assertEquals(0, preferenceManager.loadAcceptedLegalVersion())
+        assertEquals(0L, preferenceManager.loadAcceptedLegalAt())
+        preferenceManager.saveAcceptedLegalVersion(com.agent.mobile.ui.legal.LegalTexts.VERSION)
+        assertEquals(com.agent.mobile.ui.legal.LegalTexts.VERSION, preferenceManager.loadAcceptedLegalVersion())
+        assertTrue(preferenceManager.loadAcceptedLegalAt() > 0L)
+
+        assertEquals(com.agent.mobile.data.model.SecurityPreset.AUTONOMOUS, preferenceManager.loadSecurityPreset())
+        assertEquals(PreferenceManager.DEFAULT_MAX_STEPS, preferenceManager.loadMaxSteps())
+        preferenceManager.saveMaxSteps(1000)
+        assertEquals(PreferenceManager.MAX_MAX_STEPS, preferenceManager.loadMaxSteps())
+        assertFalse(preferenceManager.loadHeartbeatEnabled())
+        preferenceManager.saveHeartbeatIntervalMinutes(5)
+        assertEquals(15L, preferenceManager.loadHeartbeatIntervalMinutes())
+    }
+
+    @Test
+    fun testLegalTextsAreCompleteInBothLanguages() {
+        val en = com.agent.mobile.ui.legal.LegalTexts.sections(com.agent.mobile.ui.legal.LegalTexts.Language.EN)
+        val de = com.agent.mobile.ui.legal.LegalTexts.sections(com.agent.mobile.ui.legal.LegalTexts.Language.DE)
+        assertEquals(en.size, de.size)
+        assertTrue(en.all { it.title.isNotBlank() && it.body.length > 50 })
+        assertTrue(de.all { it.title.isNotBlank() && it.body.length > 50 })
+        assertEquals(3, com.agent.mobile.ui.legal.LegalTexts.consentLabels(com.agent.mobile.ui.legal.LegalTexts.Language.DE).size)
+    }
 }
+

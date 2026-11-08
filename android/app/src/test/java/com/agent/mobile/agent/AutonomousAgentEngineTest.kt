@@ -2,7 +2,10 @@ package com.agent.mobile.agent
 
 import com.agent.mobile.data.model.ChatMessage
 import com.agent.mobile.data.model.MessageRole
+import com.agent.mobile.data.model.PlanStepStatus
 import com.agent.mobile.data.model.SecurityPreset
+import com.agent.mobile.data.model.ToolCall
+import com.agent.mobile.data.model.ToolResult
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.data.storage.db.entity.ChatSession
 import kotlinx.coroutines.CoroutineScope
@@ -61,12 +64,16 @@ class AutonomousAgentEngineTest {
     @Test
     fun testLoopDetectionOnPersistentErrors() {
         val history = listOf("grep foo bar")
+        assertFalse(
+            "3 failures are not yet a loop: the agent gets a reflection hint and may self-correct",
+            engine.isRunawayOrLoopDetected(cmd = "grep foo baz", history = history, consecutiveErrors = 3)
+        )
         val isLoop = engine.isRunawayOrLoopDetected(
             cmd = "grep foo bar",
             history = history,
-            consecutiveErrors = 3
+            consecutiveErrors = 5
         )
-        assertTrue("3 consecutive command failures must trigger abort", isLoop)
+        assertTrue("5 consecutive command failures must trigger abort", isLoop)
     }
 
     @Test
@@ -97,7 +104,7 @@ class AutonomousAgentEngineTest {
 
     @Test
     fun testSecurityPresetSwitching() {
-        assertEquals(SecurityPreset.DEFAULT, engine.securityPreset.value)
+        assertEquals("Autonomous is the default mode", SecurityPreset.AUTONOMOUS, engine.securityPreset.value)
         engine.setSecurityPreset(SecurityPreset.TURBO)
         assertEquals(SecurityPreset.TURBO, engine.securityPreset.value)
         engine.setSecurityPreset(SecurityPreset.FULL_MACHINE)
@@ -174,5 +181,104 @@ class AutonomousAgentEngineTest {
         assertFalse("Task should not run while engine is stopping", testEngine.isBusy.value)
         testDispatcher.scheduler.advanceUntilIdle()
         assertFalse("Engine should no longer be stopping after cancellation finishes", testEngine.isStopping.value)
+    }
+
+    @Test
+    fun testPrepareContextSynthesisesMissingToolResults() {
+        val call = ToolCall(id = "call-1", name = AgentTools.EXECUTE_COMMAND, arguments = mapOf("command" to "ls"))
+        val msgs = listOf(
+            ChatMessage(role = MessageRole.USER, text = "List files"),
+            ChatMessage(role = MessageRole.ASSISTANT, text = "", toolCall = call),
+            // The app was killed before the result arrived; then the user wrote again.
+            ChatMessage(role = MessageRole.USER, text = "Are you still there?")
+        )
+        val window = engine.prepareContextMessages(msgs)
+        assertEquals(4, window.size)
+        assertEquals(MessageRole.TOOL, window[2].role)
+        assertEquals("call-1", window[2].toolResult?.toolCallId)
+        assertEquals(AgentTools.EXECUTE_COMMAND, window[2].toolResult?.toolName)
+    }
+
+    @Test
+    fun testPrepareContextDropsToolResultsWithoutMatchingCall() {
+        val msgs = listOf(
+            ChatMessage(role = MessageRole.USER, text = "Hi"),
+            ChatMessage(role = MessageRole.ASSISTANT, text = "Hello"),
+            ChatMessage(role = MessageRole.TOOL, text = "stray", toolResult = ToolResult(toolCallId = "nope", command = "x")),
+            ChatMessage(role = MessageRole.USER, text = "Next")
+        )
+        val window = engine.prepareContextMessages(msgs)
+        assertTrue(window.none { it.role == MessageRole.TOOL })
+    }
+
+    @Test
+    fun testPrepareContextKeepsLatestUserRequestInLongRuns() {
+        val msgs = mutableListOf(ChatMessage(role = MessageRole.USER, text = "Build the project"))
+        repeat(30) { i ->
+            val call = ToolCall(id = "c$i", name = AgentTools.EXECUTE_COMMAND, arguments = mapOf("command" to "step $i"))
+            msgs += ChatMessage(role = MessageRole.ASSISTANT, text = "", toolCall = call)
+            msgs += ChatMessage(role = MessageRole.TOOL, text = "ok $i", toolResult = ToolResult(toolCallId = "c$i", command = "step $i"))
+        }
+        val window = engine.prepareContextMessages(msgs, maxMessages = 10)
+        assertEquals("Build the project", window.first().text)
+        assertEquals(MessageRole.USER, window.first().role)
+        assertNotEquals("A tool result must never directly follow the user turn", MessageRole.TOOL, window[1].role)
+        assertEquals("ok 29", window.last().text)
+        assertTrue(window.size <= 10)
+    }
+
+    @Test
+    fun testPrepareContextRespectsCharBudget() {
+        val big = "x".repeat(5_000)
+        val msgs = mutableListOf<ChatMessage>()
+        repeat(10) { i ->
+            msgs += ChatMessage(role = MessageRole.USER, text = "question $i $big")
+            msgs += ChatMessage(role = MessageRole.ASSISTANT, text = "answer $i $big")
+        }
+        val window = engine.prepareContextMessages(msgs, maxCharBudget = 25_000)
+        assertEquals(MessageRole.USER, window.first().role)
+        assertTrue(window.sumOf { it.text.length } <= 25_000)
+        assertTrue(window.last().text.startsWith("answer 9"))
+    }
+
+    @Test
+    fun testOnlyRecentImagesAreReplayed() {
+        val msgs = (1..5).flatMap { i ->
+            listOf(
+                ChatMessage(role = MessageRole.USER, text = "img $i", imageBase64 = "AAAA", imageMimeType = "image/jpeg"),
+                ChatMessage(role = MessageRole.ASSISTANT, text = "seen $i")
+            )
+        }
+        val window = engine.prepareContextMessages(msgs)
+        assertEquals(3, window.count { it.imageBase64 != null })
+        assertNotNull(window.last { it.role == MessageRole.USER }.imageBase64)
+    }
+
+    @Test
+    fun testParsePlan() {
+        val plan = engine.parsePlan("[x] Inspect files\n[>] Write script\n[ ] Test script\n- Deploy")
+        assertEquals(4, plan.size)
+        assertEquals(PlanStepStatus.DONE, plan[0].status)
+        assertEquals("Inspect files", plan[0].text)
+        assertEquals(PlanStepStatus.IN_PROGRESS, plan[1].status)
+        assertEquals(PlanStepStatus.PENDING, plan[2].status)
+        assertEquals("Deploy", plan[3].text)
+    }
+
+    @Test
+    fun testMessagesSentWhileBusyAreQueued() {
+        // A dispatcher that is never advanced: the run stays "busy" deterministically.
+        val paused = kotlinx.coroutines.test.StandardTestDispatcher()
+        val busyEngine = AutonomousAgentEngine(
+            bridgeClient = TermuxBridgeClient(token = "dummy-token"),
+            scope = CoroutineScope(paused + SupervisorJob())
+        )
+        paused.scheduler.runCurrent() // finish init
+        assertTrue(busyEngine.startTask("first task"))
+        assertTrue(busyEngine.isBusy.value)
+        assertTrue("Input while busy is accepted", busyEngine.startTask("extra instruction"))
+        assertEquals(1, busyEngine.queuedInputs.value)
+        assertEquals("Queued input is not shown before the agent picks it up", 1, busyEngine.messages.value.count { it.role == MessageRole.USER })
+        busyEngine.close()
     }
 }

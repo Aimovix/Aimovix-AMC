@@ -39,6 +39,20 @@ done
 cp "$TARGET_DIR/amc" "$PREFIX/bin/amc"
 chmod +x "$PREFIX/bin/amc" "$TARGET_DIR/local_model_manager.sh"
 
+# Skill library: the agent reads and writes reusable how-to files here.
+mkdir -p "$HOME/.amc/skills"
+if [ ! -e "$HOME/.amc/skills/README.md" ]; then
+    cat > "$HOME/.amc/skills/README.md" <<'SKILLS'
+# AMC skills
+
+Each Markdown file in this folder is a reusable skill for the AMC agent:
+a short title, when to use it, and the exact commands or steps.
+The agent checks this folder for recurring tasks and saves new skills here
+after solving something that is likely to come up again.
+You can add, edit or delete skills yourself at any time.
+SKILLS
+fi
+
 echo "[4/5] Enabling background startup..."
 amc autostart
 amc restart

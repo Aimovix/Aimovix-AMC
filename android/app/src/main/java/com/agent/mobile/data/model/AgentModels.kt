@@ -16,9 +16,13 @@ enum class SecurityPreset(
     val title: String,
     val description: String
 ) {
+    AUTONOMOUS(
+        title = "Autonomous",
+        description = "Recommended. The agent works on its own: reading, writing, scripts, installs and downloads run automatically. Sensitive actions (SMS, calls, camera, location, deleting files, killing processes) still ask for approval."
+    ),
     DEFAULT(
-        title = "Default",
-        description = "Requires manual review for all terminal commands and file accesses outside of the working folders."
+        title = "Supervised",
+        description = "Every action requires your manual approval before it runs."
     ),
     FULL_MACHINE(
         title = "Full machine",
@@ -26,7 +30,7 @@ enum class SecurityPreset(
     ),
     TURBO(
         title = "Turbo mode",
-        description = "Disables all safety barriers for maximal iteration velocity."
+        description = "Fully autonomous: nothing asks for approval. Only catastrophic commands stay blocked. Use with care."
     ),
     CUSTOM(
         title = "Custom",
@@ -48,9 +52,7 @@ enum class ProviderType(
         suggestedModels = listOf(
             "gemini-2.5-flash",
             "gemini-2.5-pro",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-            "gemini-2.0-flash-lite-preview-02-05"
+            "gemini-2.5-flash-lite"
         )
     ),
     OPENAI(
@@ -59,22 +61,25 @@ enum class ProviderType(
         defaultModel = "gpt-4o-mini",
         suggestedModels = listOf(
             "gpt-4o-mini",
+            "gpt-4.1-mini",
+            "gpt-4.1",
             "gpt-4o",
-            "o3-mini",
-            "o1",
-            "gpt-4-turbo"
+            "gpt-5-mini",
+            "gpt-5",
+            "o4-mini"
         )
     ),
     CLAUDE(
         displayName = "Anthropic Claude",
         defaultBaseUrl = "https://api.anthropic.com/v1",
-        defaultModel = "claude-3-7-sonnet-latest",
+        defaultModel = "claude-opus-5-5",
         suggestedModels = listOf(
-            "claude-3-7-sonnet-latest",
-            "claude-3-5-sonnet-latest",
-            "claude-3-5-haiku-latest",
-            "claude-3-5-sonnet-20241022",
-            "claude-opus-latest"
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5"
         )
     ),
     GROQ(
@@ -84,22 +89,21 @@ enum class ProviderType(
         suggestedModels = listOf(
             "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
-            "mixtral-8x7b-32768",
-            "qwen-2.5-32b",
-            "deepseek-r1-distill-llama-70b"
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b"
         )
     ),
     OPENROUTER(
         displayName = "OpenRouter",
         defaultBaseUrl = "https://openrouter.ai/api/v1",
-        defaultModel = "anthropic/claude-3.5-sonnet",
+        defaultModel = "openrouter/auto",
         suggestedModels = listOf(
-            "anthropic/claude-3.5-sonnet",
-            "deepseek/deepseek-r1",
-            "openai/gpt-4o",
-            "google/gemini-2.0-flash-001",
-            "meta-llama/llama-3.3-70b-instruct",
-            "qwen/qwen-2.5-coder-32b-instruct"
+            "openrouter/auto",
+            "anthropic/claude-sonnet-4.5",
+            "google/gemini-2.5-flash",
+            "openai/gpt-4o-mini",
+            "deepseek/deepseek-chat",
+            "meta-llama/llama-3.3-70b-instruct"
         )
     ),
     LOCAL(
@@ -143,6 +147,8 @@ data class ToolCall(
 data class ToolResult(
     val toolCallId: String,
     val command: String,
+    /** Name of the tool that produced this result (Gemini needs it in functionResponse). */
+    val toolName: String = "execute_command",
     val stdout: String = "",
     val stderr: String = "",
     val exitCode: Int = 0,
@@ -171,6 +177,10 @@ data class ChatMessage(
     val imageBase64: String? = null,
     val imageMimeType: String? = null
 )
+
+enum class PlanStepStatus { PENDING, IN_PROGRESS, DONE }
+
+data class PlanStep(val text: String, val status: PlanStepStatus)
 
 enum class ArtifactType {
     TEXT,

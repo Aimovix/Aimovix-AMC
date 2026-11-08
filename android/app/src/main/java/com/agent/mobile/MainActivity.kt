@@ -29,6 +29,8 @@ import com.agent.mobile.ui.settings.SettingsScreen
 import com.agent.mobile.ui.setup.SetupWizardScreen
 import com.agent.mobile.ui.tutorial.OnboardingTutorialOverlay
 import com.agent.mobile.ui.theme.*
+import com.agent.mobile.ui.legal.LegalConsentScreen
+import com.agent.mobile.ui.legal.LegalTexts
 
 
 class MainViewModel : androidx.lifecycle.ViewModel() {
@@ -42,17 +44,24 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
 
     fun init(context: android.content.Context) {
         if (isInitialized) return
-        preferenceManager = PreferenceManager(context.applicationContext)
-        database = AppDatabase.getInstance(context.applicationContext)
-        chatRepository = ChatRepository(database)
+        val runtime = AgentRuntime.get(context)
+        preferenceManager = runtime.preferenceManager
+        database = runtime.database
+        chatRepository = runtime.chatRepository
         val savedToken = preferenceManager.loadAuthToken()
         bridgeClient = TermuxBridgeClient.getInstance(context, savedToken)
         agentEngine = AutonomousAgentEngine(
             bridgeClient = bridgeClient,
             preferenceManager = preferenceManager,
-            chatRepository = chatRepository
+            chatRepository = chatRepository,
+            memoryStore = runtime.memoryStore,
+            platform = runtime.platform
         )
         bridgeClient.connect(savedToken)
+        // Re-arm the heartbeat after app updates or reinstalls.
+        if (preferenceManager.loadHeartbeatEnabled()) {
+            runtime.scheduler.scheduleHeartbeat(preferenceManager.loadHeartbeatIntervalMinutes())
+        }
         isInitialized = true
     }
 
@@ -108,11 +117,23 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Start Foreground Service
-        AgentForegroundService.start(this)
+        val legalAlreadyAccepted = preferenceManager.loadAcceptedLegalVersion() >= LegalTexts.VERSION
+        // Start the foreground service only after the user accepted the terms.
+        if (legalAlreadyAccepted) AgentForegroundService.start(this)
 
         setContent {
             AutonomousAgentTheme {
+                var legalAccepted by remember { mutableStateOf(legalAlreadyAccepted) }
+                if (!legalAccepted) {
+                    LegalConsentScreen(
+                        onAccept = {
+                            preferenceManager.saveAcceptedLegalVersion(LegalTexts.VERSION)
+                            legalAccepted = true
+                            AgentForegroundService.start(this@MainActivity)
+                        },
+                        onDecline = { finish() }
+                    )
+                } else {
                 var selectedTab by remember { mutableIntStateOf(0) }
                 var currentToken by remember { mutableStateOf(savedToken) }
                 var showTutorial by remember {
@@ -276,6 +297,7 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     }
+                }
                 }
             }
         }

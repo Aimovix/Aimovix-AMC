@@ -35,6 +35,7 @@ import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.data.repository.ChatRepository
 import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.service.scheduler.SchedulerManager
+import com.agent.mobile.ui.settings.components.AutonomyCard
 import com.agent.mobile.ui.settings.components.CronSyncCard
 import com.agent.mobile.ui.settings.components.SecurityCockpitCard
 import com.agent.mobile.ui.theme.*
@@ -497,6 +498,14 @@ fun SettingsScreen(
                 }
             }
 
+            // Section 3b: Autonomy (step budget, heartbeat, memory, scheduled agent tasks)
+            AutonomyCard(
+                agentEngine = agentEngine,
+                preferenceManager = preferenceManager,
+                memoryStore = agentEngine.memoryStore,
+                schedulerManager = schedulerManager
+            )
+
             // Section 4: Security Cockpit & Guardrails
             SecurityCockpitCard(
                 agentEngine = agentEngine,
@@ -510,6 +519,47 @@ fun SettingsScreen(
                     bridgeClient = bridgeClient,
                     schedulerManager = schedulerManager
                 )
+            }
+
+            // Section 5b: Legal & privacy
+            var showLegal by remember { mutableStateOf(false) }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = DarkCard,
+                border = BorderStroke(1.dp, BorderSubtle)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Legal & privacy",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold, color = TextWhite)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        val acceptedAt = preferenceManager.loadAcceptedLegalAt()
+                        Text(
+                            text = "Terms of use, disclaimer and privacy notice" +
+                                if (acceptedAt > 0) " · accepted " + java.text.DateFormat.getDateInstance().format(java.util.Date(acceptedAt)) else "",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.5.sp)
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { showLegal = true },
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, AccentPrimary.copy(alpha = 0.5f)),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Default.Gavel, contentDescription = null, modifier = Modifier.size(16.dp), tint = AccentPrimary)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Read", color = TextWhite, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                    }
+                }
+            }
+            if (showLegal) {
+                com.agent.mobile.ui.legal.LegalTextsDialog(onDismiss = { showLegal = false })
             }
 
             // Section 6: App Walkthrough & Tutorial

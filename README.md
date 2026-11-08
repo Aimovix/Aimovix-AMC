@@ -38,7 +38,7 @@ bash setup-amc.sh
 The installer downloads from `main` by default. To pin a specific release tag or branch:
 
 ```bash
-AMC_REF=v1.2.4 bash setup-amc.sh
+AMC_REF=v1.3.0 bash setup-amc.sh
 ```
 
 To test a development branch with local files, clone that branch and run its local installer:
@@ -64,10 +64,23 @@ In **Settings**, choose a provider, enter a model ID and API key, then save. You
 
 Model suggestions are editable examples, not a live availability catalog. Check your provider account for supported models and pricing. A model must support the features used by your task, such as images or tool calls.
 
+## Autonomous agent
+
+AMC works like a self-hosted personal agent on your phone: give it a goal and it plans, acts, checks the results and keeps going until the task is done.
+
+- **Agent loop:** the model calls tools, reads the results, recovers from errors (installing missing packages, trying a different approach) and finishes with a summary. The step budget is configurable (**Settings → Autonomy**, 5–100 steps, default 30). After repeated failures the agent is told to rethink its approach; real loops are stopped.
+- **Tools:** `execute_command` (Termux shell and Termux:API, optional timeout up to 30 minutes), `read_file`, `write_file`, `web_fetch` (native HTTP, HTML converted to text), `remember` / `forget` (long-term memory), `update_plan` (live checklist in the chat), `notify_user` (Android notification), and `schedule_task` / `list_scheduled_tasks` / `cancel_scheduled_task`.
+- **Long-term memory:** the agent saves stable facts about you (name, preferences, devices, recurring tasks) and sees them in every new conversation. View, edit or clear it in **Settings → Autonomy**. Secrets are never meant to be stored there.
+- **Scheduled agent tasks:** ask, for example, *"Remind me every day at 8 to take my medication"* or *"Check the weather every two hours and tell me if it will rain"*. The agent schedules itself; each background run gets its own chat session and ends with a notification.
+- **Heartbeat:** optional periodic check-in (15 minutes to 12 hours). The agent works through your checklist and only notifies you when something needs attention; quiet runs leave no trace.
+- **Skills:** reusable how-to files in `~/.amc/skills/` (created by the installer). The agent consults them for recurring tasks and writes new ones after solving something it is likely to need again.
+- **Steering:** you can keep typing while the agent works; the message is queued and picked up before its next step.
+- **Your language:** the agent answers in the language you write in.
+
 ## Using AMC
 
 - **Chat:** submit a task, attach an image, or use a quick action.
-- **Security presets:** inspired by Google Antigravity, choose between **Default** (manual review for terminal commands and out-of-folder files), **Full machine** (manual review for commands, full device file access), **Turbo mode** (disables approval barriers for maximal iteration velocity), and **Custom** (granular control with strict mode, custom allowlists, and blocklists).
+- **Security presets:** choose between **Autonomous** (default; routine work runs on its own, while SMS, calls, camera, location, clipboard, deleting files and killing processes still ask first), **Supervised** (every action needs approval), **Full machine** (manual review for commands, full device file access), **Turbo mode** (no approval prompts at all; only catastrophic commands stay blocked), and **Custom** (granular control with strict mode, custom allowlists, and blocklists). Background runs can never approve themselves: actions that need approval are skipped and listed in the result notification.
 - **Strict mode:** available in Custom preset; requires approval for every agent command, even operations covered by a custom allowlist.
 - **Emergency stop:** requests cancellation through the active bridge connection. The bridge handles controls while commands run and terminates the command's process group. The UI reports a request rather than claiming immediate completion.
 - **Terminal:** manually enter commands and use `CTRL-C` to interrupt them. Commands entered here are direct user actions; the catastrophic blocklist still applies.
@@ -81,7 +94,7 @@ Model suggestions are editable examples, not a live availability catalog. Check 
 | --- | --- | --- |
 | Google Gemini | Gemini API | Streaming and function calls |
 | OpenAI | Chat Completions API | Streaming, tool calls, and compatible image models |
-| Anthropic Claude | Messages API | Streaming and supported image inputs |
+| Anthropic Claude | Messages API | Streaming, tool use, image inputs, prompt caching of the system prompt and tools |
 | Groq | OpenAI-compatible API | Model capabilities vary |
 | OpenRouter | OpenAI-compatible API | Model and provider capabilities vary |
 | Local server | OpenAI-compatible HTTP endpoint on loopback | Requires a separately running inference server |
@@ -119,6 +132,17 @@ amc run         # Run in the foreground
 **WorkManager** supports one-time and recurring command jobs with network and charging constraints. Before execution, a worker loads the stored security rules, checks whether approval is required, waits for authenticated connection, and releases the connection when finished. Jobs needing approval are rejected with a notification; they cannot silently approve themselves.
 
 **Termux crontab** is a separate, manually managed scheduler. Synchronizing a crontab installs the user's supplied schedule. Cron commands subsequently run outside AMC's interactive approval flow and are not stopped by the chat's emergency-stop control. Inspect every entry before syncing, and remove entries explicitly when no longer needed.
+
+## Legal
+
+On first launch AMC shows its terms of use, disclaimer and privacy notice (English and German); the app can only be used after all three confirmations are ticked, and the texts can be reread in **Settings → Legal & privacy**. Raising `LegalTexts.VERSION` asks every user to accept a changed version.
+
+- Actions that involve other people or cost money (sending SMS, phone calls, reading messages, contacts or call logs, camera photos, microphone recordings) **always** require your confirmation, in every security mode including Turbo and Custom allowlists, and are never performed in unattended background runs.
+- The agent's system prompt refuses clearly illegal tasks (spam, harassment, covert surveillance, unauthorized access, piracy) and treats other people's data as personal data.
+- Documents: [terms](docs/legal/TERMS.md) ([German](docs/legal/TERMS.de.md)), [privacy notice](docs/legal/PRIVACY.md) ([German](docs/legal/PRIVACY.de.md)), [third-party notices](docs/legal/THIRD_PARTY_NOTICES.md), and a note on when a German imprint is required.
+- AMC is a private, non-commercial open-source hobby project with no income. It is not affiliated with or endorsed by any AI provider or by Termux. Contact: GitHub issues.
+- License: [MIT](LICENSE). The software is provided "as is", without warranty.
+- These texts are not legal advice. If the project ever earns money (sales, ads, sponsorships), revisit the imprint note in [IMPRESSUM.de.md](docs/legal/IMPRESSUM.de.md).
 
 ## Security boundaries
 

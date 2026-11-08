@@ -13,7 +13,19 @@ enum class RiskLevel(val displayName: String, val colorHex: Long) {
 data class SecurityAssessment(
     val level: RiskLevel,
     val reason: String,
-    val isBlocked: Boolean = level == RiskLevel.BLOCKED
+    val isBlocked: Boolean = level == RiskLevel.BLOCKED,
+    /**
+     * True when the action itself is sensitive (privacy, deletion, process control, obfuscation).
+     * HIGH assessments that only mean "not on the small diagnostic allowlist" are not sensitive;
+     * the Autonomous preset runs those without asking.
+     */
+    val sensitive: Boolean = level == RiskLevel.HIGH,
+    /**
+     * Actions that affect other people or cost money (SMS, calls, reading contacts/messages,
+     * camera, microphone). They always need the user's personal confirmation, in every preset
+     * including Turbo, and are never executed in unattended background runs.
+     */
+    val alwaysConfirm: Boolean = false
 )
 
 object CommandSecurityFilter {
@@ -21,6 +33,8 @@ object CommandSecurityFilter {
     private val ZERO_WIDTH_REGEX = Regex("[\u200B-\u200D\uFEFF\u0000]")
     private val IFS_REGEX = Regex("""\$(?:\{IFS[^}]*\}|IFS(?:\$9)?)""")
     private val MULTI_SLASH_REGEX = Regex("/{2,}")
+    // `$cmd args`, `x=1; ${CMD}`, `foo | $X` ... a variable in command position.
+    private val INDIRECT_COMMAND_REGEX = Regex("""(^|[;&|(\n]|\$\()\s*(\w+=\S*\s+)*\$[{A-Za-z_]""")
 
     // Blacklist: Commands that cause catastrophic, irreversible damage or malicious remote execution
     private val BLACKLIST_PATTERNS = listOf(
@@ -77,6 +91,17 @@ object CommandSecurityFilter {
         Pair(Pattern.compile(">>|\\bcat\\s+<<"), "Creating files / appending data")
     )
 
+    // Third-party data, communication and recording: always confirmed by the user (legal safeguard).
+    private val ALWAYS_CONFIRM_PATTERNS = listOf(
+        Pair(Pattern.compile("\\btermux-sms-send\\b"), "Sends an SMS to another person (may cost money)"),
+        Pair(Pattern.compile("\\btermux-sms-(list|inbox)\\b"), "Reads private messages from and to other people"),
+        Pair(Pattern.compile("\\btermux-telephony-call\\b"), "Places a phone call (may cost money)"),
+        Pair(Pattern.compile("\\btermux-contact-list\\b"), "Reads other people's contact data"),
+        Pair(Pattern.compile("\\btermux-call-log\\b"), "Reads the call history with other people"),
+        Pair(Pattern.compile("\\btermux-microphone-record\\b"), "Records audio (recording others without consent can be illegal)"),
+        Pair(Pattern.compile("\\btermux-camera-photo\\b"), "Takes a photo (photographing others may need their consent)")
+    )
+
     private var customWhitelist = listOf<Pattern>()
     private var customBlacklist = listOf<Pattern>()
     private var isStrictMode = false
@@ -98,6 +123,21 @@ object CommandSecurityFilter {
     }
 
     fun analyze(command: String): SecurityAssessment {
+        val base = analyzeRisk(command)
+        if (base.isBlocked) return base
+        val normalized = normalizeCommand(command.trim())
+        val legal = ALWAYS_CONFIRM_PATTERNS.firstOrNull { (pattern, _) ->
+            pattern.matcher(command).find() || pattern.matcher(normalized).find()
+        } ?: return base
+        return SecurityAssessment(
+            level = RiskLevel.HIGH,
+            reason = "${legal.second}. Always requires your confirmation.",
+            sensitive = true,
+            alwaysConfirm = true
+        )
+    }
+
+    private fun analyzeRisk(command: String): SecurityAssessment {
         val trimmed = command.trim()
         val normalized = normalizeCommand(trimmed)
 
@@ -151,10 +191,15 @@ object CommandSecurityFilter {
             }
         }
 
+        // A command name taken from a variable or backticks hides what actually runs.
+        if (INDIRECT_COMMAND_REGEX.containsMatchIn(trimmed) || trimmed.contains('\u0060')) {
+            return SecurityAssessment(RiskLevel.HIGH, "Command name hidden in a variable or backticks.")
+        }
+
         // Shell syntax and scripts can hide side effects; never whitelist them.
         if (trimmed.any { it in "$" + "\u0060;&|<>(){}\n\r\\" } ||
             Regex("""\b(python[0-9.]*|bash|sh|node|perl|ruby)\b""").containsMatchIn(normalized)) {
-            return SecurityAssessment(RiskLevel.HIGH, "Shell composition or executable code requires approval.")
+            return SecurityAssessment(RiskLevel.HIGH, "Shell composition or executable code requires approval.", sensitive = false)
         }
 
         val commandName = normalized.substringBefore(' ')
@@ -166,7 +211,8 @@ object CommandSecurityFilter {
             if (pattern.matcher(trimmed).find() || pattern.matcher(normalized).find()) {
                 return SecurityAssessment(
                     level = if (!recognizedMedium) RiskLevel.HIGH else if (customWhitelist.any { it.matcher(trimmed).matches() }) RiskLevel.LOW else RiskLevel.MEDIUM,
-                    reason = desc
+                    reason = desc,
+                    sensitive = false
                 )
             }
         }
@@ -176,7 +222,7 @@ object CommandSecurityFilter {
         return if (diagnostic.matches(trimmed)) {
             SecurityAssessment(RiskLevel.LOW, "Recognized diagnostic command.")
         } else {
-            SecurityAssessment(RiskLevel.HIGH, "Unrecognized command requires approval.")
+            SecurityAssessment(RiskLevel.HIGH, "Unrecognized command requires approval.", sensitive = false)
         }
     }
 
@@ -343,8 +389,12 @@ object CommandSecurityFilter {
      */
     fun shouldRequireApproval(assessment: SecurityAssessment, preset: SecurityPreset): Boolean {
         if (assessment.isBlocked) return false
+        if (assessment.alwaysConfirm) return true
         return when (preset) {
             SecurityPreset.TURBO -> false
+            // Autonomous: routine work (reading, writing, scripts, installs, downloads) runs on its own;
+            // privacy-sensitive and destructive actions still need the user.
+            SecurityPreset.AUTONOMOUS -> assessment.level == RiskLevel.HIGH && assessment.sensitive
             SecurityPreset.DEFAULT -> true
             SecurityPreset.FULL_MACHINE -> true
             SecurityPreset.CUSTOM -> {

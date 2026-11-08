@@ -45,6 +45,7 @@ import androidx.compose.ui.window.Dialog
 import com.agent.mobile.agent.AutonomousAgentEngine
 import com.agent.mobile.data.model.*
 import com.agent.mobile.data.network.TermuxBridgeClient
+import com.agent.mobile.ui.chat.components.AgentProgressPanel
 import com.agent.mobile.ui.chat.components.ArtifactViewerDialog
 import com.agent.mobile.ui.chat.components.MessageBubble
 import com.agent.mobile.ui.chat.components.QuickActionToolbar
@@ -77,6 +78,10 @@ fun ChatScreen(
     val artifacts by agentEngine.artifacts.collectAsState()
     val metrics by agentEngine.metrics.collectAsState()
     val pendingApproval by agentEngine.pendingApproval.collectAsState()
+    val plan by agentEngine.plan.collectAsState()
+    val currentStep by agentEngine.currentStep.collectAsState()
+    val maxSteps by agentEngine.maxSteps.collectAsState()
+    val queuedInputs by agentEngine.queuedInputs.collectAsState()
 
     var inputText by remember { mutableStateOf("") }
     var showModelPickerDialog by remember { mutableStateOf(false) }
@@ -239,6 +244,7 @@ fun ChatScreen(
                             Box {
                                 val isTurbo = securityPreset == SecurityPreset.TURBO
                                 val presetIcon = when (securityPreset) {
+                                    SecurityPreset.AUTONOMOUS -> Icons.Default.SmartToy
                                     SecurityPreset.DEFAULT -> Icons.Default.Shield
                                     SecurityPreset.FULL_MACHINE -> Icons.Default.Storage
                                     SecurityPreset.TURBO -> Icons.Default.Bolt
@@ -291,6 +297,7 @@ fun ChatScreen(
                                                 Column(modifier = Modifier.padding(vertical = 2.dp)) {
                                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                                         val icon = when (preset) {
+                                                            SecurityPreset.AUTONOMOUS -> Icons.Default.SmartToy
                                                             SecurityPreset.DEFAULT -> Icons.Default.Shield
                                                             SecurityPreset.FULL_MACHINE -> Icons.Default.Storage
                                                             SecurityPreset.TURBO -> Icons.Default.Bolt
@@ -523,7 +530,7 @@ fun ChatScreen(
                                         )
                                     )
                                     Text(
-                                        text = "Multimodal AI agent with a direct Termux shell bridge\nand automatic provider fallback.",
+                                        text = "Autonomous agent for your phone: give it a task and it plans,\nruns Termux commands, remembers and follows up on its own.",
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             color = TextMuted,
                                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -543,6 +550,15 @@ fun ChatScreen(
                         )
                     }
                 }
+
+                // Live plan / progress of the autonomous run
+                AgentProgressPanel(
+                    plan = plan,
+                    isBusy = isBusy,
+                    currentStep = currentStep,
+                    maxSteps = maxSteps,
+                    queuedInputs = queuedInputs
+                )
 
                 // Quick Action Hardware Toolbar
                 QuickActionToolbar(
@@ -646,7 +662,11 @@ fun ChatScreen(
                                 onValueChange = { inputText = it },
                                 placeholder = {
                                     Text(
-                                        if (pendingImageBitmap != null) "Ask about the image..." else "Enter a command or task...",
+                                        when {
+                                            pendingImageBitmap != null -> "Ask about the image..."
+                                            isBusy -> "Add instructions while the agent works..."
+                                            else -> "Give the agent a task..."
+                                        },
                                         fontSize = 12.5.sp,
                                         color = TextMuted,
                                         maxLines = 1,
@@ -667,7 +687,7 @@ fun ChatScreen(
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                                 keyboardActions = KeyboardActions(
                                     onSend = {
-                                        if ((inputText.isNotBlank() || pendingImageBase64 != null) && !isBusy) {
+                                        if (inputText.isNotBlank() || pendingImageBase64 != null) {
                                             val prompt = inputText.trim().ifEmpty { "Analyze the attached image." }
                                             val imgB64 = pendingImageBase64
                                             val mime = pendingImageMimeType
@@ -718,7 +738,7 @@ fun ChatScreen(
                             )
 
                             // Send Button
-                            val canSend = (inputText.isNotBlank() || pendingImageBase64 != null) && !isBusy
+                            val canSend = inputText.isNotBlank() || pendingImageBase64 != null
                             Surface(
                                 onClick = {
                                     if (canSend) {

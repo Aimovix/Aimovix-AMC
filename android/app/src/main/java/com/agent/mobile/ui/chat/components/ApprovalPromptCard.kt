@@ -28,7 +28,7 @@ fun ApprovalPromptCard(
     onReject: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val command = toolCall.arguments["command"] ?: ""
+    val command = com.agent.mobile.agent.AgentTools.approvalPreview(toolCall)
     val isHighRisk = toolCall.riskLevel == "HIGH"
     val badgeColor = if (isHighRisk) RedEmergency else YellowWarning
 
