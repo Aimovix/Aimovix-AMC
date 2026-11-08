@@ -1,7 +1,7 @@
 package com.agent.mobile.ui.chat.components
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -10,10 +10,11 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.agent.mobile.ui.theme.*
 
 data class QuickAction(
@@ -29,17 +30,17 @@ fun QuickActionToolbar(
 ) {
     val actions = listOf(
         QuickAction(
-            label = "Battery status",
+            label = "Battery",
             icon = Icons.Default.BatteryChargingFull,
             prompt = "Check my battery level and tell me whether the phone is charging."
         ),
         QuickAction(
-            label = "Wi-Fi info",
+            label = "Wi-Fi",
             icon = Icons.Default.Wifi,
             prompt = "Show details of my Wi-Fi connection (SSID, IP address, signal strength)."
         ),
         QuickAction(
-            label = "Camera photo",
+            label = "Photo",
             icon = Icons.Default.CameraAlt,
             prompt = "Take a photo with the rear camera and save it in the Termux home directory."
         ),
@@ -49,12 +50,12 @@ fun QuickActionToolbar(
             prompt = "Read the current Android clipboard."
         ),
         QuickAction(
-            label = "Notification",
+            label = "Notify",
             icon = Icons.Default.Notifications,
             prompt = "Send an Android notification titled 'AMC Agent' with the text 'Ready'."
         ),
         QuickAction(
-            label = "Read aloud (TTS)",
+            label = "Read aloud",
             icon = Icons.AutoMirrored.Filled.VolumeUp,
             prompt = "Read your last response aloud through the phone speaker."
         )
@@ -64,36 +65,36 @@ fun QuickActionToolbar(
         modifier = modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         actions.forEach { action ->
+            val source = remember(action.label) { MutableInteractionSource() }
             Surface(
                 onClick = { onActionSelected(action.prompt) },
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(percent = 50),
                 color = DarkCard,
-                border = BorderStroke(1.dp, BorderSubtle)
+                interactionSource = source,
+                modifier = Modifier.pressScale(source)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
                         imageVector = action.icon,
                         contentDescription = null,
-                        tint = AccentPrimary,
-                        modifier = Modifier.size(13.dp)
+                        tint = TextSecondary,
+                        modifier = Modifier.size(16.dp)
                     )
                     Text(
                         text = action.label,
-                        fontSize = 11.sp,
-                        color = TextSecondary,
-                        style = MaterialTheme.typography.labelMedium
+                        style = MaterialTheme.typography.labelLarge,
+                        color = TextWhite
                     )
                 }
             }
         }
     }
 }
-

@@ -1,26 +1,23 @@
 package com.agent.mobile.ui.chat.components
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Shield
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.agent.mobile.agent.AgentTools
 import com.agent.mobile.data.model.ToolCall
 import com.agent.mobile.ui.theme.*
 
+/**
+ * Asks before the agent runs something. Both answers have the same size, shape and surface, and
+ * the labels say exactly what happens. The full command is always shown and can be scrolled.
+ * Only the text colour of "Run" changes, and only for high-risk actions, to show the risk.
+ */
 @Composable
 fun ApprovalPromptCard(
     toolCall: ToolCall,
@@ -28,124 +25,59 @@ fun ApprovalPromptCard(
     onReject: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val command = com.agent.mobile.agent.AgentTools.approvalPreview(toolCall)
-    val isHighRisk = toolCall.riskLevel == "HIGH"
-    val badgeColor = if (isHighRisk) RedEmergency else YellowWarning
+    val preview = AgentTools.approvalPreview(toolCall)
+    val highRisk = toolCall.riskLevel == "HIGH"
+    val haptics = LocalHapticFeedback.current
+    val answerColors = ButtonDefaults.filledTonalButtonColors(containerColor = DarkCardElevated, contentColor = TextWhite)
 
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(10.dp),
-        color = DarkCardElevated,
-        border = BorderStroke(1.dp, if (isHighRisk) RedEmergency.copy(alpha = 0.5f) else BorderSubtle)
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Shield,
-                        contentDescription = "Security",
-                        tint = badgeColor,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (isHighRisk) "Security approval" else "Confirm action",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TextWhite
-                        ),
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Surface(
-                    shape = RoundedCornerShape(4.dp),
-                    color = badgeColor.copy(alpha = 0.15f)
-                ) {
-                    Text(
-                        text = if (isHighRisk) "High risk" else "Review required",
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = badgeColor
-                    )
-                }
-            }
-
+    Surface(modifier = modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium, color = DarkCard) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = if (highRisk) "Check this before it runs" else "Allow this action?",
+                style = MaterialTheme.typography.titleMedium
+            )
             if (toolCall.riskReason.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = toolCall.riskReason,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        color = badgeColor,
-                        fontWeight = FontWeight.Medium
-                    )
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (highRisk) RedText else TextSecondary
                 )
             }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Command snippet box
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(6.dp),
-                color = TerminalBg,
-                border = BorderStroke(1.dp, BorderSubtle)
-            ) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Surface(shape = MaterialTheme.shapes.small, color = TerminalBg, modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = command,
-                    color = TextWhite,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(10.dp)
+                    text = preview,
+                    style = CodeStyle,
+                    modifier = Modifier
+                        .padding(12.dp)
+                        .heightIn(max = 180.dp)
+                        .verticalScroll(rememberScrollState())
                 )
             }
-
             Spacer(modifier = Modifier.height(14.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedButton(
-                    onClick = onReject,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
-                    border = BorderStroke(1.dp, BorderSubtle),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FilledTonalButton(
+                    onClick = {
+                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onReject()
+                    },
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    shape = MaterialTheme.shapes.medium,
+                    colors = answerColors
                 ) {
-                    Icon(imageVector = Icons.Default.Close, contentDescription = null, modifier = Modifier.size(13.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Reject", fontSize = 11.5.sp)
+                    Text("Don't run", style = MaterialTheme.typography.labelLarge, color = TextWhite)
                 }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Button(
-                    onClick = onApprove,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isHighRisk) RedEmergency else AccentPrimary,
-                        contentColor = if (isHighRisk) Color.White else Color.Black
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                FilledTonalButton(
+                    onClick = {
+                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onApprove()
+                    },
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    shape = MaterialTheme.shapes.medium,
+                    colors = answerColors
                 ) {
-                    Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(13.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Run", fontWeight = FontWeight.Bold, fontSize = 11.5.sp)
+                    Text("Run", style = MaterialTheme.typography.labelLarge, color = if (highRisk) RedText else TextWhite)
                 }
             }
         }

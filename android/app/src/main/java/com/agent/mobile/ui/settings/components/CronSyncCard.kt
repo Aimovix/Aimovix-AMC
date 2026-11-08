@@ -142,7 +142,7 @@ fun CronSyncCard(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "⚠️ The cron daemon 'crond' is not running in Termux. Start it with: crond",
+                            text = "The cron daemon 'crond' is not running in Termux. Start it with: crond",
                             color = YellowWarning,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(8.dp)
@@ -156,7 +156,7 @@ fun CronSyncCard(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "⚠️ The 'cronie' package is not installed in Termux. Install with: pkg install cronie",
+                            text = "The 'cronie' package is not installed in Termux. Install with: pkg install cronie",
                             color = RedEmergency,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(8.dp)
@@ -193,9 +193,9 @@ fun CronSyncCard(
                                 try {
                                     val res = bridgeClient.setCrontab(crontabContent)
                                     if (res.exitCode == 0) {
-                                        Toast.makeText(context, "✅ Crontab synchronized", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Crontab synchronized", Toast.LENGTH_SHORT).show()
                                     } else {
-                                        Toast.makeText(context, "⚠️ Error: ${res.stderr}", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(context, "Error: ${res.stderr}", Toast.LENGTH_LONG).show()
                                     }
                                 } finally {
                                     isSavingCron = false
@@ -304,7 +304,7 @@ fun CronSyncCard(
                                 requiresCharging = requireCharging,
                                 requiresBatteryNotLow = true
                             )
-                            Toast.makeText(context, "✅ Scheduled: '$workflowTitle' every ${interval}h", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Scheduled: '$workflowTitle' every ${interval}h", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp),
@@ -330,7 +330,7 @@ fun CronSyncCard(
                                 requiresCharging = requireCharging,
                                 requiresBatteryNotLow = true
                             )
-                            Toast.makeText(context, "✅ One-time task queued", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "One-time task queued", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp),

@@ -643,7 +643,7 @@ fun SettingsScreen(
                         )
                     }
                     focusManager.clearFocus()
-                    Toast.makeText(context, "✅ Saved: ${selectedProvider.displayName} (${finalModel})", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Saved: ${selectedProvider.displayName} (${finalModel})", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier
                     .fillMaxWidth()

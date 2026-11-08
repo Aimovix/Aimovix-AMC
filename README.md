@@ -38,7 +38,7 @@ bash setup-amc.sh
 The installer downloads from `main` by default. To pin a specific release tag or branch:
 
 ```bash
-AMC_REF=v1.4.1 bash setup-amc.sh
+AMC_REF=v1.5.0 bash setup-amc.sh
 ```
 
 To test a development branch with local files, clone that branch and run its local installer:

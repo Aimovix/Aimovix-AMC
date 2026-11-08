@@ -21,8 +21,8 @@ jobs:
     permissions:
       contents: write
     env:
-      VERSION: '1.4.1'
-      TAG: v1.4.1
+      VERSION: '1.5.0'
+      TAG: v1.5.0
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,7 +37,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Validate version
         run: |
-          grep -q 'versionName = "1.4.1"' android/app/build.gradle.kts
+          grep -q 'versionName = "1.5.0"' android/app/build.gradle.kts
       - name: Bridge tests
         run: |
           python -m pip install -r termux-bridge/requirements.txt
@@ -114,7 +114,7 @@ jobs:
           if gh release view "$TAG" --json targetCommitish,isPrerelease,isDraft > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
             echo "Release $TAG exists. Updating release assets and notes."
           else
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "AMC $TAG - Reliable Termux connection" --notes-file "$RUNNER_TEMP/release-notes.md" --draft
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "AMC $TAG - Calmer design" --notes-file "$RUNNER_TEMP/release-notes.md" --draft
           fi
           gh release upload "$TAG" dist/*.apk dist/*.zip dist/SHA256SUMS.txt --clobber
           if [[ "$SIGNED_RELEASE" == "true" ]]; then

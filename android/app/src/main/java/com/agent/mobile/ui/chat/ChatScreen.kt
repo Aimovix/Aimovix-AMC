@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -46,6 +47,7 @@ import com.agent.mobile.agent.AutonomousAgentEngine
 import com.agent.mobile.data.model.*
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.ui.chat.components.AgentProgressPanel
+import com.agent.mobile.ui.chat.components.ConnectionBanner
 import com.agent.mobile.ui.chat.components.ArtifactViewerDialog
 import com.agent.mobile.ui.chat.components.MessageBubble
 import com.agent.mobile.ui.chat.components.QuickActionToolbar
@@ -159,80 +161,36 @@ fun ChatScreen(
                         },
                         title = {
                             Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = currentSession?.title?.take(18) ?: "AMC",
-                                        style = MaterialTheme.typography.titleMedium.copy(
-                                            fontSize = 15.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = TextWhite
-                                        ),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-
-                                    // Quick Model Selector Pill
-                                    Surface(
-                                        onClick = { showModelPickerDialog = true },
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = DarkCard,
-                                        border = BorderStroke(1.dp, BorderSubtle),
-                                        modifier = Modifier.widthIn(max = 120.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = modelConfig.modelName.ifEmpty { modelConfig.provider.defaultModel }.take(14),
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    color = TextSecondary,
-                                                    fontFamily = FontFamily.Monospace,
-                                                    fontSize = 9.5.sp
-                                                ),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.weight(1f, fill = false)
-                                            )
-                                            Icon(
-                                                imageVector = Icons.Default.ArrowDropDown,
-                                                contentDescription = "Switch model",
-                                                tint = TextMuted,
-                                                modifier = Modifier.size(12.dp)
-                                            )
-                                        }
-                                    }
+                                Text(
+                                    text = currentSession?.title?.take(28)?.takeIf { it.isNotBlank() } ?: "AMC",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                // Connection and model on one quiet line; tap it to change the model.
+                                val (dotColor, statusLabel) = when (connectionStatus) {
+                                    is ConnectionStatus.Connected -> Pair(StatusOnline, "Connected")
+                                    is ConnectionStatus.Connecting -> Pair(YellowWarning, "Connecting")
+                                    is ConnectionStatus.AuthFailed -> Pair(RedEmergency, "Token mismatch")
+                                    else -> Pair(TextMuted, "Offline")
                                 }
-
-                                // Status row: Termux connection & metrics
+                                val costSuffix = if (metrics.estimatedCostUsd > 0.0) {
+                                    " · \$${String.format(Locale.US, "%.4f", metrics.estimatedCostUsd)}"
+                                } else ""
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(top = 2.dp)
+                                    modifier = Modifier.clickable { showModelPickerDialog = true }
                                 ) {
-                                    val (dotColor, statusLabel) = when (connectionStatus) {
-                                        is ConnectionStatus.Connected -> Pair(StatusOnline, "Connected")
-                                        is ConnectionStatus.Connecting -> Pair(YellowWarning, "Connecting...")
-                                        is ConnectionStatus.AuthFailed -> Pair(RedEmergency, "Authentication error")
-                                        else -> Pair(TextMuted, "Disconnected")
-                                    }
                                     Box(
                                         modifier = Modifier
-                                            .size(5.dp)
+                                            .size(6.dp)
                                             .clip(CircleShape)
                                             .background(dotColor)
                                     )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    val costSuffix = if (metrics.estimatedCostUsd > 0.0) {
-                                        " • \$${String.format(Locale.US, "%.4f", metrics.estimatedCostUsd)}"
-                                    } else ""
+                                    Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = "Termux • $statusLabel$costSuffix",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontSize = 9.5.sp,
-                                            color = TextMuted
-                                        ),
+                                        text = "$statusLabel · ${modelConfig.modelName.ifEmpty { modelConfig.provider.defaultModel }}$costSuffix",
+                                        style = MaterialTheme.typography.labelMedium,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -359,7 +317,7 @@ fun ChatScreen(
                         contentColor = Color.White,
                         shape = RoundedCornerShape(12.dp),
                         icon = { Icon(Icons.Default.Stop, contentDescription = "Emergency stop") },
-                        text = { Text("STOP", fontWeight = FontWeight.Bold) }
+                        text = { Text("Stop") }
                     )
                 }
             }
@@ -369,92 +327,26 @@ fun ChatScreen(
                     .fillMaxSize()
                     .padding(paddingValues)
             ) {
-                // Termux status banner when not connected
-                if (connectionStatus !is ConnectionStatus.Connected) {
-                    val bannerColor = when (connectionStatus) {
-                        is ConnectionStatus.AuthFailed -> RedEmergency
-                        is ConnectionStatus.Error -> RedEmergency
-                        else -> YellowWarning
-                    }
-                    val bannerText = when (connectionStatus) {
-                        is ConnectionStatus.Connecting -> "Connecting to Termux (ws://127.0.0.1:8765)..."
-                        is ConnectionStatus.AuthFailed -> "Authentication error: token does not match"
-                        is ConnectionStatus.Error -> "Termux unavailable (run 'amc start' in Termux)"
-                        else -> "Termux bridge is not running"
-                    }
-
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        color = DarkCard,
-                        border = BorderStroke(1.dp, bannerColor.copy(alpha = 0.3f))
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(
-                                    if (connectionStatus is ConnectionStatus.Error || connectionStatus is ConnectionStatus.AuthFailed) Icons.Default.ErrorOutline else Icons.Default.Warning,
-                                    contentDescription = null,
-                                    tint = bannerColor,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = bannerText,
-                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp, color = TextSecondary),
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                if (connectionStatus is ConnectionStatus.Connecting) {
-                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = AccentPrimary)
-                                } else {
-                                    TextButton(
-                                        onClick = {
-                                            coroutineScope.launch {
-                                                bridgeClient.forceReconnect()
-                                                if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) {
-                                                    bridgeClient.triggerBoost()
-                                                    android.widget.Toast.makeText(context, "🚀 Termux boost requested.", android.widget.Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    if (!TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")) {
-                                                        try {
-                                                            context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
-                                                        } catch (e: Exception) {
-                                                            // ignore
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        },
-                                        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)
-                                    ) {
-                                        Text("Boost", color = TerminalGreen, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                    TextButton(
-                                        onClick = { bridgeClient.reconnectIfDisconnected(force = true) },
-                                        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)
-                                    ) {
-                                        Text("Connect", color = AccentPrimary, fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
-                                    }
+                // Connection banner: only while Termux is not reachable
+                ConnectionBanner(
+                    status = connectionStatus,
+                    onReconnect = { bridgeClient.reconnectIfDisconnected(force = true) },
+                    onBoost = {
+                        coroutineScope.launch {
+                            bridgeClient.forceReconnect()
+                            if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) {
+                                bridgeClient.triggerBoost()
+                                android.widget.Toast.makeText(context, "Termux boost requested.", android.widget.Toast.LENGTH_SHORT).show()
+                            } else if (!TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")) {
+                                try {
+                                    context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
+                                } catch (e: Exception) {
+                                    // ignore
                                 }
                             }
                         }
                     }
-                }
+                )
 
                 // Discovered Artifacts Strip
                 if (artifacts.isNotEmpty()) {
@@ -516,25 +408,16 @@ fun ChatScreen(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Terminal,
-                                        contentDescription = null,
-                                        tint = AccentPrimary.copy(alpha = 0.6f),
-                                        modifier = Modifier.size(48.dp)
+                                    Text(
+                                        text = "What should the agent do?",
+                                        style = MaterialTheme.typography.headlineSmall,
+                                        color = TextWhite
                                     )
                                     Text(
-                                        text = "AMC Autonomous Mobile Agent",
-                                        style = MaterialTheme.typography.titleMedium.copy(
-                                            color = TextWhite,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    )
-                                    Text(
-                                        text = "Autonomous agent for your phone: give it a task and it plans,\nruns Termux commands, remembers and follows up on its own.",
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            color = TextMuted,
-                                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                        )
+                                        text = "Give it a task. It plans, runs commands on this phone, checks the results and reports back.",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = TextMuted,
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
                                     )
                                 }
                             }
@@ -544,6 +427,7 @@ fun ChatScreen(
                     items(messages, key = { it.id }) { msg ->
                         MessageBubble(
                             message = msg,
+                            modifier = Modifier.animateItem(),
                             pendingApproval = pendingApproval,
                             onApproveTool = { toolId -> agentEngine.approvePendingAction(toolId) },
                             onRejectTool = { toolId -> agentEngine.rejectPendingAction(toolId) }
@@ -703,7 +587,7 @@ fun ChatScreen(
                                                     val isIgnoringBattery = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")
                                                     if (connected) {
                                                         bridgeClient.triggerBoost()
-                                                        android.widget.Toast.makeText(context, "🚀 Termux background boost requested.", android.widget.Toast.LENGTH_SHORT).show()
+                                                        android.widget.Toast.makeText(context, "Termux background boost requested.", android.widget.Toast.LENGTH_SHORT).show()
                                                     } else {
                                                         android.widget.Toast.makeText(context, "Connecting to Termux... Leave Termux running in the background.", android.widget.Toast.LENGTH_LONG).show()
                                                         if (!isIgnoringBattery) {
@@ -757,7 +641,7 @@ fun ChatScreen(
                                                 val isIgnoringBattery = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")
                                                 if (connected) {
                                                     bridgeClient.triggerBoost()
-                                                    android.widget.Toast.makeText(context, "🚀 Termux background boost requested.", android.widget.Toast.LENGTH_SHORT).show()
+                                                    android.widget.Toast.makeText(context, "Termux background boost requested.", android.widget.Toast.LENGTH_SHORT).show()
                                                 } else {
                                                     android.widget.Toast.makeText(context, "Connecting to Termux... Leave Termux running in the background.", android.widget.Toast.LENGTH_LONG).show()
                                                     if (!isIgnoringBattery) {
