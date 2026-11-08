@@ -52,10 +52,16 @@ fun AutonomyCard(
     var memoryText by remember { mutableStateOf("") }
     var memoryLoaded by remember { mutableStateOf(false) }
     var showMemory by remember { mutableStateOf(false) }
+    val personaStore = agentEngine.personaStore
+    var personaText by remember { mutableStateOf("") }
+    var showPersona by remember { mutableStateOf(false) }
 
     LaunchedEffect(memoryStore) {
         memoryText = withContext(Dispatchers.IO) { memoryStore?.entries()?.joinToString("\n").orEmpty() }
         memoryLoaded = true
+    }
+    LaunchedEffect(personaStore) {
+        personaText = withContext(Dispatchers.IO) { personaStore?.read().orEmpty() }
     }
 
     val agentTasks by remember { schedulerManager.getAgentTasksFlow() }.collectAsState(initial = emptyList())
@@ -200,6 +206,52 @@ fun AutonomyCard(
             }
 
             HorizontalDivider(color = BorderSubtle)
+
+            // --- Persona (SOUL.md) ----------------------------------------------------------
+            if (personaStore != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Persona & standing instructions" + if (personaText.isNotBlank()) " ✓" else "",
+                            style = MaterialTheme.typography.bodyMedium.copy(color = TextWhite, fontWeight = FontWeight.SemiBold)
+                        )
+                        Text(
+                            "Who the agent should be and how it should work for you (like OpenClaw's SOUL.md). Applies to every chat, Telegram and background run.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
+                        )
+                    }
+                    TextButton(onClick = { showPersona = !showPersona }) {
+                        Text(if (showPersona) "Hide" else "Edit", color = AccentPrimary, fontSize = 12.sp)
+                    }
+                }
+                if (showPersona) {
+                    OutlinedTextField(
+                        value = personaText,
+                        onValueChange = { personaText = it.take(8_000) },
+                        placeholder = {
+                            Text(
+                                "e.g. Your name is Max. Be brief and friendly, answer in German. I live in Berlin. " +
+                                    "Save reports to ~/storage/shared/Documents/AMC. Ask before spending money.",
+                                fontSize = 11.sp, color = TextMuted
+                            )
+                        },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(color = TextWhite, fontSize = 12.sp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp),
+                        colors = fieldColors
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                withContext(Dispatchers.IO) { personaStore.write(personaText) }
+                                Toast.makeText(context, "Persona saved", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        border = BorderStroke(1.dp, AccentPrimary.copy(alpha = 0.5f))
+                    ) { Text("Save persona", fontSize = 12.sp, color = TextWhite) }
+                }
+
+                HorizontalDivider(color = BorderSubtle)
+            }
 
             // --- Long-term memory ----------------------------------------------------------
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {

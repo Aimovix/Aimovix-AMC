@@ -29,7 +29,7 @@ class WebFetcher(
         val request = try {
             Request.Builder()
                 .url(trimmed)
-                .header("User-Agent", "AMC-Agent/1.3 (Android)")
+                .header("User-Agent", "AMC-Agent/1.4 (Android)")
                 .header("Accept", "text/html,application/json,text/plain;q=0.9,*/*;q=0.5")
                 .get()
                 .build()

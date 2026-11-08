@@ -65,6 +65,9 @@ class PreferenceManager(
         private const val KEY_HEARTBEAT_CHECKLIST = "key_heartbeat_checklist"
         private const val KEY_ACCEPTED_LEGAL_VERSION = "key_accepted_legal_version"
         private const val KEY_ACCEPTED_LEGAL_AT = "key_accepted_legal_at"
+        private const val KEY_TELEGRAM_BOT_TOKEN = "key_telegram_bot_token"
+        private const val KEY_TELEGRAM_ENABLED = "key_telegram_enabled"
+        private const val KEY_TELEGRAM_STATE = "key_telegram_state"
 
         const val DEFAULT_MAX_STEPS = 30
         const val MIN_MAX_STEPS = 5
@@ -291,6 +294,27 @@ class PreferenceManager(
 
     fun loadHeartbeatChecklist(): String =
         prefs.getString(KEY_HEARTBEAT_CHECKLIST, null) ?: com.agent.mobile.agent.AgentPrompts.DEFAULT_HEARTBEAT_CHECKLIST
+
+    // --- Messaging channels (Telegram) ---------------------------------------------------------
+
+    fun saveTelegramBotToken(token: String) {
+        prefs.edit().putString(KEY_TELEGRAM_BOT_TOKEN, token.trim()).apply()
+    }
+
+    fun loadTelegramBotToken(): String = prefs.getString(KEY_TELEGRAM_BOT_TOKEN, "") ?: ""
+
+    fun saveTelegramEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_TELEGRAM_ENABLED, enabled).apply()
+    }
+
+    fun loadTelegramEnabled(): Boolean = prefs.getBoolean(KEY_TELEGRAM_ENABLED, false)
+
+    /** Paired accounts, sessions and update offset of the Telegram channel, as JSON. */
+    fun saveTelegramState(json: String) {
+        prefs.edit().putString(KEY_TELEGRAM_STATE, json).apply()
+    }
+
+    fun loadTelegramState(): String? = prefs.getString(KEY_TELEGRAM_STATE, null)
 
     // --- Legal consent ------------------------------------------------------------------------
 

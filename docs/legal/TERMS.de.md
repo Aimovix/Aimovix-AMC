@@ -1,6 +1,6 @@
 # AMC – Nutzungsbedingungen und Haftungsausschluss
 
-_Version 1. Wird beim ersten Start in der App angezeigt (Einstellungen → Legal & privacy). Keine Rechtsberatung._
+_Version 2. Wird beim ersten Start in der App angezeigt (Einstellungen → Legal & privacy). Keine Rechtsberatung._
 
 ## 1. Was AMC ist
 
@@ -12,11 +12,11 @@ Du entscheidest, welchen Sicherheitsmodus, welche Berechtigungen und welche Aufg
 
 ## 3. Nur rechtmäßige Nutzung
 
-Du darfst AMC nur im Einklang mit geltendem Recht und den Rechten anderer nutzen. Insbesondere nicht, um Spam oder unerwünschte Nachrichten zu senden, jemanden zu belästigen oder zu täuschen, andere Personen ohne deren Einwilligung zu überwachen, zu orten, zu fotografieren oder aufzunehmen, unbefugt auf Systeme oder Konten zuzugreifen, Urheber- oder Markenrechte zu verletzen oder Daten entgegen den Nutzungsbedingungen von Webseiten zu sammeln. Nachrichten, Anrufe, Kontakte, Fotos und Aufnahmen betreffen personenbezogene Daten anderer: Du brauchst dafür eine Rechtsgrundlage oder deren Einwilligung. Für diese Aktionen fragt AMC in jedem Modus immer nach deiner Bestätigung und führt sie nie in unbeaufsichtigten Hintergrundläufen aus.
+Du darfst AMC nur im Einklang mit geltendem Recht und den Rechten anderer nutzen. Insbesondere nicht, um Spam oder unerwünschte Nachrichten zu senden, jemanden zu belästigen oder zu täuschen, andere Personen ohne deren Einwilligung zu überwachen, zu orten, zu fotografieren oder aufzunehmen, unbefugt auf Systeme oder Konten zuzugreifen, Urheber- oder Markenrechte zu verletzen oder Daten entgegen den Nutzungsbedingungen von Webseiten zu sammeln. Nachrichten, Anrufe, Kontakte, Fotos und Aufnahmen betreffen personenbezogene Daten anderer: Du brauchst dafür eine Rechtsgrundlage oder deren Einwilligung. Für diese Aktionen fragt AMC in jedem Modus immer nach deiner Bestätigung (in der App oder, wenn du den Telegram-Kanal eingerichtet hast, per Buttons in deinem gekoppelten Telegram-Chat) und führt sie nie in unbeaufsichtigten Hintergrundläufen aus.
 
 ## 4. Dienste Dritter
 
-AMC verbindet sich mit Diensten, die du selbst auswählst und einrichtest (z. B. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter, Termux). Es gelten deren Nutzungsbedingungen, Nutzungsrichtlinien und Datenschutzerklärungen. Du brauchst ein eigenes Konto und einen eigenen API-Schlüssel und musst die Regeln des Anbieters einhalten. Produktnamen gehören ihren jeweiligen Inhabern; AMC steht mit ihnen in keiner Verbindung und wird von ihnen nicht unterstützt.
+AMC verbindet sich mit Diensten, die du selbst auswählst und einrichtest (z. B. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter, Termux und optional ein von dir erstellter Telegram-Bot). Das Werkzeug web_search nutzt DuckDuckGo. Es gelten deren Nutzungsbedingungen, Nutzungsrichtlinien und Datenschutzerklärungen. Du brauchst ein eigenes Konto und einen eigenen API-Schlüssel und musst die Regeln des Anbieters einhalten. Produktnamen gehören ihren jeweiligen Inhabern; AMC steht mit ihnen in keiner Verbindung und wird von ihnen nicht unterstützt.
 
 ## 5. Keine Gewährleistung, Haftungsbeschränkung
 
@@ -24,7 +24,7 @@ AMC wird unentgeltlich und „wie besehen“ bereitgestellt, ohne Zusicherung, d
 
 ## 6. Datenschutzhinweise (Kurzfassung)
 
-Die Entwickler erheben keine Daten: AMC hat keine eigenen Server und enthält keine Analyse-, Werbe- oder Tracking-Funktionen. Chats, Audit-Protokoll und das Gedächtnis des Agenten werden nur auf deinem Gerät gespeichert; API-Schlüssel sind mit dem Android Keystore verschlüsselt; App-Backups sind deaktiviert. Wenn du einen Cloud-KI-Anbieter nutzt, werden deine Nachrichten, angehängte Bilder, das Gedächtnis des Agenten und die Ausgaben der ausgeführten Werkzeuge (darunter Dateiinhalte, Nachrichten, Kontakte oder Standort, falls der Agent sie liest) an diesen Anbieter gesendet und nach dessen Datenschutzerklärung verarbeitet, möglicherweise außerhalb der EU. Webseiten, die der Agent öffnet, erhalten normale Anfragen von deinem Handy. Mit einem lokalen Modell bleiben alle Daten auf deinem Gerät. Chats und Gedächtnis kannst du jederzeit in der App löschen; bei der Deinstallation werden alle lokalen Daten von AMC entfernt. Die vollständigen Datenschutzhinweise stehen im Projekt unter docs/legal/PRIVACY.de.md.
+Die Entwickler erheben keine Daten: AMC hat keine eigenen Server und enthält keine Analyse-, Werbe- oder Tracking-Funktionen. Chats, Audit-Protokoll und das Gedächtnis des Agenten werden nur auf deinem Gerät gespeichert; API-Schlüssel sind mit dem Android Keystore verschlüsselt; App-Backups sind deaktiviert. Wenn du einen Cloud-KI-Anbieter nutzt, werden deine Nachrichten, angehängte Bilder, das Gedächtnis des Agenten und die Ausgaben der ausgeführten Werkzeuge (darunter Dateiinhalte, Nachrichten, Kontakte oder Standort, falls der Agent sie liest) an diesen Anbieter gesendet und nach dessen Datenschutzerklärung verarbeitet, möglicherweise außerhalb der EU. Webseiten, die der Agent öffnet, erhalten normale Anfragen von deinem Handy; Websuchen senden den Suchbegriff an DuckDuckGo. Wenn du den Telegram-Kanal aktivierst, laufen deine Nachrichten an den Agenten, seine Antworten, Freigabeanfragen und Dateien, die er dir schickt, über die Server von Telegram (es gilt deren Datenschutzerklärung). Mit einem lokalen Modell bleiben alle Daten auf deinem Gerät. Chats und Gedächtnis kannst du jederzeit in der App löschen; bei der Deinstallation werden alle lokalen Daten von AMC entfernt. Die vollständigen Datenschutzhinweise stehen im Projekt unter docs/legal/PRIVACY.de.md.
 
 ## 7. Änderungen
 

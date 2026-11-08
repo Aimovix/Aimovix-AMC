@@ -90,17 +90,18 @@ class LlmClient(
     fun streamRequest(
         config: ModelConfig,
         systemPrompt: String,
-        messages: List<ChatMessage>
+        messages: List<ChatMessage>,
+        excludedTools: Set<String> = emptySet()
     ): Flow<LlmStreamEvent> = flow {
         val providerMessages = messages.filter { it.role != MessageRole.SYSTEM }
         try {
             when (config.provider) {
-                ProviderType.GEMINI -> streamGemini(config, systemPrompt, providerMessages) { emit(it) }
-                ProviderType.CLAUDE -> streamClaude(config, systemPrompt, providerMessages) { emit(it) }
+                ProviderType.GEMINI -> streamGemini(config, systemPrompt, providerMessages, excludedTools) { emit(it) }
+                ProviderType.CLAUDE -> streamClaude(config, systemPrompt, providerMessages, excludedTools) { emit(it) }
                 ProviderType.OPENAI,
                 ProviderType.GROQ,
                 ProviderType.OPENROUTER,
-                ProviderType.LOCAL -> streamOpenAiCompatible(config, systemPrompt, providerMessages) { emit(it) }
+                ProviderType.LOCAL -> streamOpenAiCompatible(config, systemPrompt, providerMessages, excludedTools) { emit(it) }
             }
         } catch (e: CancellationException) {
             throw e
@@ -223,6 +224,7 @@ class LlmClient(
         config: ModelConfig,
         systemPrompt: String,
         messages: List<ChatMessage>,
+        excludedTools: Set<String>,
         emit: suspend (LlmStreamEvent) -> Unit
     ) {
         val root = JSONObject()
@@ -304,7 +306,7 @@ class LlmClient(
             msgs.put(mObj)
         }
         root.put("messages", msgs)
-        root.put("tools", com.agent.mobile.agent.AgentTools.openAiTools())
+        root.put("tools", com.agent.mobile.agent.AgentTools.openAiTools(excludedTools))
 
         val trimmedBase = config.baseUrl.trimEnd('/')
         val url = if (trimmedBase.endsWith("/chat/completions")) {
@@ -490,6 +492,7 @@ class LlmClient(
         config: ModelConfig,
         systemPrompt: String,
         messages: List<ChatMessage>,
+        excludedTools: Set<String>,
         emit: suspend (LlmStreamEvent) -> Unit
     ) {
         val root = JSONObject()
@@ -572,7 +575,7 @@ class LlmClient(
         }
         root.put("contents", contents)
 
-        val funcDecls = com.agent.mobile.agent.AgentTools.geminiFunctionDeclarations()
+        val funcDecls = com.agent.mobile.agent.AgentTools.geminiFunctionDeclarations(excludedTools)
         root.put("tools", JSONArray().put(JSONObject().put("function_declarations", funcDecls)))
 
         val cleanKey = config.apiKey.removePrefix("Bearer ").removePrefix("bearer ").trim()
@@ -760,6 +763,7 @@ class LlmClient(
         config: ModelConfig,
         systemPrompt: String,
         messages: List<ChatMessage>,
+        excludedTools: Set<String>,
         emit: suspend (LlmStreamEvent) -> Unit
     ) {
         val root = JSONObject()
@@ -773,7 +777,7 @@ class LlmClient(
         }))
         root.put("stream", true)
 
-        val toolsArr = com.agent.mobile.agent.AgentTools.claudeTools()
+        val toolsArr = com.agent.mobile.agent.AgentTools.claudeTools(excludedTools)
         root.put("tools", toolsArr)
 
         val msgs = JSONArray()

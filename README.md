@@ -38,7 +38,7 @@ bash setup-amc.sh
 The installer downloads from `main` by default. To pin a specific release tag or branch:
 
 ```bash
-AMC_REF=v1.3.0 bash setup-amc.sh
+AMC_REF=v1.4.0 bash setup-amc.sh
 ```
 
 To test a development branch with local files, clone that branch and run its local installer:
@@ -66,16 +66,33 @@ Model suggestions are editable examples, not a live availability catalog. Check 
 
 ## Autonomous agent
 
-AMC works like a self-hosted personal agent on your phone: give it a goal and it plans, acts, checks the results and keeps going until the task is done.
+AMC works like a self-hosted personal agent in the spirit of OpenClaw or OpenCrabs, but entirely on your phone: give it a goal and it plans, acts, checks the results and keeps going until the task is done. You can reach it in the app or, through the optional Telegram channel, from anywhere.
 
 - **Agent loop:** the model calls tools, reads the results, recovers from errors (installing missing packages, trying a different approach) and finishes with a summary. The step budget is configurable (**Settings → Autonomy**, 5–100 steps, default 30). After repeated failures the agent is told to rethink its approach; real loops are stopped.
-- **Tools:** `execute_command` (Termux shell and Termux:API, optional timeout up to 30 minutes), `read_file`, `write_file`, `web_fetch` (native HTTP, HTML converted to text), `remember` / `forget` (long-term memory), `update_plan` (live checklist in the chat), `notify_user` (Android notification), and `schedule_task` / `list_scheduled_tasks` / `cancel_scheduled_task`.
+- **Tools:** `execute_command` (Termux shell and Termux:API, optional timeout up to 30 minutes), `read_file`, `write_file`, `web_search` (DuckDuckGo, no API key), `web_fetch` (native HTTP, HTML converted to text), `remember` / `forget` (long-term memory), `search_history` (earlier conversations), `delegate_task` (sub-agents), `send_file` (deliver files to you), `update_plan` (live checklist in the chat), `notify_user` (Android notification), and `schedule_task` / `list_scheduled_tasks` / `cancel_scheduled_task`.
+- **Sub-agents:** for research or long multi-file work the agent hands a self-contained sub-task to a sub-agent with a fresh context and gets back its report. The sub-agent's steps appear in the tool card, its approvals are forwarded to you, and it cannot delegate further.
+- **Persona (SOUL.md):** in **Settings → Autonomy → Persona & standing instructions** you describe who the agent should be and how it should work for you (name, tone, language, defaults, things to always or never do). It applies everywhere and never overrides the security and legal rules.
 - **Long-term memory:** the agent saves stable facts about you (name, preferences, devices, recurring tasks) and sees them in every new conversation. View, edit or clear it in **Settings → Autonomy**. Secrets are never meant to be stored there.
 - **Scheduled agent tasks:** ask, for example, *"Remind me every day at 8 to take my medication"* or *"Check the weather every two hours and tell me if it will rain"*. The agent schedules itself; each background run gets its own chat session and ends with a notification.
 - **Heartbeat:** optional periodic check-in (15 minutes to 12 hours). The agent works through your checklist and only notifies you when something needs attention; quiet runs leave no trace.
-- **Skills:** reusable how-to files in `~/.amc/skills/` (created by the installer). The agent consults them for recurring tasks and writes new ones after solving something it is likely to need again.
+- **Skills:** reusable how-to files in `~/.amc/skills/` (created by the installer), either `<name>.md` or `<name>/SKILL.md` with `name:` and `description:` front matter (the Agent Skills format used by OpenClaw). Every run starts with a list of the installed skills and their descriptions; the agent reads a matching skill before following it and writes new ones after solving something it is likely to need again. Treat downloaded skills like scripts: read them before use.
 - **Steering:** you can keep typing while the agent works; the message is queued and picked up before its next step.
-- **Your language:** the agent answers in the language you write in.
+- **Your language:** the agent answers in the language you write in, and voice input uses your device language.
+
+## Remote control via Telegram
+
+Talk to the agent on your phone from any device, like OpenClaw's messaging gateways, without running a server:
+
+1. In Telegram, open **@BotFather**, send `/newbot` and copy the bot token.
+2. In **AMC → Settings → Channels**, paste the token and select **Check & save**, then switch the **Telegram channel** on.
+3. Select **Pair account** and send the shown `/pair CODE` to your bot (or use **Open in Telegram**). Codes are single-use, valid for 15 minutes and expire after 5 wrong attempts.
+
+Then just write to your bot, for example *"How full is my storage?"* or *"Take a photo and send it to me"*. You can send photos with a question, add instructions while the agent works, and use `/new` (new conversation), `/stop` (stop the task), `/status` and `/unpair`. Each Telegram chat continues its own AMC session, visible in the app.
+
+- Only paired Telegram accounts in private chats can reach the agent; group messages and strangers are ignored (strangers get a short pairing hint). The phone notifies you whenever an account is paired.
+- Actions that need approval arrive as ✅/❌ buttons. No answer within 10 minutes counts as rejected. Your security preset applies exactly as in the app.
+- The channel runs in a foreground service and restarts after a reboot when it is enabled. For reliable delivery while the phone sleeps, set **Android Settings → Apps → AMC → Battery** to **Unrestricted**.
+- Messages, replies, approval requests and files pass through Telegram's servers. Use the in-app chat for anything you would not send through Telegram, and keep the bot token secret (anyone with it can read your bot's messages, but only paired accounts can control the agent).
 
 ## Using AMC
 
@@ -86,7 +103,7 @@ AMC works like a self-hosted personal agent on your phone: give it a goal and it
 - **Terminal:** manually enter commands and use `CTRL-C` to interrupt them. Commands entered here are direct user actions; the catastrophic blocklist still applies.
 - **Sessions:** create, search, switch, and export chats as Markdown or JSON. User-authored history and existing generated content are preserved as entered.
 - **Artifacts:** view supported images, text, code, Markdown, and HTML. Script execution returns to the agent flow for review.
-- **Voice input:** uses English speech recognition when the device's recognition service supports it.
+- **Voice input:** uses the device language for speech recognition when the device's recognition service supports it.
 
 ## Providers and local inference
 
@@ -137,7 +154,7 @@ amc run         # Run in the foreground
 
 On first launch AMC shows its terms of use, disclaimer and privacy notice (English and German); the app can only be used after all three confirmations are ticked, and the texts can be reread in **Settings → Legal & privacy**. Raising `LegalTexts.VERSION` asks every user to accept a changed version.
 
-- Actions that involve other people or cost money (sending SMS, phone calls, reading messages, contacts or call logs, camera photos, microphone recordings) **always** require your confirmation, in every security mode including Turbo and Custom allowlists, and are never performed in unattended background runs.
+- Actions that involve other people or cost money (sending SMS, phone calls, reading messages, contacts or call logs, camera photos, microphone recordings) **always** require your confirmation, in every security mode including Turbo and Custom allowlists (in the app, or with buttons in your paired Telegram chat), and are never performed in unattended background runs.
 - The agent's system prompt refuses clearly illegal tasks (spam, harassment, covert surveillance, unauthorized access, piracy) and treats other people's data as personal data.
 - Documents: [terms](docs/legal/TERMS.md) ([German](docs/legal/TERMS.de.md)), [privacy notice](docs/legal/PRIVACY.md) ([German](docs/legal/PRIVACY.de.md)), [third-party notices](docs/legal/THIRD_PARTY_NOTICES.md), and a note on when a German imprint is required.
 - AMC is a private, non-commercial open-source hobby project with no income. It is not affiliated with or endorsed by any AI provider or by Termux. Contact: GitHub issues.
@@ -155,7 +172,8 @@ On first launch AMC shows its terms of use, disclaimer and privacy notice (Engli
 - Legacy plaintext preference values are cleared only after a successful encrypted migration.
 - Android backup is disabled for the app.
 - External provider connections use HTTPS; cleartext connections are limited by the Android network configuration to approved local endpoints.
-- Untrusted tool output is marked for the model. These markers and prompt instructions are precautions, not an isolation mechanism.
+- Untrusted tool output (shell, files, web pages, search results, sub-agent reports) is marked for the model. These markers and prompt instructions are precautions, not an isolation mechanism.
+- The Telegram channel only serves Telegram accounts paired with a one-time code, only in private chats. The bot token and paired accounts are stored in encrypted preferences. Approvals from Telegram are bound to the chat they were sent to and ignored from other accounts.
 
 Once a command is approved, it runs with Termux's permissions. Programs may start detached jobs or change their own process groups. Review arbitrary scripts carefully; process cancellation cannot undo an SMS, file change, network request, or other completed effect. See [SECURITY.md](SECURITY.md) for signing and credential recovery.
 
@@ -199,7 +217,8 @@ Changing a signing identity affects upgrades. Follow the migration guidance in [
 .github/workflows/             Android and bridge CI
 android/app/src/main/
   java/com/agent/mobile/
-    agent/                     Agent loop and system prompt
+    agent/                     Agent loop, tools, prompts, memory, persona, skills index
+    channel/                   Telegram channel gateway, foreground service, boot receiver
     data/                      Models, networking, repositories, storage
     security/                  Command assessment and approval policy
     service/                   Foreground service and WorkManager

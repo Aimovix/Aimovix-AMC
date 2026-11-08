@@ -24,4 +24,4 @@ JUnit 4 (EPL 1.0), Robolectric (MIT), MockWebServer (Apache 2.0), AndroidX Test 
 
 ## Trademarks
 
-Android, Google Gemini, OpenAI, Anthropic and Claude, Groq, OpenRouter, Termux and other names are trademarks of their respective owners. They are used only to describe compatibility. AMC is not affiliated with, sponsored or endorsed by these companies.
+Android, Google Gemini, OpenAI, Anthropic and Claude, Groq, OpenRouter, Termux, Telegram, DuckDuckGo, OpenClaw, OpenCrabs and other names are trademarks of their respective owners. They are used only to describe compatibility. AMC is not affiliated with, sponsored or endorsed by these companies.

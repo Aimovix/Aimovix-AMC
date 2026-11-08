@@ -506,6 +506,17 @@ fun SettingsScreen(
                 schedulerManager = schedulerManager
             )
 
+            // Section 3c: Messaging channels (Telegram remote control)
+            val telegramManager = remember {
+                try { com.agent.mobile.AgentRuntime.get(context).telegram } catch (e: IllegalStateException) { null }
+            }
+            if (telegramManager != null) {
+                com.agent.mobile.ui.settings.components.ChannelsCard(
+                    preferenceManager = preferenceManager,
+                    telegram = telegramManager
+                )
+            }
+
             // Section 4: Security Cockpit & Guardrails
             SecurityCockpitCard(
                 agentEngine = agentEngine,

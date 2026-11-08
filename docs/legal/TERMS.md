@@ -1,6 +1,6 @@
 # AMC terms of use and disclaimer
 
-_Version 1. Shown in the app on first launch (Settings → Legal & privacy). Not legal advice._
+_Version 2. Shown in the app on first launch (Settings → Legal & privacy). Not legal advice._
 
 ## 1. What AMC is
 
@@ -12,11 +12,11 @@ You decide which security mode, permissions and tasks you give the agent, and yo
 
 ## 3. Lawful use only
 
-You may only use AMC in compliance with applicable law and the rights of others. In particular, do not use it to: send spam or unsolicited messages, harass or deceive anyone, monitor, track, photograph or record other people without their consent, access systems or accounts without authorization, infringe copyrights or trademarks, or collect data from websites against their terms. Messages, calls, contacts, photos and recordings involve other people's personal data: you need a legal basis or their consent. For these actions AMC always asks for your confirmation, in every mode, and never performs them in unattended background runs.
+You may only use AMC in compliance with applicable law and the rights of others. In particular, do not use it to: send spam or unsolicited messages, harass or deceive anyone, monitor, track, photograph or record other people without their consent, access systems or accounts without authorization, infringe copyrights or trademarks, or collect data from websites against their terms. Messages, calls, contacts, photos and recordings involve other people's personal data: you need a legal basis or their consent. For these actions AMC always asks for your confirmation, in every mode (in the app or, if you set up the Telegram channel, with buttons in your paired Telegram chat), and never performs them in unattended background runs.
 
 ## 4. Third-party services
 
-AMC connects to services you choose and configure yourself (e.g. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter, Termux). Their own terms, usage policies and privacy policies apply. You need your own account and API key and must comply with the provider's rules. Product names belong to their respective owners; AMC is not affiliated with or endorsed by them.
+AMC connects to services you choose and configure yourself (e.g. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter, Termux and, optionally, a Telegram bot you create). The web_search tool uses DuckDuckGo. Their own terms, usage policies and privacy policies apply. You need your own account and API key and must comply with the provider's rules. Product names belong to their respective owners; AMC is not affiliated with or endorsed by them.
 
 ## 5. No warranty, limitation of liability
 
@@ -24,7 +24,7 @@ AMC is provided free of charge "as is", without any warranty that it is error-fr
 
 ## 6. Privacy notice (summary)
 
-The developers do not collect any data: AMC has no servers of its own and contains no analytics, advertising or tracking. Chats, the audit log and the agent's memory are stored only on your device; API keys are encrypted with the Android Keystore; app backups are disabled. When you use a cloud AI provider, your messages, attached images, the agent's memory and the output of the tools it runs (which can include file contents, messages, contacts or location if the agent reads them) are sent to that provider and processed under its privacy policy, possibly outside the EU. Websites the agent opens receive normal web requests from your phone. Use a local model to keep everything on your device. You can delete chats and memory in the app at any time; uninstalling AMC removes all of its local data. The full privacy notice is in docs/legal/PRIVACY.md of the project.
+The developers do not collect any data: AMC has no servers of its own and contains no analytics, advertising or tracking. Chats, the audit log and the agent's memory are stored only on your device; API keys are encrypted with the Android Keystore; app backups are disabled. When you use a cloud AI provider, your messages, attached images, the agent's memory and the output of the tools it runs (which can include file contents, messages, contacts or location if the agent reads them) are sent to that provider and processed under its privacy policy, possibly outside the EU. Websites the agent opens receive normal web requests from your phone; web searches send the query to DuckDuckGo. If you enable the Telegram channel, your messages to the agent, its replies, approval requests and files it sends you pass through Telegram's servers under Telegram's privacy policy. Use a local model to keep everything on your device. You can delete chats and memory in the app at any time; uninstalling AMC removes all of its local data. The full privacy notice is in docs/legal/PRIVACY.md of the project.
 
 ## 7. Changes
 

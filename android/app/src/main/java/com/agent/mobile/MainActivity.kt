@@ -55,12 +55,19 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
             preferenceManager = preferenceManager,
             chatRepository = chatRepository,
             memoryStore = runtime.memoryStore,
-            platform = runtime.platform
+            platform = runtime.platform,
+            personaStore = runtime.personaStore
         )
         bridgeClient.connect(savedToken)
         // Re-arm the heartbeat after app updates or reinstalls.
         if (preferenceManager.loadHeartbeatEnabled()) {
             runtime.scheduler.scheduleHeartbeat(preferenceManager.loadHeartbeatIntervalMinutes())
+        }
+        // Keep the Telegram channel running (e.g. after an app update).
+        if (preferenceManager.loadTelegramEnabled() &&
+            preferenceManager.loadAcceptedLegalVersion() >= LegalTexts.VERSION
+        ) {
+            com.agent.mobile.channel.ChannelGatewayService.start(context)
         }
         isInitialized = true
     }

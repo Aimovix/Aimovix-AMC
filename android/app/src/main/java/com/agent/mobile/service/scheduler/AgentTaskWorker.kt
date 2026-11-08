@@ -64,7 +64,8 @@ class AgentTaskWorker(
             chatRepository = runtime.chatRepository,
             memoryStore = runtime.memoryStore,
             platform = runtime.platform,
-            headless = true
+            headless = true,
+            personaStore = runtime.personaStore
         )
         return try {
             bridge.connect(token)

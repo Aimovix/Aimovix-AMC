@@ -87,6 +87,39 @@ class ChatRepository(
         database.chatMessageDao().searchMessages(query).map { it.toDomain() }
     }
 
+    /** One match of [searchHistory]. */
+    data class HistoryHit(
+        val sessionId: String,
+        val sessionTitle: String,
+        val role: MessageRole,
+        val text: String,
+        val timestamp: Long
+    )
+
+    /**
+     * Searches earlier conversations (user and agent messages, not tool output) for [query],
+     * newest first. Used by the agent's `search_history` tool.
+     */
+    suspend fun searchHistory(query: String, limit: Int = 8, excludeSessionId: String? = null): List<HistoryHit> =
+        withContext(Dispatchers.IO) {
+            val q = query.trim()
+            if (q.isEmpty()) return@withContext emptyList()
+            val rows = database.chatMessageDao().searchConversationText(q, excludeSessionId ?: "", limit.coerceIn(1, 30))
+            val titles = mutableMapOf<String, String>()
+            rows.map { row ->
+                val title = titles.getOrPut(row.sessionId) {
+                    database.chatSessionDao().getSessionById(row.sessionId)?.title ?: "Chat"
+                }
+                HistoryHit(
+                    sessionId = row.sessionId,
+                    sessionTitle = title,
+                    role = try { MessageRole.valueOf(row.role) } catch (e: Exception) { MessageRole.USER },
+                    text = row.text,
+                    timestamp = row.timestamp
+                )
+            }
+        }
+
     suspend fun recordAudit(audit: CommandAuditEntity) = withContext(Dispatchers.IO) {
         database.commandAuditDao().insertAudit(audit)
     }
