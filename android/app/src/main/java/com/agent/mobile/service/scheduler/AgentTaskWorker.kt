@@ -68,8 +68,7 @@ class AgentTaskWorker(
             personaStore = runtime.personaStore
         )
         return try {
-            bridge.connect(token)
-            if (!bridge.awaitConnected(15_000L)) {
+            if (!runtime.bridgeStarter.ensureConnected(bridge, token, 20_000L)) {
                 Log.w(TAG, "Termux bridge not reachable for '$title' (attempt $runAttemptCount)")
                 // The agent can still work without Termux (web, memory, notifications); continue.
             }

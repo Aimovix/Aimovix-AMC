@@ -37,9 +37,8 @@ class EngineChannelAgent(
         if (bridge.connectionStatus.value !is ConnectionStatus.Connected) {
             val token = prefs.loadAuthToken()
             bridge.setToken(token)
-            bridge.connect(token)
             // The agent can still answer without Termux (web, memory), so don't fail here.
-            bridge.awaitConnected(10_000L)
+            runtime.bridgeStarter.ensureConnected(bridge, token, 15_000L)
         }
         return engine.runHeadless(
             title = request.title,

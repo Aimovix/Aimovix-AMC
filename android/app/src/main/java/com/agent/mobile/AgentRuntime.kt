@@ -29,6 +29,8 @@ class AgentRuntime private constructor(context: Context) {
     val scheduler = SchedulerManager(appContext)
     val platform: AgentPlatform = AndroidAgentPlatform(appContext, scheduler)
     val telegram: TelegramChannelManager by lazy { TelegramChannelManager(this) }
+    /** Starts the Termux bridge through RUN_COMMAND when it is not reachable. */
+    val bridgeStarter = com.agent.mobile.core.termux.BridgeStarter(appContext)
 
     companion object {
         @Volatile

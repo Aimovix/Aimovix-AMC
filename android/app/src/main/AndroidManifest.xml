@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Lets AMC start the Termux bridge and fetch the pairing token (Termux RUN_COMMAND). -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -53,6 +55,10 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Messaging channel gateway: keeps a Telegram long-polling connection open so the device owner can talk to the on-device AI agent remotely." />
         </service>
+
+        <receiver
+            android:name=".core.termux.TermuxResultReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".channel.BootReceiver"

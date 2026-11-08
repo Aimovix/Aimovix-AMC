@@ -38,7 +38,7 @@ bash setup-amc.sh
 The installer downloads from `main` by default. To pin a specific release tag or branch:
 
 ```bash
-AMC_REF=v1.4.0 bash setup-amc.sh
+AMC_REF=v1.4.1 bash setup-amc.sh
 ```
 
 To test a development branch with local files, clone that branch and run its local installer:
@@ -51,6 +51,12 @@ bash Aimovix-AMC/termux-bridge/setup.sh
 Setup installs Python, Git, curl, jq, Termux:API tools, the pinned Python dependency, and the `amc` service manager. The bridge listens only on `127.0.0.1:8765`.
 
 ### 4. Pair the app
+
+Open **AMC → Setup → Quick connect**, allow AMC to run commands in Termux, then tap **Auto-connect**. AMC asks Termux (through Termux's official `RUN_COMMAND` interface) to start the bridge and hand over the token; nothing has to be copied. From then on AMC also restarts the bridge by itself whenever it is not reachable (app, background tasks and the Telegram channel).
+
+The installer enables `allow-external-apps = true` in `~/.termux/termux.properties`, which `RUN_COMMAND` requires (opt out with `AMC_ALLOW_EXTERNAL_APPS=0`). Only apps you grant the Termux "Run commands in Termux environment" permission can use it. For older installations, Quick connect shows the one-line command to enable it.
+
+Manual pairing still works:
 
 ```bash
 amc token

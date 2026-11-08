@@ -18,6 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.launch
 import com.agent.mobile.agent.AutonomousAgentEngine
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.data.storage.PreferenceManager
@@ -59,6 +61,19 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
             personaStore = runtime.personaStore
         )
         bridgeClient.connect(savedToken)
+        // When the bridge is down, let AMC start it in Termux (if allowed) and reconnect at once.
+        viewModelScope.launch {
+            bridgeClient.connectionStatus.collect { status ->
+                if (status is com.agent.mobile.data.model.ConnectionStatus.Error ||
+                    status is com.agent.mobile.data.model.ConnectionStatus.Disconnected
+                ) {
+                    if (runtime.bridgeStarter.kick(bridgeClient)) {
+                        kotlinx.coroutines.delay(1_500L)
+                        bridgeClient.reconnectIfDisconnected(force = true)
+                    }
+                }
+            }
+        }
         // Re-arm the heartbeat after app updates or reinstalls.
         if (preferenceManager.loadHeartbeatEnabled()) {
             runtime.scheduler.scheduleHeartbeat(preferenceManager.loadHeartbeatIntervalMinutes())

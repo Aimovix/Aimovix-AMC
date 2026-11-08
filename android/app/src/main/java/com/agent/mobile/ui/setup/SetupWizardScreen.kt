@@ -172,6 +172,16 @@ fun SetupWizardScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            QuickConnectCard(
+                bridgeClient = bridgeClient,
+                onTokenReceived = { token ->
+                    inputToken = token
+                    onTokenChanged(token)
+                }
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
             // Step 1: Install Termux & Termux:API
             Text(
                 "Step 1: Install Termux & Termux:API",
@@ -452,18 +462,14 @@ fun SetupWizardScreen(
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Run 'amc token' in Termux to display your pairing token. Enter it here. Every connection requires this token.",
+                text = "Only needed without Quick connect: run 'amc token' in Termux, paste the token here and tap Connect now.",
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = TextSecondary)
             )
             Spacer(modifier = Modifier.height(10.dp))
 
             OutlinedTextField(
                 value = inputToken,
-                onValueChange = {
-                    val trimmed = it.trim()
-                    inputToken = trimmed
-                    onTokenChanged(trimmed)
-                },
+                onValueChange = { inputToken = it.trim() },
                 label = { Text("Auth Token") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -496,7 +502,7 @@ fun SetupWizardScreen(
             Button(
                 onClick = {
                     onTokenChanged(inputToken)
-                    bridgeClient.connect(inputToken)
+                    bridgeClient.forceReconnect(inputToken)
                 },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary, contentColor = Color.Black),
