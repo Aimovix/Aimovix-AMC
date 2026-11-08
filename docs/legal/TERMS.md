@@ -1,10 +1,10 @@
 # AMC terms of use and disclaimer
 
-_Version 1. Shown in the app on first launch (Settings → Legal & privacy). Template, not legal advice: have it reviewed before publishing the app._
+_Version 1. Shown in the app on first launch (Settings → Legal & privacy). Not legal advice._
 
 ## 1. What AMC is
 
-AMC is experimental software that lets an AI model operate your phone through Termux: it can run commands, read and write files, open websites, send notifications and schedule its own background tasks. AI models make mistakes. The agent can misunderstand you, act on wrong assumptions or be manipulated by content it reads (prompt injection). Do not use AMC for medical, legal, financial or safety-critical decisions, and never as a replacement for emergency services.
+AMC is a private, non-commercial open-source hobby project (no company, no income). It is experimental software that lets an AI model operate your phone through Termux: it can run commands, read and write files, open websites, send notifications and schedule its own background tasks. AI models make mistakes. The agent can misunderstand you, act on wrong assumptions or be manipulated by content it reads (prompt injection). Do not use AMC for medical, legal, financial or safety-critical decisions, and never as a replacement for emergency services.
 
 ## 2. Your responsibility
 
@@ -20,11 +20,11 @@ AMC connects to services you choose and configure yourself (e.g. Google Gemini, 
 
 ## 5. No warranty, limitation of liability
 
-AMC is provided free of charge "as is", without any warranty that it is error-free, secure or suitable for a particular purpose. To the extent permitted by law, liability of the developers is excluded. This does not apply to liability for intent and gross negligence, for injury to life, body or health, or to other mandatory statutory liability (such as under product liability law). Statutory consumer rights remain unaffected.
+AMC is provided free of charge "as is", without any warranty that it is error-free, secure or suitable for a particular purpose. It is a gift: the developers do not earn anything from it. To the extent permitted by law, liability of the developers is excluded. This does not apply to liability for intent and gross negligence, for injury to life, body or health, or to other mandatory statutory liability (such as under product liability law). Statutory consumer rights remain unaffected.
 
 ## 6. Privacy notice (summary)
 
-AMC has no servers of its own and contains no analytics, advertising or tracking. Chats, the audit log and the agent's memory are stored only on your device; API keys are encrypted with the Android Keystore; app backups are disabled. When you use a cloud AI provider, your messages, attached images, the agent's memory and the output of the tools it runs (which can include file contents, messages, contacts or location if the agent reads them) are sent to that provider and processed under its privacy policy, possibly outside the EU. Websites the agent opens receive normal web requests from your phone. Use a local model to keep everything on your device. You can delete chats and memory in the app at any time; uninstalling AMC removes all of its local data. The full privacy notice is in docs/legal/PRIVACY.md of the project.
+The developers do not collect any data: AMC has no servers of its own and contains no analytics, advertising or tracking. Chats, the audit log and the agent's memory are stored only on your device; API keys are encrypted with the Android Keystore; app backups are disabled. When you use a cloud AI provider, your messages, attached images, the agent's memory and the output of the tools it runs (which can include file contents, messages, contacts or location if the agent reads them) are sent to that provider and processed under its privacy policy, possibly outside the EU. Websites the agent opens receive normal web requests from your phone. Use a local model to keep everything on your device. You can delete chats and memory in the app at any time; uninstalling AMC removes all of its local data. The full privacy notice is in docs/legal/PRIVACY.md of the project.
 
 ## 7. Changes
 

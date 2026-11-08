@@ -1,10 +1,10 @@
 # AMC – Datenschutzhinweise
 
-_Version 1. Vorlage: Platzhalter in Abschnitt 1 ausfüllen und den Text vor einer Veröffentlichung (z. B. im App-Store) prüfen lassen. Dieses Dokument ist keine Rechtsberatung._
+_Version 1. Dieses Dokument ist keine Rechtsberatung._
 
-## 1. Verantwortlicher
+## 1. Wer steht dahinter
 
-AMC wird entwickelt von **[NAME / FIRMA]**, **[ANSCHRIFT]**, **[E-MAIL]**.
+AMC ist ein privates, nicht-kommerzielles Open-Source-Hobbyprojekt, veröffentlicht als **Aimovix** auf GitHub. Es gibt keine Firma und keine Einnahmen. Kontakt: [GitHub Issues](https://github.com/Aimovix/Aimovix-AMC/issues) (dort bitte keine persönlichen Daten oder API-Schlüssel posten).
 
 Die Entwickler erhalten keine deiner Daten: AMC hat keine eigenen Server. Über die Verarbeitung in der App auf deinem Gerät bestimmst du selbst. Für Daten, die du an einen KI-Anbieter sendest, ist dieser Anbieter nach seiner eigenen Datenschutzerklärung verantwortlich.
 

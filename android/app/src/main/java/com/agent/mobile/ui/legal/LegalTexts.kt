@@ -33,7 +33,7 @@ object LegalTexts {
     private val EN = listOf(
         Section(
             "1. What AMC is",
-            "AMC is experimental software that lets an AI model operate your phone through Termux: it can run commands, read and write files, open websites, send notifications and schedule its own background tasks. " +
+            "AMC is a private, non-commercial open-source hobby project (no company, no income). It is experimental software that lets an AI model operate your phone through Termux: it can run commands, read and write files, open websites, send notifications and schedule its own background tasks. " +
                 "AI models make mistakes. The agent can misunderstand you, act on wrong assumptions or be manipulated by content it reads (prompt injection). " +
                 "Do not use AMC for medical, legal, financial or safety-critical decisions, and never as a replacement for emergency services."
         ),
@@ -58,12 +58,12 @@ object LegalTexts {
         Section(
             "5. No warranty, limitation of liability",
             "AMC is provided free of charge \"as is\", without any warranty that it is error-free, secure or suitable for a particular purpose. " +
-                "To the extent permitted by law, liability of the developers is excluded. This does not apply to liability for intent and gross negligence, for injury to life, body or health, " +
+                "It is a gift: the developers do not earn anything from it. To the extent permitted by law, liability of the developers is excluded. This does not apply to liability for intent and gross negligence, for injury to life, body or health, " +
                 "or to other mandatory statutory liability (such as under product liability law). Statutory consumer rights remain unaffected."
         ),
         Section(
             "6. Privacy notice (summary)",
-            "AMC has no servers of its own and contains no analytics, advertising or tracking. Chats, the audit log and the agent's memory are stored only on your device; API keys are encrypted with the Android Keystore; app backups are disabled. " +
+            "The developers do not collect any data: AMC has no servers of its own and contains no analytics, advertising or tracking. Chats, the audit log and the agent's memory are stored only on your device; API keys are encrypted with the Android Keystore; app backups are disabled. " +
                 "When you use a cloud AI provider, your messages, attached images, the agent's memory and the output of the tools it runs (which can include file contents, messages, contacts or location if the agent reads them) are sent to that provider and processed under its privacy policy, possibly outside the EU. " +
                 "Websites the agent opens receive normal web requests from your phone. Use a local model to keep everything on your device. " +
                 "You can delete chats and memory in the app at any time; uninstalling AMC removes all of its local data. The full privacy notice is in docs/legal/PRIVACY.md of the project."
@@ -77,7 +77,7 @@ object LegalTexts {
     private val DE = listOf(
         Section(
             "1. Was AMC ist",
-            "AMC ist experimentelle Software, mit der ein KI-Modell dein Handy über Termux bedient: Es kann Befehle ausführen, Dateien lesen und schreiben, Webseiten öffnen, Benachrichtigungen senden und eigene Hintergrundaufgaben planen. " +
+            "AMC ist ein privates, nicht-kommerzielles Open-Source-Hobbyprojekt (keine Firma, keine Einnahmen). Es ist experimentelle Software, mit der ein KI-Modell dein Handy über Termux bedient: Es kann Befehle ausführen, Dateien lesen und schreiben, Webseiten öffnen, Benachrichtigungen senden und eigene Hintergrundaufgaben planen. " +
                 "KI-Modelle machen Fehler. Der Agent kann dich missverstehen, von falschen Annahmen ausgehen oder durch gelesene Inhalte manipuliert werden (Prompt Injection). " +
                 "Nutze AMC nicht für medizinische, rechtliche, finanzielle oder sicherheitskritische Entscheidungen und niemals als Ersatz für Notrufdienste."
         ),
@@ -102,12 +102,12 @@ object LegalTexts {
         Section(
             "5. Keine Gewährleistung, Haftungsbeschränkung",
             "AMC wird unentgeltlich und „wie besehen“ bereitgestellt, ohne Zusicherung, dass es fehlerfrei, sicher oder für einen bestimmten Zweck geeignet ist. " +
-                "Soweit gesetzlich zulässig, ist die Haftung der Entwickler ausgeschlossen. Dies gilt nicht für Haftung wegen Vorsatz und grober Fahrlässigkeit, für Schäden aus der Verletzung des Lebens, des Körpers oder der Gesundheit " +
+                "AMC ist eine Schenkung: Die Entwickler verdienen nichts daran. Die Haftung richtet sich daher nach den Regeln für Schenkungen (§§ 521, 524 BGB) und ist, soweit gesetzlich zulässig, ausgeschlossen. Dies gilt nicht für Haftung wegen Vorsatz und grober Fahrlässigkeit, für Schäden aus der Verletzung des Lebens, des Körpers oder der Gesundheit " +
                 "sowie für sonstige zwingende gesetzliche Haftung (z. B. nach dem Produkthaftungsgesetz). Gesetzliche Verbraucherrechte bleiben unberührt."
         ),
         Section(
             "6. Datenschutzhinweise (Kurzfassung)",
-            "AMC hat keine eigenen Server und enthält keine Analyse-, Werbe- oder Tracking-Funktionen. Chats, Audit-Protokoll und das Gedächtnis des Agenten werden nur auf deinem Gerät gespeichert; API-Schlüssel sind mit dem Android Keystore verschlüsselt; App-Backups sind deaktiviert. " +
+            "Die Entwickler erheben keine Daten: AMC hat keine eigenen Server und enthält keine Analyse-, Werbe- oder Tracking-Funktionen. Chats, Audit-Protokoll und das Gedächtnis des Agenten werden nur auf deinem Gerät gespeichert; API-Schlüssel sind mit dem Android Keystore verschlüsselt; App-Backups sind deaktiviert. " +
                 "Wenn du einen Cloud-KI-Anbieter nutzt, werden deine Nachrichten, angehängte Bilder, das Gedächtnis des Agenten und die Ausgaben der ausgeführten Werkzeuge (darunter Dateiinhalte, Nachrichten, Kontakte oder Standort, falls der Agent sie liest) an diesen Anbieter gesendet und nach dessen Datenschutzerklärung verarbeitet, möglicherweise außerhalb der EU. " +
                 "Webseiten, die der Agent öffnet, erhalten normale Anfragen von deinem Handy. Mit einem lokalen Modell bleiben alle Daten auf deinem Gerät. " +
                 "Chats und Gedächtnis kannst du jederzeit in der App löschen; bei der Deinstallation werden alle lokalen Daten von AMC entfernt. Die vollständigen Datenschutzhinweise stehen im Projekt unter docs/legal/PRIVACY.de.md."

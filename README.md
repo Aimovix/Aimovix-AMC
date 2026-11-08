@@ -139,8 +139,10 @@ On first launch AMC shows its terms of use, disclaimer and privacy notice (Engli
 
 - Actions that involve other people or cost money (sending SMS, phone calls, reading messages, contacts or call logs, camera photos, microphone recordings) **always** require your confirmation, in every security mode including Turbo and Custom allowlists, and are never performed in unattended background runs.
 - The agent's system prompt refuses clearly illegal tasks (spam, harassment, covert surveillance, unauthorized access, piracy) and treats other people's data as personal data.
-- Documents: [terms](docs/legal/TERMS.md) ([German](docs/legal/TERMS.de.md)), [privacy notice](docs/legal/PRIVACY.md) ([German](docs/legal/PRIVACY.de.md)), [third-party notices](docs/legal/THIRD_PARTY_NOTICES.md), and an imprint template for German publishers ([IMPRESSUM.de.md](docs/legal/IMPRESSUM.de.md)).
-- These texts are templates, not legal advice. Fill in the operator details and have them reviewed before publishing AMC, for example in an app store.
+- Documents: [terms](docs/legal/TERMS.md) ([German](docs/legal/TERMS.de.md)), [privacy notice](docs/legal/PRIVACY.md) ([German](docs/legal/PRIVACY.de.md)), [third-party notices](docs/legal/THIRD_PARTY_NOTICES.md), and a note on when a German imprint is required.
+- AMC is a private, non-commercial open-source hobby project with no income. It is not affiliated with or endorsed by any AI provider or by Termux. Contact: GitHub issues.
+- License: [MIT](LICENSE). The software is provided "as is", without warranty.
+- These texts are not legal advice. If the project ever earns money (sales, ads, sponsorships), revisit the imprint note in [IMPRESSUM.de.md](docs/legal/IMPRESSUM.de.md).
 
 ## Security boundaries
 

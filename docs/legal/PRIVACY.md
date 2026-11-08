@@ -1,10 +1,10 @@
 # AMC privacy notice
 
-_Version 1. Template: replace the placeholders in section 1 and have the text reviewed before publishing the app (for example in an app store). This document is not legal advice._
+_Version 1. This document is not legal advice._
 
 ## 1. Who is responsible
 
-AMC is developed by **[NAME / COMPANY]**, **[POSTAL ADDRESS]**, **[EMAIL]**.
+AMC is a private, non-commercial open-source hobby project published as **Aimovix** on GitHub. There is no company and no income. Contact: [GitHub issues](https://github.com/Aimovix/Aimovix-AMC/issues) (do not post personal data or API keys there).
 
 The developers do not receive any of your data: AMC has no servers of its own. For processing inside the app on your device you are in control. For data you send to an AI provider, that provider is responsible under its own privacy policy.
 
