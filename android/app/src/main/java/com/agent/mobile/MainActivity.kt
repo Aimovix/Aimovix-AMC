@@ -29,6 +29,8 @@ import com.agent.mobile.ui.settings.SettingsScreen
 import com.agent.mobile.ui.setup.SetupWizardScreen
 import com.agent.mobile.ui.tutorial.OnboardingTutorialOverlay
 import com.agent.mobile.ui.theme.*
+import com.agent.mobile.ui.legal.LegalConsentScreen
+import com.agent.mobile.ui.legal.LegalTexts
 
 
 class MainViewModel : androidx.lifecycle.ViewModel() {
@@ -115,11 +117,23 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Start Foreground Service
-        AgentForegroundService.start(this)
+        val legalAlreadyAccepted = preferenceManager.loadAcceptedLegalVersion() >= LegalTexts.VERSION
+        // Start the foreground service only after the user accepted the terms.
+        if (legalAlreadyAccepted) AgentForegroundService.start(this)
 
         setContent {
             AutonomousAgentTheme {
+                var legalAccepted by remember { mutableStateOf(legalAlreadyAccepted) }
+                if (!legalAccepted) {
+                    LegalConsentScreen(
+                        onAccept = {
+                            preferenceManager.saveAcceptedLegalVersion(LegalTexts.VERSION)
+                            legalAccepted = true
+                            AgentForegroundService.start(this@MainActivity)
+                        },
+                        onDecline = { finish() }
+                    )
+                } else {
                 var selectedTab by remember { mutableIntStateOf(0) }
                 var currentToken by remember { mutableStateOf(savedToken) }
                 var showTutorial by remember {
@@ -283,6 +297,7 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     }
+                }
                 }
             }
         }

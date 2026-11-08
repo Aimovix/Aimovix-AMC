@@ -87,7 +87,7 @@ fun SecurityCockpitCard(
                 }
             }
 
-            // Antigravity-styled Preset Dropdown Selector
+            // Preset dropdown selector
             Box(modifier = Modifier.fillMaxWidth()) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),

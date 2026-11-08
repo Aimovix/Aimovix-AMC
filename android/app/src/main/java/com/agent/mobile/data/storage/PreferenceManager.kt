@@ -63,6 +63,8 @@ class PreferenceManager(
         private const val KEY_HEARTBEAT_ENABLED = "key_heartbeat_enabled"
         private const val KEY_HEARTBEAT_INTERVAL_MIN = "key_heartbeat_interval_min"
         private const val KEY_HEARTBEAT_CHECKLIST = "key_heartbeat_checklist"
+        private const val KEY_ACCEPTED_LEGAL_VERSION = "key_accepted_legal_version"
+        private const val KEY_ACCEPTED_LEGAL_AT = "key_accepted_legal_at"
 
         const val DEFAULT_MAX_STEPS = 30
         const val MIN_MAX_STEPS = 5
@@ -289,4 +291,18 @@ class PreferenceManager(
 
     fun loadHeartbeatChecklist(): String =
         prefs.getString(KEY_HEARTBEAT_CHECKLIST, null) ?: com.agent.mobile.agent.AgentPrompts.DEFAULT_HEARTBEAT_CHECKLIST
+
+    // --- Legal consent ------------------------------------------------------------------------
+
+    /** Records acceptance of the terms/privacy notice in [version], with a timestamp. */
+    fun saveAcceptedLegalVersion(version: Int) {
+        prefs.edit()
+            .putInt(KEY_ACCEPTED_LEGAL_VERSION, version)
+            .putLong(KEY_ACCEPTED_LEGAL_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun loadAcceptedLegalVersion(): Int = prefs.getInt(KEY_ACCEPTED_LEGAL_VERSION, 0)
+
+    fun loadAcceptedLegalAt(): Long = prefs.getLong(KEY_ACCEPTED_LEGAL_AT, 0L)
 }

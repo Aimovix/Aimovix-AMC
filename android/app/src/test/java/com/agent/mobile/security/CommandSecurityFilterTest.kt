@@ -352,5 +352,24 @@ class CommandSecurityFilterTest {
         val catastrophic = CommandSecurityFilter.analyze("rm -rf /")
         assertTrue(catastrophic.isBlocked)
     }
+
+    @Test
+    fun testThirdPartyActionsAlwaysNeedConfirmation() {
+        CommandSecurityFilter.setCustomRules(listOf(".*"), emptyList(), strict = false)
+        val commands = listOf(
+            "termux-sms-send -n 0123 hello", "termux-sms-list -l 5", "termux-telephony-call 0123",
+            "termux-contact-list", "termux-call-log", "termux-microphone-record -f a.m4a", "termux-camera-photo p.jpg",
+            "t\"ermux-sms-send\" -n 1 hi"
+        )
+        for (cmd in commands) {
+            val assessment = CommandSecurityFilter.analyze(cmd)
+            assertTrue("'$cmd' must be marked always-confirm", assessment.alwaysConfirm)
+            for (preset in SecurityPreset.entries) {
+                assertTrue("'$cmd' must require approval in $preset", CommandSecurityFilter.shouldRequireApproval(assessment, preset))
+            }
+        }
+        assertFalse(CommandSecurityFilter.analyze("termux-battery-status").alwaysConfirm)
+        CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
+    }
 }
 

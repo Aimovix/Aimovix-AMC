@@ -19,7 +19,13 @@ data class SecurityAssessment(
      * HIGH assessments that only mean "not on the small diagnostic allowlist" are not sensitive;
      * the Autonomous preset runs those without asking.
      */
-    val sensitive: Boolean = level == RiskLevel.HIGH
+    val sensitive: Boolean = level == RiskLevel.HIGH,
+    /**
+     * Actions that affect other people or cost money (SMS, calls, reading contacts/messages,
+     * camera, microphone). They always need the user's personal confirmation, in every preset
+     * including Turbo, and are never executed in unattended background runs.
+     */
+    val alwaysConfirm: Boolean = false
 )
 
 object CommandSecurityFilter {
@@ -85,6 +91,17 @@ object CommandSecurityFilter {
         Pair(Pattern.compile(">>|\\bcat\\s+<<"), "Creating files / appending data")
     )
 
+    // Third-party data, communication and recording: always confirmed by the user (legal safeguard).
+    private val ALWAYS_CONFIRM_PATTERNS = listOf(
+        Pair(Pattern.compile("\\btermux-sms-send\\b"), "Sends an SMS to another person (may cost money)"),
+        Pair(Pattern.compile("\\btermux-sms-(list|inbox)\\b"), "Reads private messages from and to other people"),
+        Pair(Pattern.compile("\\btermux-telephony-call\\b"), "Places a phone call (may cost money)"),
+        Pair(Pattern.compile("\\btermux-contact-list\\b"), "Reads other people's contact data"),
+        Pair(Pattern.compile("\\btermux-call-log\\b"), "Reads the call history with other people"),
+        Pair(Pattern.compile("\\btermux-microphone-record\\b"), "Records audio (recording others without consent can be illegal)"),
+        Pair(Pattern.compile("\\btermux-camera-photo\\b"), "Takes a photo (photographing others may need their consent)")
+    )
+
     private var customWhitelist = listOf<Pattern>()
     private var customBlacklist = listOf<Pattern>()
     private var isStrictMode = false
@@ -106,6 +123,21 @@ object CommandSecurityFilter {
     }
 
     fun analyze(command: String): SecurityAssessment {
+        val base = analyzeRisk(command)
+        if (base.isBlocked) return base
+        val normalized = normalizeCommand(command.trim())
+        val legal = ALWAYS_CONFIRM_PATTERNS.firstOrNull { (pattern, _) ->
+            pattern.matcher(command).find() || pattern.matcher(normalized).find()
+        } ?: return base
+        return SecurityAssessment(
+            level = RiskLevel.HIGH,
+            reason = "${legal.second}. Always requires your confirmation.",
+            sensitive = true,
+            alwaysConfirm = true
+        )
+    }
+
+    private fun analyzeRisk(command: String): SecurityAssessment {
         val trimmed = command.trim()
         val normalized = normalizeCommand(trimmed)
 
@@ -357,6 +389,7 @@ object CommandSecurityFilter {
      */
     fun shouldRequireApproval(assessment: SecurityAssessment, preset: SecurityPreset): Boolean {
         if (assessment.isBlocked) return false
+        if (assessment.alwaysConfirm) return true
         return when (preset) {
             SecurityPreset.TURBO -> false
             // Autonomous: routine work (reading, writing, scripts, installs, downloads) runs on its own;

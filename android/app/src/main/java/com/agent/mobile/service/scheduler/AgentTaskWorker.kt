@@ -40,6 +40,8 @@ class AgentTaskWorker(
             return Result.retry()
         }
         val prefs = runtime.preferenceManager
+        // Never act in the background before the user has accepted the terms of use.
+        if (prefs.loadAcceptedLegalVersion() < com.agent.mobile.ui.legal.LegalTexts.VERSION) return Result.success()
 
         val title: String
         val prompt: String

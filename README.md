@@ -133,6 +133,15 @@ amc run         # Run in the foreground
 
 **Termux crontab** is a separate, manually managed scheduler. Synchronizing a crontab installs the user's supplied schedule. Cron commands subsequently run outside AMC's interactive approval flow and are not stopped by the chat's emergency-stop control. Inspect every entry before syncing, and remove entries explicitly when no longer needed.
 
+## Legal
+
+On first launch AMC shows its terms of use, disclaimer and privacy notice (English and German); the app can only be used after all three confirmations are ticked, and the texts can be reread in **Settings → Legal & privacy**. Raising `LegalTexts.VERSION` asks every user to accept a changed version.
+
+- Actions that involve other people or cost money (sending SMS, phone calls, reading messages, contacts or call logs, camera photos, microphone recordings) **always** require your confirmation, in every security mode including Turbo and Custom allowlists, and are never performed in unattended background runs.
+- The agent's system prompt refuses clearly illegal tasks (spam, harassment, covert surveillance, unauthorized access, piracy) and treats other people's data as personal data.
+- Documents: [terms](docs/legal/TERMS.md) ([German](docs/legal/TERMS.de.md)), [privacy notice](docs/legal/PRIVACY.md) ([German](docs/legal/PRIVACY.de.md)), [third-party notices](docs/legal/THIRD_PARTY_NOTICES.md), and an imprint template for German publishers ([IMPRESSUM.de.md](docs/legal/IMPRESSUM.de.md)).
+- These texts are templates, not legal advice. Fill in the operator details and have them reviewed before publishing AMC, for example in an app store.
+
 ## Security boundaries
 
 - The bridge is device-local, requires a token, and rejects browser origins.
