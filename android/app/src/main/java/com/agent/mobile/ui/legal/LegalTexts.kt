@@ -8,7 +8,7 @@ package com.agent.mobile.ui.legal
  * distributing the app publicly and fill in the operator details.
  */
 object LegalTexts {
-    const val VERSION = 1
+    const val VERSION = 2
 
     enum class Language { EN, DE }
 
@@ -48,11 +48,11 @@ object LegalTexts {
             "You may only use AMC in compliance with applicable law and the rights of others. In particular, do not use it to: send spam or unsolicited messages, harass or deceive anyone, " +
                 "monitor, track, photograph or record other people without their consent, access systems or accounts without authorization, infringe copyrights or trademarks, " +
                 "or collect data from websites against their terms. Messages, calls, contacts, photos and recordings involve other people's personal data: you need a legal basis or their consent. " +
-                "For these actions AMC always asks for your confirmation, in every mode, and never performs them in unattended background runs."
+                "For these actions AMC always asks for your confirmation, in every mode (in the app or, if you set up the Telegram channel, with buttons in your paired Telegram chat), and never performs them in unattended background runs."
         ),
         Section(
             "4. Third-party services",
-            "AMC connects to services you choose and configure yourself (e.g. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter, Termux). Their own terms, usage policies and privacy policies apply. " +
+            "AMC connects to services you choose and configure yourself (e.g. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter, Termux and, optionally, a Telegram bot you create). The web_search tool uses DuckDuckGo. Their own terms, usage policies and privacy policies apply. " +
                 "You need your own account and API key and must comply with the provider's rules. Product names belong to their respective owners; AMC is not affiliated with or endorsed by them."
         ),
         Section(
@@ -65,7 +65,7 @@ object LegalTexts {
             "6. Privacy notice (summary)",
             "The developers do not collect any data: AMC has no servers of its own and contains no analytics, advertising or tracking. Chats, the audit log and the agent's memory are stored only on your device; API keys are encrypted with the Android Keystore; app backups are disabled. " +
                 "When you use a cloud AI provider, your messages, attached images, the agent's memory and the output of the tools it runs (which can include file contents, messages, contacts or location if the agent reads them) are sent to that provider and processed under its privacy policy, possibly outside the EU. " +
-                "Websites the agent opens receive normal web requests from your phone. Use a local model to keep everything on your device. " +
+                "Websites the agent opens receive normal web requests from your phone; web searches send the query to DuckDuckGo. If you enable the Telegram channel, your messages to the agent, its replies, approval requests and files it sends you pass through Telegram's servers under Telegram's privacy policy. Use a local model to keep everything on your device. " +
                 "You can delete chats and memory in the app at any time; uninstalling AMC removes all of its local data. The full privacy notice is in docs/legal/PRIVACY.md of the project."
         ),
         Section(
@@ -92,11 +92,11 @@ object LegalTexts {
             "Du darfst AMC nur im Einklang mit geltendem Recht und den Rechten anderer nutzen. Insbesondere nicht, um Spam oder unerwünschte Nachrichten zu senden, jemanden zu belästigen oder zu täuschen, " +
                 "andere Personen ohne deren Einwilligung zu überwachen, zu orten, zu fotografieren oder aufzunehmen, unbefugt auf Systeme oder Konten zuzugreifen, Urheber- oder Markenrechte zu verletzen " +
                 "oder Daten entgegen den Nutzungsbedingungen von Webseiten zu sammeln. Nachrichten, Anrufe, Kontakte, Fotos und Aufnahmen betreffen personenbezogene Daten anderer: Du brauchst dafür eine Rechtsgrundlage oder deren Einwilligung. " +
-                "Für diese Aktionen fragt AMC in jedem Modus immer nach deiner Bestätigung und führt sie nie in unbeaufsichtigten Hintergrundläufen aus."
+                "Für diese Aktionen fragt AMC in jedem Modus immer nach deiner Bestätigung (in der App oder, wenn du den Telegram-Kanal eingerichtet hast, per Buttons in deinem gekoppelten Telegram-Chat) und führt sie nie in unbeaufsichtigten Hintergrundläufen aus."
         ),
         Section(
             "4. Dienste Dritter",
-            "AMC verbindet sich mit Diensten, die du selbst auswählst und einrichtest (z. B. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter, Termux). Es gelten deren Nutzungsbedingungen, Nutzungsrichtlinien und Datenschutzerklärungen. " +
+            "AMC verbindet sich mit Diensten, die du selbst auswählst und einrichtest (z. B. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter, Termux und optional ein von dir erstellter Telegram-Bot). Das Werkzeug web_search nutzt DuckDuckGo. Es gelten deren Nutzungsbedingungen, Nutzungsrichtlinien und Datenschutzerklärungen. " +
                 "Du brauchst ein eigenes Konto und einen eigenen API-Schlüssel und musst die Regeln des Anbieters einhalten. Produktnamen gehören ihren jeweiligen Inhabern; AMC steht mit ihnen in keiner Verbindung und wird von ihnen nicht unterstützt."
         ),
         Section(
@@ -109,7 +109,7 @@ object LegalTexts {
             "6. Datenschutzhinweise (Kurzfassung)",
             "Die Entwickler erheben keine Daten: AMC hat keine eigenen Server und enthält keine Analyse-, Werbe- oder Tracking-Funktionen. Chats, Audit-Protokoll und das Gedächtnis des Agenten werden nur auf deinem Gerät gespeichert; API-Schlüssel sind mit dem Android Keystore verschlüsselt; App-Backups sind deaktiviert. " +
                 "Wenn du einen Cloud-KI-Anbieter nutzt, werden deine Nachrichten, angehängte Bilder, das Gedächtnis des Agenten und die Ausgaben der ausgeführten Werkzeuge (darunter Dateiinhalte, Nachrichten, Kontakte oder Standort, falls der Agent sie liest) an diesen Anbieter gesendet und nach dessen Datenschutzerklärung verarbeitet, möglicherweise außerhalb der EU. " +
-                "Webseiten, die der Agent öffnet, erhalten normale Anfragen von deinem Handy. Mit einem lokalen Modell bleiben alle Daten auf deinem Gerät. " +
+                "Webseiten, die der Agent öffnet, erhalten normale Anfragen von deinem Handy; Websuchen senden den Suchbegriff an DuckDuckGo. Wenn du den Telegram-Kanal aktivierst, laufen deine Nachrichten an den Agenten, seine Antworten, Freigabeanfragen und Dateien, die er dir schickt, über die Server von Telegram (es gilt deren Datenschutzerklärung). Mit einem lokalen Modell bleiben alle Daten auf deinem Gerät. " +
                 "Chats und Gedächtnis kannst du jederzeit in der App löschen; bei der Deinstallation werden alle lokalen Daten von AMC entfernt. Die vollständigen Datenschutzhinweise stehen im Projekt unter docs/legal/PRIVACY.de.md."
         ),
         Section(

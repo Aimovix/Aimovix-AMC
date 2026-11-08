@@ -26,6 +26,10 @@ object AgentTools {
     const val SCHEDULE_TASK = "schedule_task"
     const val LIST_SCHEDULED_TASKS = "list_scheduled_tasks"
     const val CANCEL_SCHEDULED_TASK = "cancel_scheduled_task"
+    const val WEB_SEARCH = "web_search"
+    const val DELEGATE_TASK = "delegate_task"
+    const val SEARCH_HISTORY = "search_history"
+    const val SEND_FILE = "send_file"
 
     enum class ParamType(val jsonType: String, val geminiType: String) {
         STRING("string", "STRING"),
@@ -76,6 +80,15 @@ object AgentTools {
             listOf(Param("url", ParamType.STRING, "The http:// or https:// URL to fetch."))
         ),
         Definition(
+            WEB_SEARCH,
+            "Search the web (no API key needed). Returns titles, URLs and snippets of the top results; " +
+                "read the most promising ones with web_fetch. Use it for current information, docs, prices, news.",
+            listOf(
+                Param("query", ParamType.STRING, "Search terms, e.g. 'termux-api battery status json'."),
+                Param("max_results", ParamType.INTEGER, "Number of results (1-15, default 8).", required = false)
+            )
+        ),
+        Definition(
             REMEMBER,
             "Save a durable fact to long-term memory (user preferences, names, recurring tasks, paths, lessons learned). " +
                 "Memory is shown to you at the start of every future conversation.",
@@ -116,6 +129,35 @@ object AgentTools {
             )
         ),
         Definition(
+            DELEGATE_TASK,
+            "Hand a self-contained sub-task to a sub-agent. It works independently with a fresh context and the same " +
+                "tools (except delegate_task), then returns a report. Use it for research, reading or comparing many " +
+                "files or pages, or trying out an approach, to keep your own context focused. The report is all you get, " +
+                "so ask for exactly the facts, paths or results you need.",
+            listOf(
+                Param("task", ParamType.STRING, "Complete instruction for the sub-agent, including the expected result format."),
+                Param("context", ParamType.STRING, "Optional background the sub-agent needs (paths, findings so far, constraints).", required = false)
+            )
+        ),
+        Definition(
+            SEARCH_HISTORY,
+            "Search earlier conversations with the user (their messages and your replies) for a keyword or phrase. " +
+                "Use it when the user refers to something discussed before that is not in long-term memory.",
+            listOf(
+                Param("query", ParamType.STRING, "Word or phrase to look for (case-insensitive)."),
+                Param("max_results", ParamType.INTEGER, "Number of matches (1-20, default 8).", required = false)
+            )
+        ),
+        Definition(
+            SEND_FILE,
+            "Deliver a file (photo, screenshot, PDF, audio, report, script) to the user. In the app it opens in the " +
+                "Artifacts panel; when the user is chatting via Telegram it is uploaded to that chat. Max 5 MB.",
+            listOf(
+                Param("path", ParamType.STRING, "Absolute path or path relative to the Termux home directory."),
+                Param("caption", ParamType.STRING, "Optional short caption.", required = false)
+            )
+        ),
+        Definition(
             LIST_SCHEDULED_TASKS,
             "List the background tasks you have scheduled, with their ids and states.",
             emptyList()
@@ -149,9 +191,11 @@ object AgentTools {
             put("required", JSONArray().apply { def.params.filter { it.required }.forEach { put(it.name) } })
         }
 
+    private fun enabled(excluded: Set<String>) = if (excluded.isEmpty()) ALL else ALL.filter { it.name !in excluded }
+
     /** OpenAI / Groq / OpenRouter / llama.cpp / Ollama `tools` array. */
-    fun openAiTools(): JSONArray = JSONArray().apply {
-        ALL.forEach { def ->
+    fun openAiTools(excluded: Set<String> = emptySet()): JSONArray = JSONArray().apply {
+        enabled(excluded).forEach { def ->
             put(JSONObject().apply {
                 put("type", "function")
                 put("function", JSONObject().apply {
@@ -164,8 +208,8 @@ object AgentTools {
     }
 
     /** Anthropic Messages API `tools` array. */
-    fun claudeTools(): JSONArray = JSONArray().apply {
-        ALL.forEach { def ->
+    fun claudeTools(excluded: Set<String> = emptySet()): JSONArray = JSONArray().apply {
+        enabled(excluded).forEach { def ->
             put(JSONObject().apply {
                 put("name", def.name)
                 put("description", def.description)
@@ -175,8 +219,8 @@ object AgentTools {
     }
 
     /** Gemini `function_declarations` array. Gemini rejects empty `properties`, so parameterless tools omit `parameters`. */
-    fun geminiFunctionDeclarations(): JSONArray = JSONArray().apply {
-        ALL.forEach { def ->
+    fun geminiFunctionDeclarations(excluded: Set<String> = emptySet()): JSONArray = JSONArray().apply {
+        enabled(excluded).forEach { def ->
             put(JSONObject().apply {
                 put("name", def.name)
                 put("description", def.description)
@@ -220,6 +264,10 @@ object AgentTools {
             }
             LIST_SCHEDULED_TASKS -> "list_scheduled_tasks"
             CANCEL_SCHEDULED_TASK -> "cancel_scheduled_task ${a["task_id"].orEmpty()}"
+            WEB_SEARCH -> "web_search: ${a["query"].orEmpty().take(160)}"
+            DELEGATE_TASK -> "delegate_task: ${a["task"].orEmpty().replace('\n', ' ').take(160)}"
+            SEARCH_HISTORY -> "search_history: ${a["query"].orEmpty().take(120)}"
+            SEND_FILE -> "send_file ${a["path"].orEmpty()}"
             else -> "${call.name} ${JSONObject(a as Map<*, *>)}"
         }
     }
@@ -237,6 +285,8 @@ object AgentTools {
                 }
             }
             SCHEDULE_TASK -> describe(call) + "\n---\n" + a["prompt"].orEmpty().take(1500)
+            DELEGATE_TASK -> "delegate_task\n---\n" + a["task"].orEmpty().take(1500) +
+                a["context"]?.takeIf { it.isNotBlank() }?.let { "\n\nContext: " + it.take(800) }.orEmpty()
             else -> describe(call)
         }
     }
@@ -295,6 +345,29 @@ object AgentTools {
             }
             REMEMBER, FORGET, UPDATE_PLAN, NOTIFY_USER, LIST_SCHEDULED_TASKS ->
                 SecurityAssessment(RiskLevel.LOW, "Agent bookkeeping")
+            WEB_SEARCH -> {
+                if (a["query"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A search query is required.")
+                else SecurityAssessment(RiskLevel.MEDIUM, "Web search (the query is sent to DuckDuckGo)")
+            }
+            DELEGATE_TASK -> {
+                if (a["task"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A task description is required.")
+                else SecurityAssessment(RiskLevel.LOW, "Delegating to a sub-agent; each of its actions is checked separately")
+            }
+            SEARCH_HISTORY -> {
+                if (a["query"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A search query is required.")
+                else SecurityAssessment(RiskLevel.LOW, "Searching earlier conversations")
+            }
+            SEND_FILE -> {
+                val path = a["path"].orEmpty()
+                when {
+                    path.isBlank() -> SecurityAssessment(RiskLevel.BLOCKED, "A file path is required.")
+                    path.contains(".termux_agent_token") ->
+                        SecurityAssessment(RiskLevel.BLOCKED, "Sending the bridge token file is not allowed.")
+                    SENSITIVE_READ_TARGETS.any { it.containsMatchIn(path) } ->
+                        SecurityAssessment(RiskLevel.HIGH, "Sending a credential or key file")
+                    else -> SecurityAssessment(RiskLevel.MEDIUM, "Sending a file to the user")
+                }
+            }
             CANCEL_SCHEDULED_TASK -> SecurityAssessment(RiskLevel.LOW, "Cancelling a background task")
             SCHEDULE_TASK -> {
                 if (a["prompt"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A prompt is required.")

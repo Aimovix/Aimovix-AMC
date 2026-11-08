@@ -171,6 +171,17 @@ fun MessageBubble(
                                         )
                                     }
                                 }
+                                // Approval requested by a sub-agent working for one of these calls.
+                                val forwarded = pendingApproval?.takeIf { p ->
+                                    p.first == message.id && allCalls.none { it.id == p.second.id }
+                                }
+                                if (forwarded != null) {
+                                    ApprovalPromptCard(
+                                        toolCall = forwarded.second,
+                                        onApprove = { onApproveTool(forwarded.second.id) },
+                                        onReject = { onRejectTool(forwarded.second.id) }
+                                    )
+                                }
                             }
                         }
                     }

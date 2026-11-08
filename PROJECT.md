@@ -9,6 +9,7 @@ Aimovix-AMC (AI Mobile Center) is an autonomous on-device AI agent architecture 
 - **v1.2.4**: Comprehensive engine hardening, bridge keep-alive grace windows, and initial Android architecture stabilization.
 - **v1.2.5**: Connection stability hardening, full English localization, Room DB SQLite synchronization, Direct Boot keystore resiliency, and expanded E2E verification suites.
 - **v1.3.0**: Autonomous agent: Autonomous security preset (default), multi-tool agent loop (files, web, memory, plan, notifications, self-scheduling), long-term memory, heartbeat, skills folder, steering while running, configurable step budget, and provider/context-window fixes.
+- **v1.4.0**: Remote channel and sub-agents: Telegram channel gateway on the phone (pairing, approvals as buttons, persistent sessions, steering, photos, file delivery), `delegate_task` sub-agents, keyless `web_search`, `search_history`, `send_file`, persona (SOUL.md), installed-skills index in the prompt (incl. SKILL.md folders), voice input in the device language, legal texts version 2.
 
 ---
 
@@ -73,3 +74,12 @@ A unified E2E test runner (`tests/e2e/runner.py`) provides multi-tier test suite
 
 ### Feature 20: Final Integration & Adversarial Verification
 Adversarial test cases verify resilience against malformed WebSocket frames, token brute-force attempts, process group killing, payload size limits, and command injection attacks.
+
+### Feature 21: Telegram Channel Gateway
+`TelegramGateway` long-polls the Telegram Bot API from the phone (no server or webhook). Only private chats of accounts paired with a single-use, 15-minute code (5 attempts) reach the agent. Each chat maps to a persistent AMC session; approvals are sent as inline buttons bound to the chat and time out as rejections; `/new`, `/stop`, `/status` and `/unpair` control the conversation. `ChannelGatewayService` (foreground service type `specialUse`) keeps it running and `BootReceiver` restarts it after reboot.
+
+### Feature 22: Run Modes and Sub-Agents
+`AutonomousAgentEngine.runHeadless` drives unattended (background), remote (channel) and sub-agent runs; approvals are resolved per mode (chat UI, channel buttons, parent run, or refused). `delegate_task` runs a sub-agent with a fresh context on the same bridge connection, streams its steps into the parent's tool card, forwards its approvals and cannot delegate further.
+
+### Feature 23: Search, Recall, Delivery, Persona and Skills
+`web_search` (DuckDuckGo HTML, no key), `search_history` (earlier conversations from Room), and `send_file` (upload to the channel chat or show in the artifact panel). The persona (`SOUL.md`) and the list of installed skills (`<name>.md` and `<name>/SKILL.md`) are added to every system prompt.

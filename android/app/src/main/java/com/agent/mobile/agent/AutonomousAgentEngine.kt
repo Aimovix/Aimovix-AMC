@@ -5,6 +5,7 @@ import com.agent.mobile.data.model.*
 import com.agent.mobile.data.network.LlmClient
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.data.network.WebFetcher
+import com.agent.mobile.data.network.WebSearcher
 import com.agent.mobile.data.repository.ChatRepository
 import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.data.storage.db.entity.ChatSession
@@ -23,8 +24,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 /**
  * The autonomous agent loop: model → tool calls → observations → model … until the task is done.
  *
- * One instance drives the interactive chat. Background runs (scheduled tasks, heartbeat) use a
- * separate headless instance with its own bridge connection, see [runUnattended].
+ * One instance drives the interactive chat. Headless instances (each with their own bridge
+ * connection) run scheduled tasks and the heartbeat, conversations from messaging channels such
+ * as Telegram, and delegated sub-agents, see [runHeadless].
  */
 class AutonomousAgentEngine(
     val bridgeClient: TermuxBridgeClient,
@@ -35,7 +37,12 @@ class AutonomousAgentEngine(
     val memoryStore: MemoryStore? = null,
     private val platform: AgentPlatform? = null,
     private val webFetcher: WebFetcher = WebFetcher(),
-    private val headless: Boolean = false
+    private val headless: Boolean = false,
+    private val webSearcher: WebSearcher = WebSearcher(),
+    /** The user's persona and standing instructions (SOUL.md), injected into every system prompt. */
+    val personaStore: TextFileStore? = null,
+    /** 0 for a normal agent, 1 for a sub-agent. Sub-agents cannot delegate further. */
+    private val subAgentDepth: Int = 0
 ) {
     companion object {
         private const val TAG = "AgentEngine"
@@ -43,6 +50,24 @@ class AutonomousAgentEngine(
         /** Upper bound for unattended runs so a background job always finishes in time. */
         const val UNATTENDED_MAX_STEPS = 25
         const val UNATTENDED_TIMEOUT_MS = 9 * 60_000L
+
+        /** Channel conversations may wait for approvals from the phone owner, so they get more time. */
+        const val REMOTE_TIMEOUT_MS = 45 * 60_000L
+
+        const val SUBAGENT_MAX_STEPS = 20
+        const val SUBAGENT_TIMEOUT_MS = 15 * 60_000L
+        const val MAX_SUBAGENT_DEPTH = 1
+
+        private const val SKILLS_CACHE_MS = 10 * 60_000L
+        private const val MAX_SEND_FILE_BYTES = 5 * 1024 * 1024
+
+        /** Skills index shared by all engines (interactive, background, channel). */
+        @Volatile
+        private var skillsCache: Pair<Long, String>? = null
+
+        fun invalidateSkillsCache() {
+            skillsCache = null
+        }
 
         /** Consecutive failed tool calls after which the agent is told to rethink its approach. */
         private const val REFLECTION_THRESHOLD = 3
@@ -55,7 +80,10 @@ class AutonomousAgentEngine(
         private const val MAX_IMAGES_IN_CONTEXT = 3
         private const val IMAGE_CHAR_WEIGHT = 4_000
 
-        private val UNTRUSTED_OUTPUT_TOOLS = setOf(AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH)
+        private val UNTRUSTED_OUTPUT_TOOLS = setOf(
+            AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH,
+            AgentTools.WEB_SEARCH, AgentTools.SEARCH_HISTORY, AgentTools.DELEGATE_TASK
+        )
         private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS)
     }
 
@@ -120,6 +148,28 @@ class AutonomousAgentEngine(
     /** Step counter of the running task (for the UI progress label). */
     private val _currentStep = MutableStateFlow(0)
     val currentStep: StateFlow<Int> = _currentStep.asStateFlow()
+
+    /**
+     * Decides approvals in headless REMOTE and SUBAGENT runs (Telegram buttons, or the parent run).
+     * When null, actions that need approval are refused there.
+     */
+    @Volatile
+    var approvalHandler: (suspend (ToolCall, SecurityAssessment) -> Boolean)? = null
+
+    /** Receives files from `send_file` in channel conversations. Null: files are shown in the app. */
+    @Volatile
+    var attachmentSink: AttachmentSink? = null
+
+    /** Called with a one-line description whenever a tool starts (progress for sub-agents and channels). */
+    @Volatile
+    var activityListener: ((String) -> Unit)? = null
+
+    /** Name of the messaging channel used in REMOTE runs (shown to the model). */
+    @Volatile
+    var channelName: String = "Telegram"
+
+    private val excludedTools: Set<String> =
+        if (subAgentDepth >= MAX_SUBAGENT_DEPTH) setOf(AgentTools.DELEGATE_TASK) else emptySet()
 
     private val steeringQueue = ConcurrentLinkedQueue<ChatMessage>()
     private val pendingWrites = java.util.Collections.synchronizedList(mutableListOf<Job>())
@@ -275,6 +325,15 @@ class AutonomousAgentEngine(
         preferenceManager?.saveMaxSteps(clamped)
     }
 
+    /** Re-reads model, security preset and step budget from preferences (used by long-lived headless engines). */
+    fun reloadSettings() {
+        val prefs = preferenceManager ?: return
+        _modelConfig.value = prefs.loadModelConfig()
+        _securityPreset.value = prefs.loadSecurityPreset()
+        _maxSteps.value = prefs.loadMaxSteps()
+        reloadSecurityRules()
+    }
+
     fun reloadSecurityRules() {
         preferenceManager?.let { prefs ->
             CommandSecurityFilter.setCustomRules(
@@ -325,7 +384,7 @@ class AutonomousAgentEngine(
                     chatRepository?.updateSessionTitle(executionSessionId, generatedTitle)
                 }
                 chatRepository?.saveMessage(executionSessionId, userMessage)
-                runAgentLoop(executionSessionId, unattended = false)
+                runAgentLoop(executionSessionId, RunMode.INTERACTIVE)
             } catch (e: CancellationException) {
                 recoverAbortedToolCalls(executionSessionId, "Execution canceled by the user.")
                 appendSystemMessage("🛑 Execution canceled by the user.", executionSessionId)
@@ -357,47 +416,114 @@ class AutonomousAgentEngine(
      * Runs one task without a user watching (scheduled task or heartbeat) in a fresh session.
      * Must be called on a headless engine instance. Actions that need approval are refused.
      */
-    suspend fun runUnattended(title: String, prompt: String): UnattendedResult = withContext(Dispatchers.Main) {
-        check(headless) { "runUnattended requires a headless engine" }
+    suspend fun runUnattended(title: String, prompt: String): UnattendedResult =
+        runHeadless(title = title, prompt = prompt, mode = RunMode.UNATTENDED)
+
+    /**
+     * Queues a message from a channel user while a REMOTE run is busy ("steering"); it is picked
+     * up before the next step. Returns false when the engine is idle.
+     */
+    fun queueSteering(text: String): Boolean {
+        if (!_isBusy.value || text.isBlank()) return false
+        steeringQueue.add(ChatMessage(role = MessageRole.USER, text = text.trim()))
+        _queuedInputs.value = steeringQueue.size
+        return true
+    }
+
+    /**
+     * Runs one turn without the app UI. Must be called on a headless engine instance.
+     * - [RunMode.UNATTENDED]: scheduled tasks and heartbeat, always in a fresh session; actions
+     *   that need approval are refused.
+     * - [RunMode.REMOTE]: a message from a messaging channel; continues [sessionId] when it
+     *   exists, approvals go through [approvalHandler].
+     * - [RunMode.SUBAGENT]: a delegated sub-task, in memory; approvals go to the parent.
+     * The summary is the agent's final reply of this turn.
+     */
+    suspend fun runHeadless(
+        title: String,
+        prompt: String,
+        mode: RunMode,
+        sessionId: String? = null,
+        imageBase64: String? = null,
+        imageMimeType: String? = null,
+        timeoutMs: Long = when (mode) {
+            RunMode.REMOTE -> REMOTE_TIMEOUT_MS
+            RunMode.SUBAGENT -> SUBAGENT_TIMEOUT_MS
+            else -> UNATTENDED_TIMEOUT_MS
+        }
+    ): UnattendedResult = withContext(Dispatchers.Main) {
+        check(headless) { "runHeadless requires a headless engine" }
+        require(mode != RunMode.INTERACTIVE) { "Interactive runs use startTask" }
         val skipped = mutableListOf<String>()
-        createNewSessionInternal(title)
-        val sessionId = _currentSession.value?.id
+
+        val existing = if (mode == RunMode.REMOTE && sessionId != null) chatRepository?.getSessionById(sessionId) else null
+        if (existing != null) {
+            sessionCollectJob?.cancel()
+            _currentSession.value = existing
+            _messages.value = chatRepository?.getMessagesForSessionSync(existing.id).orEmpty()
+        } else {
+            createNewSessionInternal(title)
+        }
+        val activeSessionId = _currentSession.value?.id
             ?: return@withContext UnattendedResult(null, "Could not create a session.", false, skipped)
 
-        val userMessage = ChatMessage(role = MessageRole.USER, text = prompt.trim())
-        _messages.value = listOf(userMessage)
+        val userMessage = ChatMessage(
+            role = MessageRole.USER,
+            text = prompt.trim(),
+            imageBase64 = imageBase64,
+            imageMimeType = imageMimeType
+        )
+        val turnStart = _messages.value.size
+        _messages.value = _messages.value + userMessage
         _isBusy.value = true
+        _plan.value = emptyList()
+        _currentStep.value = 0
         var success = true
         try {
-            chatRepository?.saveMessage(sessionId, userMessage)
-            val finished = withTimeoutOrNull(UNATTENDED_TIMEOUT_MS) {
-                runAgentLoop(sessionId, unattended = true, skippedApprovals = skipped)
+            chatRepository?.saveMessage(activeSessionId, userMessage)
+            val finished = withTimeoutOrNull(timeoutMs) {
+                runAgentLoop(activeSessionId, mode, skipped)
                 true
             }
             if (finished == null) {
                 success = false
                 bridgeClient.interruptCurrent()
-                recoverAbortedToolCalls(sessionId, "Background time limit reached.")
-                appendSystemMessage("⏱️ Background time limit reached. The task was stopped.", sessionId)
+                recoverAbortedToolCalls(activeSessionId, "Time limit reached.")
+                appendSystemMessage("⏱️ Time limit reached. The task was stopped.", activeSessionId)
             }
         } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                recoverAbortedToolCalls(activeSessionId, "Execution canceled.")
+                appendSystemMessage("🛑 Execution canceled.", activeSessionId)
+                drainSteeringQueue(activeSessionId)
+                awaitPendingWrites()
+                _isBusy.value = false
+            }
             throw e
         } catch (e: Exception) {
             success = false
-            Log.e(TAG, "Unattended run failed: ${e.message}", e)
-            appendSystemMessage("⚠️ Background run failed: ${e.localizedMessage}", sessionId)
+            Log.e(TAG, "Headless run failed: ${e.message}", e)
+            appendSystemMessage("⚠️ Run failed: ${e.localizedMessage}", activeSessionId)
         } finally {
-            withContext(NonCancellable) { awaitPendingWrites() }
+            withContext(NonCancellable) {
+                drainSteeringQueue(activeSessionId)
+                awaitPendingWrites()
+            }
             _isBusy.value = false
         }
 
-        val lastAssistant = _messages.value.lastOrNull { it.role == MessageRole.ASSISTANT && it.text.isNotBlank() }
-        val lastError = _messages.value.lastOrNull { it.role == MessageRole.SYSTEM && it.text.startsWith("⚠️") }
-        if (lastAssistant == null || lastAssistant.status == MessageStatus.ERROR) success = false
-        val summary = lastAssistant?.text?.trim()
-            ?: lastError?.text
+        val turn = _messages.value.drop(turnStart + 1)
+        val finalReply = turn.lastOrNull {
+            it.role == MessageRole.ASSISTANT && it.text.isNotBlank() && it.status != MessageStatus.ERROR &&
+                it.toolCalls.isEmpty() && it.toolCall == null
+        }
+        val lastSystem = turn.lastOrNull { it.role == MessageRole.SYSTEM }
+        val lastThought = turn.lastOrNull { it.role == MessageRole.ASSISTANT && it.text.isNotBlank() }
+        if (finalReply == null) success = false
+        val summary = finalReply?.text?.trim()
+            ?: listOfNotNull(lastThought?.text?.trim(), lastSystem?.text).joinToString("\n\n").ifBlank { null }
             ?: "The task finished without a summary."
-        UnattendedResult(sessionId, summary, success, skipped)
+        UnattendedResult(activeSessionId, summary, success, skipped)
     }
 
     private fun drainSteeringQueue(sessionId: String): Boolean {
@@ -423,21 +549,29 @@ class AutonomousAgentEngine(
 
     private suspend fun runAgentLoop(
         executionSessionId: String,
-        unattended: Boolean,
+        mode: RunMode,
         skippedApprovals: MutableList<String> = mutableListOf()
     ) {
-        val stepLimit = if (unattended) minOf(_maxSteps.value, UNATTENDED_MAX_STEPS) else _maxSteps.value
+        val stepLimit = when (mode) {
+            RunMode.UNATTENDED -> minOf(_maxSteps.value, UNATTENDED_MAX_STEPS)
+            RunMode.SUBAGENT -> minOf(_maxSteps.value, SUBAGENT_MAX_STEPS)
+            else -> _maxSteps.value
+        }
+        val steerable = mode == RunMode.INTERACTIVE || mode == RunMode.REMOTE
         // Built once per run so the prompt prefix stays identical between steps (prompt caching).
         val systemPrompt = AgentPrompts.build(
             memory = memoryStore?.asPromptText().orEmpty(),
-            unattended = unattended,
-            maxSteps = stepLimit
+            mode = mode,
+            maxSteps = stepLimit,
+            persona = withContext(Dispatchers.IO) { personaStore?.read().orEmpty() },
+            skills = loadSkillsIndex(),
+            channel = channelName
         )
         val state = LoopState()
         var iterations = 0
 
         while (currentCoroutineContext().isActive) {
-            if (!unattended) drainSteeringQueue(executionSessionId)
+            if (steerable) drainSteeringQueue(executionSessionId)
             if (iterations >= stepLimit) {
                 appendSystemMessage(
                     "ℹ️ Step limit of $stepLimit reached. Send \"continue\" to let the agent keep working " +
@@ -449,13 +583,34 @@ class AutonomousAgentEngine(
             iterations++
             _currentStep.value = iterations
 
-            val outcome = runSingleStep(executionSessionId, systemPrompt, unattended, state, skippedApprovals)
+            val outcome = runSingleStep(executionSessionId, systemPrompt, mode, state, skippedApprovals)
             if (outcome == StepOutcome.STOP || state.stopRequested) break
             if (outcome == StepOutcome.FINISHED) {
                 // The model answered without tools. Continue only if the user queued new input.
-                if (!unattended && steeringQueue.isNotEmpty()) continue
+                if (steerable && steeringQueue.isNotEmpty()) continue
                 break
             }
+        }
+    }
+
+    /** Lists installed skills through the bridge (cached for a few minutes; empty when offline). */
+    private suspend fun loadSkillsIndex(): String {
+        val cached = skillsCache
+        val now = System.currentTimeMillis()
+        if (cached != null && now - cached.first < SKILLS_CACHE_MS) return cached.second
+        if (bridgeClient.connectionStatus.value !is ConnectionStatus.Connected) return cached?.second.orEmpty()
+        return try {
+            val res = withTimeoutOrNull(6_000L) { bridgeClient.executeCommand(SkillsIndex.LIST_COMMAND, 5_000L) }
+                ?: return cached?.second.orEmpty()
+            if (res.isError && res.stdout.isBlank()) return cached?.second.orEmpty()
+            val text = SkillsIndex.format(SkillsIndex.parse(res.stdout))
+            skillsCache = now to text
+            text
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not list skills: ${e.message}")
+            cached?.second.orEmpty()
         }
     }
 
@@ -464,7 +619,7 @@ class AutonomousAgentEngine(
     private suspend fun runSingleStep(
         executionSessionId: String,
         systemPrompt: String,
-        unattended: Boolean,
+        mode: RunMode,
         state: LoopState,
         skippedApprovals: MutableList<String>
     ): StepOutcome {
@@ -494,7 +649,8 @@ class AutonomousAgentEngine(
                 llmClient.streamRequest(
                     config = activeConfig,
                     systemPrompt = systemPrompt,
-                    messages = contextMessages
+                    messages = contextMessages,
+                    excludedTools = excludedTools
                 ).collect { event ->
                     when (event) {
                         is LlmClient.LlmStreamEvent.Token -> {
@@ -578,7 +734,7 @@ class AutonomousAgentEngine(
             }
             executeToolCall(
                 executionSessionId, assistantMsgId, toolCall, index, tools,
-                unattended, state, skippedApprovals, pendingVisionObservations
+                mode, state, skippedApprovals, pendingVisionObservations
             )
         }
 
@@ -597,17 +753,17 @@ class AutonomousAgentEngine(
         toolCall: ToolCall,
         index: Int,
         tools: MutableList<ToolCall>,
-        unattended: Boolean,
+        mode: RunMode,
         state: LoopState,
         skippedApprovals: MutableList<String>,
         pendingVision: MutableList<ChatMessage>
     ) {
         val description = AgentTools.describe(toolCall)
 
-        if (!AgentTools.isKnown(toolCall.name)) {
+        if (!AgentTools.isKnown(toolCall.name) || toolCall.name in excludedTools) {
             appendToolMessage(
                 sessionId, toolCall, toolCall.name, description, "",
-                "Unknown tool '${toolCall.name}'. Available tools: ${AgentTools.ALL.joinToString { it.name }}.",
+                "Unknown tool '${toolCall.name}'. Available tools: ${AgentTools.ALL.filter { it.name !in excludedTools }.joinToString { it.name }}.",
                 -1, isError = true
             )
             state.consecutiveErrors++
@@ -654,41 +810,34 @@ class AutonomousAgentEngine(
 
         // 3. Approval.
         if (CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value)) {
-            val approved = if (unattended) {
-                skippedApprovals += description
-                false
-            } else {
-                updateMessageToolCalls(assistantMsgId, tools.toList(), MessageStatus.WAITING_FOR_APPROVAL)
-                _pendingApproval.value = Pair(assistantMsgId, securedToolCall)
-                platformNotifyApprovalNeeded(description)
-                val deferred = CompletableDeferred<Boolean>()
-                approvalContinuation = deferred
-                try {
-                    deferred.await()
-                } finally {
-                    _pendingApproval.value = null
-                    approvalContinuation = null
-                }
-            }
+            val skippedBefore = skippedApprovals.size
+            val approved = requestApproval(assistantMsgId, securedToolCall, assessment, description, mode, skippedApprovals)
             if (!approved) {
-                val reason = if (unattended) {
-                    "Not executed: this action requires the user's approval, and the user is not present during a " +
-                        "background run. Skip it and mention it in your summary."
+                val notAsked = skippedApprovals.size > skippedBefore
+                val reason = if (notAsked) {
+                    "Not executed: this action requires the user's approval, and the user cannot be asked during this " +
+                        "run. Skip it and mention it in your summary."
                 } else {
-                    "Execution rejected by the user. Do not retry this action; choose another approach or ask the user."
+                    "Execution rejected by the user (or not answered in time). Do not retry this action; choose another " +
+                        "approach or ask the user."
                 }
                 val rejected = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "", reason, -1, isError = true)
                 updateMessageToolResult(assistantMsgId, rejected, MessageStatus.ERROR)
-                recordAudit(sessionId, description, assessment.level.name, if (unattended) "Needs approval (background run)" else "Rejected by the user", rejected, 0, approved = false)
+                recordAudit(sessionId, description, assessment.level.name, if (notAsked) "Needs approval (user not present)" else "Rejected by the user", rejected, 0, approved = false)
                 return
             }
         }
 
         // 4. Execute.
         updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
+        try {
+            activityListener?.invoke(description.take(200))
+        } catch (e: Exception) {
+            Log.w(TAG, "Activity listener failed: ${e.message}")
+        }
         val start = System.currentTimeMillis()
         val raw = try {
-            dispatchTool(securedToolCall, assistantMsgId, pendingVision)
+            dispatchTool(securedToolCall, assistantMsgId, pendingVision, mode, skippedApprovals)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -735,6 +884,53 @@ class AutonomousAgentEngine(
         chatRepository?.saveMessage(sessionId, toolMsg)
     }
 
+    /**
+     * Asks for approval of [call] in the way the current [mode] allows:
+     * in the chat UI (interactive), through [approvalHandler] (channel conversations and
+     * sub-agents) or not at all (background runs, recorded in [skipped]).
+     */
+    private suspend fun requestApproval(
+        assistantMsgId: String,
+        call: ToolCall,
+        assessment: SecurityAssessment,
+        description: String,
+        mode: RunMode,
+        skipped: MutableList<String>
+    ): Boolean = when (mode) {
+        RunMode.UNATTENDED -> {
+            skipped += description
+            false
+        }
+        RunMode.REMOTE, RunMode.SUBAGENT -> {
+            val handler = approvalHandler
+            if (handler == null) {
+                skipped += description
+                false
+            } else {
+                updateMessageStatus(assistantMsgId, MessageStatus.WAITING_FOR_APPROVAL)
+                try {
+                    handler(call, assessment)
+                } finally {
+                    updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
+                }
+            }
+        }
+        RunMode.INTERACTIVE -> {
+            updateMessageStatus(assistantMsgId, MessageStatus.WAITING_FOR_APPROVAL)
+            _pendingApproval.value = Pair(assistantMsgId, call)
+            platformNotifyApprovalNeeded(description)
+            val deferred = CompletableDeferred<Boolean>()
+            approvalContinuation = deferred
+            try {
+                deferred.await()
+            } finally {
+                _pendingApproval.value = null
+                approvalContinuation = null
+                updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
+            }
+        }
+    }
+
     private fun platformNotifyApprovalNeeded(description: String) {
         // Only useful when the user left the app while the agent works.
         val p = platform ?: return
@@ -751,7 +947,9 @@ class AutonomousAgentEngine(
     private suspend fun dispatchTool(
         call: ToolCall,
         assistantMsgId: String,
-        pendingVision: MutableList<ChatMessage>
+        pendingVision: MutableList<ChatMessage>,
+        mode: RunMode,
+        skippedApprovals: MutableList<String>
     ): ToolResult {
         val a = call.arguments
         val description = AgentTools.describe(call)
@@ -787,6 +985,7 @@ class AutonomousAgentEngine(
                 } else content
                 val written = bridgeClient.writeFile(path, finalContent, timeoutMs = 20_000L)
                 if (written) {
+                    if (path.contains(".amc/skills")) invalidateSkillsCache()
                     registerArtifactForPath(path, finalContent)
                     ok("${if (append) "Appended" else "Wrote"} ${content.length} characters to $path.")
                 } else fail("Could not write $path.")
@@ -837,7 +1036,146 @@ class AutonomousAgentEngine(
                 val id = a["task_id"].orEmpty().trim()
                 if (p.cancelAgentTask(id)) ok("Cancelled task $id.") else fail("No scheduled task with id '$id'.")
             }
+            AgentTools.WEB_SEARCH -> {
+                val query = a["query"].orEmpty().trim()
+                val max = a["max_results"]?.trim()?.toDoubleOrNull()?.toInt() ?: 8
+                val res = webSearcher.search(query, max)
+                if (res.ok) ok(WebSearcher.format(query, res.hits)) else fail(res.error)
+            }
+            AgentTools.SEARCH_HISTORY -> {
+                val repo = chatRepository ?: return fail("Conversation history is not available in this run.")
+                val query = a["query"].orEmpty().trim()
+                val max = a["max_results"]?.trim()?.toDoubleOrNull()?.toInt() ?: 8
+                val hits = repo.searchHistory(query, max.coerceIn(1, 20), excludeSessionId = _currentSession.value?.id)
+                ok(formatHistoryHits(query, hits))
+            }
+            AgentTools.DELEGATE_TASK -> runSubAgent(call, assistantMsgId, mode, skippedApprovals)
+            AgentTools.SEND_FILE -> sendFile(call)
             else -> fail("Unknown tool '${call.name}'.")
+        }
+    }
+
+    private fun formatHistoryHits(query: String, hits: List<ChatRepository.HistoryHit>): String {
+        if (hits.isEmpty()) return "No earlier conversation mentions \"$query\"."
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+        return buildString {
+            append("Matches for \"").append(query).append("\" in earlier conversations (newest first):\n")
+            hits.forEach { h ->
+                val who = if (h.role == MessageRole.USER) "user" else "you"
+                val text = h.text.replace(Regex("\\s+"), " ").trim()
+                val idx = text.indexOf(query, ignoreCase = true)
+                val snippet = if (text.length <= 400) text else {
+                    val from = (idx - 150).coerceAtLeast(0)
+                    (if (from > 0) "…" else "") + text.substring(from, minOf(text.length, from + 400)) + "…"
+                }
+                append("\n- [").append(fmt.format(java.util.Date(h.timestamp))).append("] \"")
+                append(h.sessionTitle).append("\" ").append(who).append(": ").append(snippet)
+            }
+        }
+    }
+
+    /**
+     * delegate_task: runs a sub-agent with a fresh context on the same bridge connection. The
+     * parent waits, so the connection is never used by both at once. Approvals of the sub-agent
+     * are forwarded to this run; its progress is streamed into the parent's tool card.
+     */
+    private suspend fun runSubAgent(
+        call: ToolCall,
+        assistantMsgId: String,
+        parentMode: RunMode,
+        parentSkipped: MutableList<String>
+    ): ToolResult {
+        val description = AgentTools.describe(call)
+        fun result(text: String, error: Boolean) = ToolResult(
+            toolCallId = call.id, command = description, toolName = call.name,
+            stdout = if (error) "" else text, stderr = if (error) text else "",
+            exitCode = if (error) 1 else 0, isError = error
+        )
+        if (subAgentDepth >= MAX_SUBAGENT_DEPTH) {
+            return result("Sub-agents cannot delegate further. Do this part yourself.", true)
+        }
+        val task = call.arguments["task"].orEmpty().trim()
+        val context = call.arguments["context"].orEmpty().trim()
+        val prompt = buildString {
+            append(task)
+            if (context.isNotEmpty()) append("\n\nContext from the main agent:\n").append(context)
+        }
+
+        val child = AutonomousAgentEngine(
+            bridgeClient = bridgeClient,
+            llmClient = llmClient,
+            memoryStore = memoryStore,
+            platform = platform,
+            webFetcher = webFetcher,
+            headless = true,
+            webSearcher = webSearcher,
+            personaStore = personaStore,
+            subAgentDepth = subAgentDepth + 1
+        )
+        child.setModelConfig(_modelConfig.value)
+        child.setSecurityPreset(_securityPreset.value)
+        child.setMaxSteps(minOf(_maxSteps.value, SUBAGENT_MAX_STEPS))
+        child.channelName = channelName
+        child.attachmentSink = attachmentSink
+        child.approvalHandler = { childCall, assessment ->
+            val childDescription = "[sub-agent] " + AgentTools.describe(childCall)
+            requestApproval(assistantMsgId, childCall, assessment, childDescription, parentMode, parentSkipped)
+        }
+        child.activityListener = { line ->
+            updateStreamingOutput(assistantMsgId, "▸ $line\n")
+            try {
+                activityListener?.invoke("sub-agent: $line")
+            } catch (e: Exception) {
+                Log.w(TAG, "Activity listener failed: ${e.message}")
+            }
+        }
+        updateStreamingOutput(assistantMsgId, "🤖 Sub-agent started: ${task.take(120)}\n")
+        return try {
+            val res = child.runHeadless(title = "Sub-agent", prompt = prompt, mode = RunMode.SUBAGENT)
+            val m = child.metrics.value
+            recordMetrics(m.promptTokens, m.completionTokens, m.estimatedCostUsd)
+            val text = buildString {
+                append("Sub-agent report (").append(child.currentStep.value).append(" steps")
+                if (!res.success) append(", incomplete")
+                append("):\n\n").append(res.summary)
+            }
+            updateStreamingOutput(assistantMsgId, "✅ Sub-agent finished\n")
+            result(text, error = !res.success)
+        } finally {
+            child.close()
+        }
+    }
+
+    /** send_file: uploads to the channel chat, or shows the file in the app's artifact panel. */
+    private suspend fun sendFile(call: ToolCall): ToolResult {
+        val description = AgentTools.describe(call)
+        fun ok(text: String) = ToolResult(toolCallId = call.id, command = description, toolName = call.name, stdout = text)
+        fun fail(text: String) = ToolResult(toolCallId = call.id, command = description, toolName = call.name, stderr = text, exitCode = 1, isError = true)
+        val path = call.arguments["path"].orEmpty().trim()
+        val caption = call.arguments["caption"].orEmpty().trim()
+        val base64 = bridgeClient.readFileBase64(path, timeoutMs = 30_000L)
+        if (base64.isEmpty()) return fail("The file is empty or could not be read: $path")
+        val bytes = try {
+            java.util.Base64.getMimeDecoder().decode(base64)
+        } catch (e: IllegalArgumentException) {
+            return fail("Could not decode the file contents.")
+        }
+        if (bytes.size > MAX_SEND_FILE_BYTES) return fail("The file is larger than 5 MB. Compress or split it first.")
+        val name = path.substringAfterLast('/').ifBlank { "file" }
+        val sink = attachmentSink
+        if (sink != null) return ok(sink.sendFile(name, bytes, caption))
+
+        val type = artifactTypeFor(path)
+        return when (type) {
+            null -> ok("The app can preview images, text, code, Markdown and HTML only. Tell the user the file is at $path.")
+            ArtifactType.IMAGE -> {
+                appendArtifact(ArtifactItem(filename = name, path = path, type = type, base64Data = base64))
+                ok("The image is shown to the user in the Artifacts panel.")
+            }
+            else -> {
+                appendArtifact(ArtifactItem(filename = name, path = path, type = type, content = String(bytes, Charsets.UTF_8)))
+                ok("The file is shown to the user in the Artifacts panel.")
+            }
         }
     }
 

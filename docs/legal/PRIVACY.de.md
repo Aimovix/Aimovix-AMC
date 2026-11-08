@@ -1,6 +1,6 @@
 # AMC – Datenschutzhinweise
 
-_Version 1. Dieses Dokument ist keine Rechtsberatung._
+_Version 2. Dieses Dokument ist keine Rechtsberatung._
 
 ## 1. Wer steht dahinter
 
@@ -17,6 +17,8 @@ Die Entwickler erhalten keine deiner Daten: AMC hat keine eigenen Server. Über 
 | API-Schlüssel, Bridge-Token, Einstellungen | Verbindung zu Diensten | Verschlüsselte Einstellungen (Android Keystore, AES-256) | In den Einstellungen entfernen oder deinstallieren |
 | Geplante Aufgaben | Hintergrundläufe | Android WorkManager | Einstellungen → Autonomy oder deinstallieren |
 | Skill-Dateien (`~/.amc/skills`) | Wiederverwendbare Anleitungen | Termux-Home-Verzeichnis | Dateien in Termux löschen |
+| Persona (`SOUL.md`) | Deine dauerhaften Anweisungen an den Agenten | Privater App-Speicher | Einstellungen → Autonomy → Persona (leeren und speichern) oder deinstallieren |
+| Telegram-Bot-Token, gekoppelte Konten, Zuordnung Chat → Sitzung | Optionaler Telegram-Kanal | Verschlüsselte Einstellungen | Einstellungen → Channels (Konten entfernen, ausschalten) oder deinstallieren |
 
 App-Backups sind für AMC deaktiviert (`allowBackup=false`). AMC enthält keine Analyse-, Absturzbericht-, Werbe- oder Tracking-SDKs.
 
@@ -24,15 +26,17 @@ App-Backups sind für AMC deaktiviert (`allowBackup=false`). AMC enthält keine 
 
 - **Von dir eingerichteter KI-Anbieter** (z. B. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter): deine Nachrichten, angehängte Bilder, das Gedächtnis des Agenten, der Systemprompt und die Ausgaben der ausgeführten Werkzeuge. Diese können Dateiinhalte enthalten und – falls der Agent sie mit deiner Bestätigung liest – Nachrichten, Kontakte, Anruflisten, Fotos oder deinen Standort. Die Verarbeitung richtet sich nach den Bedingungen und der Datenschutzerklärung des Anbieters und kann außerhalb der EU/des EWR stattfinden. Mit einem **lokalen Modell** bleiben diese Daten auf deinem Gerät.
 - **Webseiten**, die der Agent mit `web_fetch` oder `curl` öffnet, erhalten normale Anfragen von deinem Handy einschließlich deiner IP-Adresse.
+- **DuckDuckGo** erhält die Suchbegriffe des Werkzeugs `web_search` und deine IP-Adresse.
+- **Telegram** (nur wenn du den Telegram-Kanal aktivierst): Nachrichten an deinen Bot, die Antworten des Agenten, Freigabeanfragen und Dateien, die der Agent dir schickt, werden über die Server von Telegram übertragen und nach dessen Datenschutzerklärung verarbeitet, möglicherweise außerhalb der EU/des EWR. Nur Telegram-Konten, die du mit einem Einmal-Code koppelst, können mit dem Agenten sprechen.
 - **Termux-Bridge**: läuft nur auf deinem Handy (`127.0.0.1`) und erfordert ein Token. Über sie verlassen keine Daten das Gerät.
 
 ## 4. Daten anderer Personen
 
-Nachrichten, Kontakte, Anruflisten, Fotos und Aufnahmen enthalten personenbezogene Daten anderer. AMC fragt vor dem Lesen oder Erstellen solcher Daten in jedem Sicherheitsmodus immer nach deiner Bestätigung und tut dies nie in unbeaufsichtigten Hintergrundläufen. Verarbeitest du sie über rein persönliche oder familiäre Zwecke hinaus, brauchst du eine Rechtsgrundlage (z. B. eine Einwilligung).
+Nachrichten, Kontakte, Anruflisten, Fotos und Aufnahmen enthalten personenbezogene Daten anderer. AMC fragt vor dem Lesen oder Erstellen solcher Daten in jedem Sicherheitsmodus immer nach deiner Bestätigung (in der App oder per Buttons in deinem gekoppelten Telegram-Chat) und tut dies nie in unbeaufsichtigten Hintergrundläufen. Verarbeitest du sie über rein persönliche oder familiäre Zwecke hinaus, brauchst du eine Rechtsgrundlage (z. B. eine Einwilligung).
 
 ## 5. Berechtigungen
 
-Internet (KI-Anbieter, Webseiten), Benachrichtigungen (Ergebnisse, Freigabeanfragen), Mikrofon (nur für die Spracheingabe, wenn du sie startest), Vordergrunddienst und Wake-Lock (Agent läuft weiter, während er arbeitet), Anfrage zur Akku-Optimierung (zuverlässiger Hintergrundbetrieb). Termux und Termux:API haben eigene Android-Berechtigungen, die du separat erteilst.
+Internet (KI-Anbieter, Webseiten), Benachrichtigungen (Ergebnisse, Freigabeanfragen), Mikrofon (nur für die Spracheingabe, wenn du sie startest), Vordergrunddienst und Wake-Lock (Agent läuft weiter, während er arbeitet, und der optionale Telegram-Kanal bleibt verbunden), Start nach dem Hochfahren (Telegram-Kanal neu starten, falls aktiviert), Anfrage zur Akku-Optimierung (zuverlässiger Hintergrundbetrieb). Termux und Termux:API haben eigene Android-Berechtigungen, die du separat erteilst.
 
 ## 6. Deine Rechte
 

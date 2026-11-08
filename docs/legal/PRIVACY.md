@@ -1,6 +1,6 @@
 # AMC privacy notice
 
-_Version 1. This document is not legal advice._
+_Version 2. This document is not legal advice._
 
 ## 1. Who is responsible
 
@@ -17,6 +17,8 @@ The developers do not receive any of your data: AMC has no servers of its own. F
 | API keys, bridge token, settings | Connecting to services | Encrypted preferences (Android Keystore, AES-256) | Remove in Settings, or uninstall |
 | Scheduled tasks | Background runs you or the agent scheduled | Android WorkManager | Settings → Autonomy, or uninstall |
 | Skill files (`~/.amc/skills`) | Reusable instructions | Termux home directory | Delete the files in Termux |
+| Persona (`SOUL.md`) | Your standing instructions for the agent | Private app storage | Settings → Autonomy → Persona (empty and save), or uninstall |
+| Telegram bot token, paired accounts, chat-to-session mapping | Optional Telegram channel | Encrypted preferences | Settings → Channels (remove accounts, switch off), or uninstall |
 
 Android app backups are disabled for AMC (`allowBackup=false`). AMC contains no analytics, crash reporting, advertising or tracking SDKs.
 
@@ -24,15 +26,17 @@ Android app backups are disabled for AMC (`allowBackup=false`). AMC contains no 
 
 - **AI provider you configure** (e.g. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter): your messages, attached images, the agent's memory, the system prompt and the output of tools the agent runs. Tool output can contain file contents and, if the agent reads them with your confirmation, messages, contacts, call logs, photos or your location. Processing is governed by the provider's terms and privacy policy and may take place outside the EU/EEA. Using a **local model** keeps this data on your device.
 - **Websites** the agent opens with `web_fetch` or `curl` receive ordinary requests from your phone, including your IP address.
+- **DuckDuckGo** receives the search terms of the `web_search` tool and your IP address.
+- **Telegram** (only if you enable the Telegram channel): messages you send to your bot, the agent's replies, approval requests and files the agent sends you are transmitted through Telegram's servers and processed under Telegram's privacy policy, possibly outside the EU/EEA. Only Telegram accounts you pair with a one-time code can talk to the agent.
 - **Termux bridge**: runs only on your phone (`127.0.0.1`) and requires a token. No data leaves the device through it.
 
 ## 4. Other people's data
 
-Messages, contacts, call logs, photos and recordings contain personal data of other people. AMC always asks for your confirmation before reading or creating such data, in every security mode, and never does so in unattended background runs. You are responsible for having a legal basis (for example their consent) when you process it beyond purely personal or household purposes.
+Messages, contacts, call logs, photos and recordings contain personal data of other people. AMC always asks for your confirmation before reading or creating such data, in every security mode (in the app, or through buttons in your paired Telegram chat), and never does so in unattended background runs. You are responsible for having a legal basis (for example their consent) when you process it beyond purely personal or household purposes.
 
 ## 5. Permissions
 
-Internet (AI provider, websites), notifications (results and approval requests), microphone (only for voice input, when you start it), foreground service and wake lock (keep the agent running while it works), battery optimization request (reliable background operation). Termux and Termux:API hold their own Android permissions, which you grant separately.
+Internet (AI provider, websites), notifications (results and approval requests), microphone (only for voice input, when you start it), foreground service and wake lock (keep the agent running while it works, and keep the optional Telegram channel connected), start after boot (restart the Telegram channel if you enabled it), battery optimization request (reliable background operation). Termux and Termux:API hold their own Android permissions, which you grant separately.
 
 ## 6. Your rights
 

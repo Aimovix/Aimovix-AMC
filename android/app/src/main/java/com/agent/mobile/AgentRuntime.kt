@@ -3,6 +3,8 @@ package com.agent.mobile
 import android.content.Context
 import com.agent.mobile.agent.AgentPlatform
 import com.agent.mobile.agent.MemoryStore
+import com.agent.mobile.agent.TextFileStore
+import com.agent.mobile.channel.TelegramChannelManager
 import com.agent.mobile.data.repository.ChatRepository
 import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.data.storage.db.AppDatabase
@@ -22,8 +24,11 @@ class AgentRuntime private constructor(context: Context) {
     val database: AppDatabase = AppDatabase.getInstance(appContext)
     val chatRepository = ChatRepository(database)
     val memoryStore = MemoryStore(File(appContext.filesDir, "agent/MEMORY.md"))
+    /** The user's persona and standing instructions for the agent (like OpenClaw's SOUL.md). */
+    val personaStore = TextFileStore(File(appContext.filesDir, "agent/SOUL.md"))
     val scheduler = SchedulerManager(appContext)
     val platform: AgentPlatform = AndroidAgentPlatform(appContext, scheduler)
+    val telegram: TelegramChannelManager by lazy { TelegramChannelManager(this) }
 
     companion object {
         @Volatile

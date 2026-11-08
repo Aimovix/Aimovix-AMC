@@ -30,6 +30,10 @@ interface ChatMessageDao {
     @Query("SELECT * FROM chat_messages WHERE text LIKE '%' || :query || '%' OR streamingTerminalOutput LIKE '%' || :query || '%' ORDER BY timestamp DESC")
     suspend fun searchMessages(query: String): List<ChatMessageEntity>
 
+    /** Full-text-ish search over what the user and the agent said (tool output excluded), newest first. */
+    @Query("SELECT * FROM chat_messages WHERE (role = 'USER' OR role = 'ASSISTANT') AND text LIKE '%' || :query || '%' AND sessionId != :excludeSessionId ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun searchConversationText(query: String, excludeSessionId: String, limit: Int): List<ChatMessageEntity>
+
     @Query("SELECT * FROM chat_messages WHERE sessionId = :sessionId AND (text LIKE '%' || :query || '%' OR streamingTerminalOutput LIKE '%' || :query || '%') ORDER BY timestamp ASC")
     suspend fun searchMessagesInSession(sessionId: String, query: String): List<ChatMessageEntity>
 }
