@@ -110,12 +110,13 @@ enum class ProviderType(
         displayName = "Local server (llama.cpp/Ollama)",
         defaultBaseUrl = "http://127.0.0.1:8080/v1",
         defaultModel = "default",
+        // llama-server serves one model ("default"); the names below are for Ollama-style servers.
+        // Small models below ~3B are unreliable with strict tool calling; see termux-bridge/model_catalog.json.
         suggestedModels = listOf(
             "default",
-            "qwen2.5:1.5b",
-            "qwen2.5:3b",
-            "llama3.2:3b",
-            "deepseek-r1:1.5b"
+            "qwen3.5:4b",
+            "qwen3.5:2b",
+            "gemma4:e4b"
         )
     )
 }

@@ -124,6 +124,11 @@
             android:name=".phone.PhoneControlStopReceiver"
             android:exported="false" />
 
+        <!-- Approve / Reject actions of the approval notification. -->
+        <receiver
+            android:name=".service.ApprovalActionReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".channel.BootReceiver"
             android:exported="false">

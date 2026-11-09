@@ -8,6 +8,11 @@
     <string name="phone_control_channel_description">Wird angezeigt, solange AMC dein Handy bedient, mit Stopp-Knopf</string>
     <string name="phone_control_notification_title">AMC bedient dein Handy</string>
     <string name="phone_control_notification_text">Tippe auf Stopp, um sofort abzubrechen.</string>
+    <string name="phone_control_approval_title">AMC bittet um Freigabe</string>
+    <string name="phone_control_approve">Freigeben</string>
+    <string name="phone_control_reject">Ablehnen</string>
+    <string name="phone_control_approval_channel">Freigaben</string>
+    <string name="phone_control_approval_channel_description">AMC fragt vor heiklen Aktionen</string>
     <string name="notification_access_label">AMC-Benachrichtigungen für den Agenten</string>
     <string name="screen_capture_notification_title">AMC kann Screenshots machen, solange es dein Handy bedient</string>
 </resources>

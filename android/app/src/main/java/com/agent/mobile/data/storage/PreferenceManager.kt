@@ -71,6 +71,8 @@ class PreferenceManager(
         private const val KEY_PHONE_BLOCKLIST = "key_phone_blocklist"
         private const val KEY_PHONE_ALLOWED = "key_phone_allowed"
         private const val KEY_PHONE_REMOTE = "key_phone_control_remote"
+        private const val KEY_APPROVAL_TIMEOUT_MIN = "approval_timeout_minutes"
+        const val DEFAULT_APPROVAL_TIMEOUT_MIN = 10
         private const val KEY_PHONE_BACKGROUND = "key_phone_control_background"
         private const val KEY_NOTIFICATION_TRIGGERS = "key_notification_triggers"
 
@@ -341,6 +343,13 @@ class PreferenceManager(
 
     /** Screen control in Telegram conversations. Off by default; when on, every action asks. */
     fun loadPhoneControlRemote(): Boolean = prefs.getBoolean(KEY_PHONE_REMOTE, false)
+
+    /** How long an interactive approval waits for an answer before it counts as rejected (1–60 min). */
+    fun loadApprovalTimeoutMs(): Long = prefs.getInt(KEY_APPROVAL_TIMEOUT_MIN, DEFAULT_APPROVAL_TIMEOUT_MIN).coerceIn(1, 60) * 60_000L
+
+    fun saveApprovalTimeoutMinutes(minutes: Int) {
+        prefs.edit().putInt(KEY_APPROVAL_TIMEOUT_MIN, minutes.coerceIn(1, 60)).apply()
+    }
 
     fun savePhoneControlRemote(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_PHONE_REMOTE, enabled).apply()

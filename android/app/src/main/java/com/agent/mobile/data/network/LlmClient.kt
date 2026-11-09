@@ -29,13 +29,32 @@ import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
 class LlmClient(
+    /**
+     * Cloud providers. readTimeout is the idle timeout between two streamed chunks: a stalled
+     * stream fails after a minute (and the fallback provider takes over) instead of after minutes.
+     * callTimeout caps one model step.
+     */
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(25, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(CLOUD_IDLE_TIMEOUT_S, TimeUnit.SECONDS)
+        .callTimeout(CLOUD_STEP_TIMEOUT_S, TimeUnit.SECONDS)
         .build()
 ) {
     companion object {
         private const val TAG = "LlmClient"
+        const val CLOUD_IDLE_TIMEOUT_S = 60L
+        const val CLOUD_STEP_TIMEOUT_S = 6 * 60L
+        /** On-device models: prompt prefill of a long context can take minutes before the first token. */
+        const val LOCAL_FIRST_TOKEN_TIMEOUT_S = 600L
+        const val LOCAL_STEP_TIMEOUT_S = 15 * 60L
+    }
+
+    /** Separate client for the LOCAL provider (llama-server on 127.0.0.1). */
+    private val localClient: OkHttpClient by lazy {
+        client.newBuilder()
+            .readTimeout(LOCAL_FIRST_TOKEN_TIMEOUT_S, TimeUnit.SECONDS)
+            .callTimeout(LOCAL_STEP_TIMEOUT_S, TimeUnit.SECONDS)
+            .build()
     }
 
     sealed class LlmResponse {
@@ -182,9 +201,10 @@ class LlmClient(
 
     private suspend inline fun <T> executeCancellableCall(
         request: Request,
+        httpClient: OkHttpClient = client,
         crossinline block: suspend (Response) -> T
     ): T {
-        val call = client.newCall(request)
+        val call = httpClient.newCall(request)
         val response = suspendCancellableCoroutine<Response> { continuation ->
             continuation.invokeOnCancellation {
                 call.cancel()
@@ -327,7 +347,7 @@ class LlmClient(
             reqBuilder.addHeader("X-Title", "AMC - AI Mobile Center")
         }
 
-        executeCancellableCall(reqBuilder.build()) { response ->
+        executeCancellableCall(reqBuilder.build(), if (config.provider == ProviderType.LOCAL) localClient else client) { response ->
             if (!response.isSuccessful) {
                 val errBody = response.body?.string() ?: ""
                 val isRetryable = response.code == 429 || response.code >= 500

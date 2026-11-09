@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.SystemClock
 import android.util.Log
+import android.view.accessibility.AccessibilityEvent
 import com.agent.mobile.agent.PhoneActionResult
 import com.agent.mobile.agent.PhoneController
 import com.agent.mobile.agent.PhoneTools
@@ -14,11 +15,13 @@ import com.agent.mobile.data.storage.PreferenceManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Android implementation of [PhoneController]. Screen tools run through [PhoneControlService];
- * one action at a time (a mutex), observe → act → settle → observe again.
+ * Android implementation of [PhoneController]. Screen tools run through [PhoneControlService] on
+ * the [PhoneThread] (never the main thread); one action at a time (a mutex), and only one run at
+ * a time may operate the screen ([ScreenLease]). Each action: check → act → settle → observe.
  *
  * Privacy gate: the screen after an action is only returned when the app in front may be read
  * in this run. Blocked apps, AMC itself and security settings are never shown; messaging,
@@ -34,16 +37,48 @@ class AndroidPhoneController(
     companion object {
         private const val TAG = "PhoneController"
         private const val APPS_CACHE_MS = 60_000L
+        private const val DEFAULT_RUN = "default"
+        /** Settle: quiet time after the last event of the app in front, and the hard cap. */
+        private const val SETTLE_QUIET_MS = 300L
+        private const val SETTLE_CAP_MS = 1_200L
+        /** A capture is reused while the app sent no event since and it is younger than this. */
+        private const val CAPTURE_REUSE_MS = 4_000L
+        private const val RESTORE_WAIT_MS = 3_000L
+
+        /** Identity of an action's target: package, label and view id. Approval covers exactly this. */
+        fun fingerprint(pkg: String?, target: TargetInfo?): String? =
+            if (pkg == null || target == null) null else "$pkg|${target.label.trim()}|${target.viewId.orEmpty()}"
     }
 
     private val mutex = Mutex()
 
-    /** The last screen returned to the model; its ids are what the model refers to. */
-    @Volatile
-    private var modelSnapshot: ScreenSnapshot? = null
+    /** Per-run view of the screen: what the model saw, and what it saw when the current turn began. */
+    internal class RunState {
+        /** The last screen returned to the model; its ids are what the model refers to. */
+        @Volatile var modelSnapshot: ScreenSnapshot? = null
+        /** [modelSnapshot] at the start of the current model turn (all calls of a turn use it). */
+        @Volatile var turnSnapshot: ScreenSnapshot? = null
+    }
 
-    /** App in front when a call was risk-checked; the action is refused if it changed before execution. */
-    private val checkedForeground = ConcurrentHashMap<String, String>()
+    private val runs = ConcurrentHashMap<String, RunState>()
+    private fun run(runId: String): RunState = runs.getOrPut(runId) { RunState() }
+
+    /** What a call looked like when it was risk-checked; the action is refused if that changed. */
+    internal data class CheckedCall(
+        val foreground: String,
+        val fingerprint: String?,
+        /** screen_actions: the fingerprint of each step's target when the batch was checked. */
+        val stepFingerprints: List<String?> = emptyList()
+    )
+
+    private val checked = ConcurrentHashMap<String, CheckedCall>()
+    private val approvedCalls = ConcurrentHashMap.newKeySet<String>()
+
+    private val lease = ScreenLease()
+
+    /** The last capture and when it was taken; reused by the next step while nothing changed. */
+    @Volatile
+    private var cache: Pair<Long, PhoneControlService.Capture>? = null
 
     private val labelCache = ConcurrentHashMap<String, String>()
 
@@ -65,6 +100,7 @@ class AndroidPhoneController(
     // -------------------------------------------------------------------------------------------
 
     override fun excludedTools(mode: RunMode): Set<String> = buildSet {
+        ShizukuShell.startListening()
         val serviceOn = PhoneControlService.instance != null
         if (!serviceOn) addAll(PhoneTools.SCREEN_TOOLS)
         if (mode == RunMode.REMOTE && !prefs.loadPhoneControlRemote()) addAll(PhoneTools.SCREEN_TOOLS)
@@ -76,7 +112,35 @@ class AndroidPhoneController(
 
     override fun beginControl(onStop: () -> Unit): AutoCloseable = PhoneControlSession.begin(context, onStop)
 
-    override suspend fun riskContext(call: ToolCall): PhoneRiskContext {
+    override fun beginTurn(runId: String) {
+        val state = run(runId)
+        state.turnSnapshot = state.modelSnapshot
+    }
+
+    override fun endRun(runId: String) {
+        runs.remove(runId)
+        lease.release(runId)
+    }
+
+    override fun noteApproved(callId: String) {
+        approvedCalls += callId
+    }
+
+    override fun releaseCall(callId: String) {
+        checked.remove(callId)
+        approvedCalls.remove(callId)
+    }
+
+    override suspend fun requestOnScreenApproval(title: String, detail: String): Boolean? =
+        PhoneControlSession.requestApproval(title, detail)
+
+    override suspend fun riskContext(call: ToolCall): PhoneRiskContext = riskContext(call, DEFAULT_RUN)
+
+    override suspend fun riskContext(call: ToolCall, runId: String): PhoneRiskContext = withContext(PhoneThread.dispatcher) {
+        riskContextOnPhoneThread(call, run(runId))
+    }
+
+    private fun riskContextOnPhoneThread(call: ToolCall, state: RunState): PhoneRiskContext {
         val blocklist = prefs.loadPhoneBlocklist()
         val svc = PhoneControlService.instance
         val a = call.arguments
@@ -97,16 +161,25 @@ class AndroidPhoneController(
             return PhoneRiskContext(blocklist = blocklist, targetPackage = targetPkg, targetLabel = targetLabel, ownPackage = context.packageName)
         }
         val locked = svc.isKeyguardLocked()
-        val fresh = if (locked) null else svc.capture(::labelOf, maxChars = 1_500)
+        val fresh = if (locked) null else captureCached(svc)
         val snap = fresh?.snapshot
         val fg = snap?.packageName ?: svc.activePackage()
-        fg?.let { checkedForeground[call.id] = it }
         val titles = snap?.elements?.map { it.label }?.filter { it.isNotBlank() }?.take(4).orEmpty()
         val target = if (snap == null) null else when (call.name) {
-            PhoneTools.SCREEN_TAP -> tapTargetInfo(call, snap)
-            PhoneTools.SCREEN_TYPE -> fieldInfo(a["target"], snap)
+            PhoneTools.SCREEN_TAP -> tapTargetInfo(call.arguments, snap, state)
+            PhoneTools.SCREEN_TYPE -> fieldInfo(a["target"], snap, state)
             else -> null
         }
+        // A batch runs on the current screen: resolve every step's target there.
+        val stepTargets = if (snap == null || call.name != PhoneTools.SCREEN_BATCH) emptyList() else
+            ActionBatchParser.parse(a["steps"]).steps.map { step ->
+                when (step.toolName) {
+                    PhoneTools.SCREEN_TAP -> tapTargetInfo(step.args, snap, state)
+                    PhoneTools.SCREEN_TYPE -> fieldInfo(step.args["target"], snap, state)
+                    else -> null
+                }
+            }
+        fg?.let { checked[call.id] = CheckedCall(it, fingerprint(it, target), stepTargets.map { t -> fingerprint(it, t) }) }
         return PhoneRiskContext(
             keyguardLocked = locked,
             foregroundPackage = fg,
@@ -117,32 +190,49 @@ class AndroidPhoneController(
             targetPackage = targetPkg,
             targetLabel = targetLabel,
             blocklist = blocklist,
-            ownPackage = context.packageName
+            ownPackage = context.packageName,
+            stepTargets = stepTargets
         )
     }
 
-    override suspend fun execute(call: ToolCall, mode: RunMode, grants: Set<String>): PhoneActionResult = mutex.withLock {
-        val expectedForeground = checkedForeground.remove(call.id)
-        try {
-            executeLocked(call, grants, expectedForeground)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "${call.name} failed: ${e.message}")
-            PhoneActionResult("${call.name} failed: ${e.message ?: e.javaClass.simpleName}", ok = false)
+    override suspend fun execute(call: ToolCall, mode: RunMode, grants: Set<String>): PhoneActionResult =
+        execute(call, mode, grants, DEFAULT_RUN)
+
+    override suspend fun execute(call: ToolCall, mode: RunMode, grants: Set<String>, runId: String): PhoneActionResult =
+        withContext(PhoneThread.dispatcher) {
+            mutex.withLock {
+                val expected = checked.remove(call.id)
+                val approved = approvedCalls.remove(call.id)
+                try {
+                    if (call.name in PhoneTools.SCREEN_TOOLS) {
+                        lease.acquire(runId)?.let { return@withLock PhoneActionResult(it, ok = false, transient = true) }
+                    }
+                    executeLocked(call, grants, expected, approved, run(runId))
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "${call.name} failed: ${e.message}")
+                    PhoneActionResult("${call.name} failed: ${e.message ?: e.javaClass.simpleName}", ok = false)
+                }
+            }
         }
-    }
 
     // -------------------------------------------------------------------------------------------
     // Tools
     // -------------------------------------------------------------------------------------------
 
-    private suspend fun executeLocked(call: ToolCall, grants: Set<String>, expectedForeground: String?): PhoneActionResult {
+    private suspend fun executeLocked(
+        call: ToolCall,
+        grants: Set<String>,
+        expected: CheckedCall?,
+        approved: Boolean,
+        state: RunState
+    ): PhoneActionResult {
         val a = call.arguments
         if (call.name == PhoneTools.APPS_LIST) {
             return PhoneActionResult(AppMatcher.format(installedApps(), a["filter"], prefs.loadPhoneBlocklist()))
         }
-        if (call.name in PhoneTools.NOTIFICATION_TOOLS) return notificationTool(call, grants)
+        if (call.name in PhoneTools.NOTIFICATION_TOOLS) return notificationTool(call, grants, state)
         when (call.name) {
             PhoneTools.SET_ALARM -> return intents.setAlarm(a)
             PhoneTools.CALENDAR_ADD -> return intents.addCalendarEvent(a)
@@ -156,99 +246,187 @@ class AndroidPhoneController(
         val svc = PhoneControlService.instance
             ?: return fail("Phone control is off. Ask the user to enable \"AMC Phone Control\" in AMC → Setup (Android accessibility settings).")
 
-        if (call.name in PhoneTools.SCREEN_ACTIONS || call.name == PhoneTools.WAIT_FOR) {
+        if (call.name in PhoneTools.SCREEN_TOOLS) {
+            // A dark display is not the agent's fault: nothing to read or tap until the user wakes it.
+            if (!svc.isInteractive()) {
+                return PhoneActionResult("The display is off. Nothing was done; wait until the user turns the screen on.", ok = false, transient = true)
+            }
+        }
+        if (call.name in PhoneTools.SCREEN_ACTIONS || call.name == PhoneTools.WAIT_FOR || call.name == PhoneTools.SCREEN_BATCH) {
             if (svc.isKeyguardLocked()) return fail("The phone is locked. AMC never operates or bypasses the lock screen; ask the user to unlock it.")
         }
-        // The approval was for the app that was in front then; do not act on a different one.
-        if (call.name in setOf(PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL, PhoneTools.SCREEN_SWIPE)) {
-            val now = svc.activePackage()
-            if (expectedForeground != null && now != null && now != expectedForeground) {
-                modelSnapshot = null
-                return fail("The app in front changed since this action was checked (now ${labelOf(now)}). Nothing was done; read the screen again.")
-            }
+        if (call.name in GUARDED_TOOLS) {
+            guardTarget(svc, call, expected, approved, state)?.let { return it }
         }
 
         return when (call.name) {
-            PhoneTools.SCREEN_READ -> observe(svc, grants, headline = null, settle = false, filter = a["filter"])
-            PhoneTools.SCREEN_TAP -> tap(svc, call, grants)
-            PhoneTools.SCREEN_TYPE -> type(svc, call, grants)
-            PhoneTools.SCREEN_SCROLL -> scroll(svc, call, grants)
-            PhoneTools.SCREEN_SWIPE -> {
-                fun n(k: String) = a[k]?.trim()?.toDoubleOrNull()?.toInt() ?: 0
-                val ok = svc.swipe(n("x1"), n("y1"), n("x2"), n("y2"), a["duration_ms"]?.trim()?.toDoubleOrNull()?.toLong() ?: 300L)
-                if (!ok) fail("The swipe could not be performed (outside the screen or cancelled).")
-                else observe(svc, grants, "Swiped.")
-            }
-            PhoneTools.SCREEN_GLOBAL -> {
-                val action = a["action"].orEmpty().trim().lowercase()
-                if (!svc.global(action)) fail("Could not press '$action'.") else observe(svc, grants, "Pressed $action.")
-            }
-            PhoneTools.OPEN_APP -> openApp(svc, a["name"].orEmpty(), grants)
-            PhoneTools.WAIT_FOR -> waitFor(svc, call, grants)
+            PhoneTools.SCREEN_READ -> observe(svc, grants, state, headline = null, settle = false, filter = a["filter"])
+            PhoneTools.SCREEN_TAP -> single(svc, grants, state, doTap(svc, a, state))
+            PhoneTools.SCREEN_TYPE -> single(svc, grants, state, doType(svc, a, state), AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED)
+            PhoneTools.SCREEN_SCROLL -> scroll(svc, a, grants, state)
+            PhoneTools.SCREEN_SWIPE -> single(svc, grants, state, doSwipe(svc, a))
+            PhoneTools.SCREEN_GLOBAL -> single(svc, grants, state, doGlobal(svc, a))
+            PhoneTools.OPEN_APP -> openApp(svc, a["name"].orEmpty(), grants, state)
+            PhoneTools.WAIT_FOR -> waitFor(svc, call, grants, state)
             PhoneTools.SCREEN_CAPTURE -> screenshot(svc, call, grants)
+            PhoneTools.SCREEN_BATCH -> ActionBatchExecutor(this, svc, grants, context.packageName)
+                .run(call.id, a, state.toBatchContext(), expected, approved)
             else -> fail("Unknown phone tool '${call.name}'.")
         }
     }
 
-    private suspend fun tap(svc: PhoneControlService, call: ToolCall, grants: Set<String>): PhoneActionResult {
-        val a = call.arguments
+    private val GUARDED_TOOLS = setOf(PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL, PhoneTools.SCREEN_SWIPE)
+
+    /**
+     * The approval was for the app (and element) that was in front then; never act on a different
+     * one. If AMC itself came to the front (the user approved in the chat), bring the app back first.
+     */
+    private suspend fun guardTarget(
+        svc: PhoneControlService,
+        call: ToolCall,
+        expected: CheckedCall?,
+        approved: Boolean,
+        state: RunState
+    ): PhoneActionResult? {
+        expected ?: return null
+        var now = svc.activePackage()
+        if (now == context.packageName && expected.foreground != context.packageName) {
+            now = restoreForeground(svc, expected.foreground)
+        }
+        if (now != null && now != expected.foreground) {
+            state.modelSnapshot = null
+            return fail("The app in front changed since this action was checked (now ${labelOf(now)}). Nothing was done; read the screen again.")
+        }
+        if (approved && expected.fingerprint != null) {
+            val snap = captureCached(svc)?.snapshot ?: return fail("The screen content is not available; nothing was done.")
+            val target = when (call.name) {
+                PhoneTools.SCREEN_TAP -> tapTargetInfo(call.arguments, snap, state)
+                PhoneTools.SCREEN_TYPE -> fieldInfo(call.arguments["target"], snap, state)
+                else -> null
+            }
+            if (fingerprint(snap.packageName, target) != expected.fingerprint) {
+                state.modelSnapshot = null
+                return fail("The screen changed while the approval was pending (the approved element is no longer there). Nothing was done; read the screen again and ask again if needed.")
+            }
+        }
+        return null
+    }
+
+    /**
+     * Brings [pkg] back to the front after the user switched to AMC to approve. Only
+     * FLAG_ACTIVITY_NEW_TASK: the app's existing task comes to the front unchanged.
+     */
+    private suspend fun restoreForeground(svc: PhoneControlService, pkg: String): String? {
+        val intent = pm.getLaunchIntentForPackage(pkg) ?: return svc.activePackage()
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            svc.startActivity(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not bring $pkg back: ${e.message}")
+            return svc.activePackage()
+        }
+        val deadline = SystemClock.uptimeMillis() + RESTORE_WAIT_MS
+        while (SystemClock.uptimeMillis() < deadline && svc.activePackage() != pkg) delay(100)
+        settle(svc, SystemClock.uptimeMillis())
+        cache = null
+        return svc.activePackage()
+    }
+
+    /** Outcome of one screen action before the screen is read again. */
+    internal sealed class Act {
+        data class Done(val headline: String) : Act()
+        data class Failed(val reason: String) : Act()
+    }
+
+    private suspend fun single(
+        svc: PhoneControlService,
+        grants: Set<String>,
+        state: RunState,
+        act: Act,
+        expectEvent: Int? = null
+    ): PhoneActionResult = when (act) {
+        is Act.Failed -> fail(act.reason)
+        is Act.Done -> observe(svc, grants, state, act.headline, expectEvent = expectEvent)
+    }
+
+    internal suspend fun doTap(svc: PhoneControlService, a: Map<String, String>, state: RunState): Act {
         val longPress = PhoneTools.isTrue(a["long_press"])
         val target = a["target"]?.trim().orEmpty()
+        val verb = if (longPress) "Long-pressed" else "Tapped"
         if (target.isEmpty()) {
-            val x = a["x"]?.trim()?.toDoubleOrNull()?.toInt() ?: return fail("x and y are required without a target.")
-            val y = a["y"]?.trim()?.toDoubleOrNull()?.toInt() ?: return fail("x and y are required without a target.")
-            if (!svc.tapAt(x, y, longPress)) return fail("The tap at $x,$y could not be performed (outside the screen?).")
-            return observe(svc, grants, "${if (longPress) "Long-pressed" else "Tapped"} at $x,$y.")
+            val x = a["x"]?.trim()?.toDoubleOrNull()?.toInt() ?: return Act.Failed("x and y are required without a target.")
+            val y = a["y"]?.trim()?.toDoubleOrNull()?.toInt() ?: return Act.Failed("x and y are required without a target.")
+            cache = null
+            if (!svc.tapAt(x, y, longPress)) return Act.Failed("The tap at $x,$y could not be performed (outside the screen, on the AMC overlay, or cancelled).")
+            return Act.Done("$verb at $x,$y.")
         }
-        val fresh = svc.capture(::labelOf) ?: return fail("The screen content is not available.")
-        val el = locate(target, fresh.snapshot)
-            ?: return fail("No element \"$target\" on the screen now (ids change when the screen changes). Read the screen again.")
+        val fresh = captureCached(svc) ?: return Act.Failed("The screen content is not available.")
+        val el = locate(target, fresh.snapshot, state)
+            ?: return Act.Failed("No element \"$target\" on the screen now (ids change when the screen changes). Read the screen again.")
         val clickEl = ElementMatcher.clickTarget(fresh.snapshot, el, longPress)
         val node = fresh.node(clickEl)
         val actionable = if (longPress) clickEl.node.longClickable else clickEl.node.clickable
+        cache = null
         var done = node != null && actionable && svc.click(node, longPress)
         if (!done) done = svc.tapAt(el.node.bounds.centerX, el.node.bounds.centerY, longPress)
-        if (!done) return fail("Could not tap ${describe(el)}.")
-        return observe(svc, grants, "${if (longPress) "Long-pressed" else "Tapped"} ${describe(el)}.")
+        if (!done) return Act.Failed("Could not tap ${describe(el)}.")
+        return Act.Done("$verb ${describe(el)}.")
     }
 
-    private suspend fun type(svc: PhoneControlService, call: ToolCall, grants: Set<String>): PhoneActionResult {
-        val a = call.arguments
+    internal suspend fun doType(svc: PhoneControlService, a: Map<String, String>, state: RunState): Act {
         val text = a["text"].orEmpty()
-        val fresh = svc.capture(::labelOf) ?: return fail("The screen content is not available.")
-        val field = findField(a["target"], fresh.snapshot)
-            ?: return fail("No input field found. Tap the field first, or pass its id as target.")
-        val node = fresh.node(field) ?: return fail("The input field is no longer available.")
-        if (!svc.setText(node, text)) {
-            // Some fields only accept text once focused by a real tap.
-            svc.tapAt(field.node.bounds.centerX, field.node.bounds.centerY, false)
-            delay(300)
-            val again = svc.capture(::labelOf)
-            val focused = again?.snapshot?.let { s -> ElementMatcher.relocate(field, s) ?: s.elements.firstOrNull { it.node.focused && it.node.editable } }
-            val retryNode = focused?.let { again.node(it) }
-            if (retryNode == null || !svc.setText(retryNode, text)) return fail("The field did not accept text.")
-        }
+        val fresh = captureCached(svc) ?: return Act.Failed("The screen content is not available.")
+        val field = findField(a["target"], fresh.snapshot, state)
+            ?: return Act.Failed("No input field found. Tap the field first, or pass its id as target.")
+        val node = fresh.node(field) ?: return Act.Failed("The input field is no longer available.")
+        cache = null
+        val entered = svc.enterText(node, text)
+        if (!entered.ok) return Act.Failed(entered.diagnostic)
         val what = if (field.node.password) "the password field" else describe(field)
-        var headline = "Entered ${text.length} characters into $what."
+        var headline = "Entered ${text.length} characters into $what" + if (entered.method != "set_text") " (via ${entered.method})." else "."
         if (PhoneTools.isTrue(a["submit"])) {
-            delay(150)
-            val current = svc.capture(::labelOf)
-            val target = current?.snapshot?.let { s -> ElementMatcher.relocate(field, s) ?: s.elements.firstOrNull { it.node.focused && it.node.editable } }
-            val submitNode = target?.let { current.node(it) } ?: node
-            headline += if (svc.imeEnter(submitNode)) " Pressed Enter." else
-                " Enter could not be pressed (needs Android 11); tap the send or search button instead."
+            headline += " " + submit(svc, field, text)
         }
-        return observe(svc, grants, headline)
+        return Act.Done(headline)
     }
 
-    private suspend fun scroll(svc: PhoneControlService, call: ToolCall, grants: Set<String>): PhoneActionResult {
-        val a = call.arguments
+    /** Submits typed text: the send button in messengers (verified by the field emptying), the keyboard action elsewhere. */
+    private suspend fun submit(svc: PhoneControlService, field: ScreenElement, text: String): String {
+        delay(150)
+        val current = svc.capture(::labelOf) ?: return "The screen was not readable after typing; nothing was submitted."
+        val snap = current.snapshot
+        val located = ElementMatcher.relocate(field, snap) ?: snap.elements.firstOrNull { it.node.focused && it.node.editable }
+        val kind = PhoneToolPolicy.appKind(snap.packageName, snap.appLabel, context.packageName)
+        return when (val plan = if (located == null) SubmitResolver.Plan.ImeAction else SubmitResolver.plan(snap, located, kind)) {
+            is SubmitResolver.Plan.TapButton -> {
+                val node = current.node(plan.button)
+                cache = null
+                val tapped = (node != null && svc.click(node, false)) ||
+                    svc.tapAt(plan.button.node.bounds.centerX, plan.button.node.bounds.centerY, false)
+                if (!tapped) return "The send button ${describe(plan.button)} could not be tapped; the text was not sent."
+                settle(svc, SystemClock.uptimeMillis())
+                val after = svc.capture(::labelOf)?.snapshot
+                val fieldAfter = after?.let { ElementMatcher.relocate(located!!, it) }
+                if (after != null && SubmitResolver.fieldCleared(fieldAfter, text)) "Tapped send ${describe(plan.button)}; the message field is empty now (sent)."
+                else "Tapped send ${describe(plan.button)}, but the text is still in the field: it was probably NOT sent. Read the screen."
+            }
+            is SubmitResolver.Plan.NotFound -> "${plan.reason} Nothing was sent; tap the send button yourself (screen_read shows it)."
+            SubmitResolver.Plan.ImeAction -> {
+                val node = located?.let { current.node(it) }
+                cache = null
+                if (node != null && svc.imeEnter(node)) "Pressed the keyboard action key (Enter / Search)."
+                else "Enter could not be pressed (needs Android 11); tap the send or search button instead."
+            }
+        }
+    }
+
+    internal suspend fun doScroll(svc: PhoneControlService, a: Map<String, String>, state: RunState): Act {
         val direction = a["direction"].orEmpty().trim().lowercase()
-        val fresh = svc.capture(::labelOf) ?: return fail("The screen content is not available.")
-        val before = fresh.snapshot.text
-        val container = a["target"]?.takeIf { it.isNotBlank() }?.let { locate(it, fresh.snapshot) }
+        val fresh = captureCached(svc) ?: return Act.Failed("The screen content is not available.")
+        val container = a["target"]?.takeIf { it.isNotBlank() }?.let { locate(it, fresh.snapshot, state) }
             ?.let { scrollableAncestor(fresh.snapshot, it) }
             ?: fresh.snapshot.elements.filter { it.node.scrollable }.maxByOrNull { it.node.bounds.area() }
+        cache = null
         var done = container?.let { el -> fresh.node(el)?.let { svc.scroll(it, direction) } } == true
         if (!done) {
             val b = container?.node?.bounds ?: svc.screenBounds()
@@ -263,14 +441,32 @@ class AndroidPhoneController(
                 else -> svc.swipe(cx + dx, cy, cx - dx, cy, 350)
             }
         }
-        if (!done) return fail("Could not scroll $direction.")
-        val result = observe(svc, grants, "Scrolled $direction.")
-        return if (result.ok && modelSnapshot?.text == before) {
+        return if (done) Act.Done("Scrolled $direction.") else Act.Failed("Could not scroll $direction.")
+    }
+
+    internal suspend fun doSwipe(svc: PhoneControlService, a: Map<String, String>): Act {
+        fun n(k: String) = a[k]?.trim()?.toDoubleOrNull()?.toInt() ?: 0
+        cache = null
+        val ok = svc.swipe(n("x1"), n("y1"), n("x2"), n("y2"), a["duration_ms"]?.trim()?.toDoubleOrNull()?.toLong() ?: 300L)
+        return if (ok) Act.Done("Swiped.") else Act.Failed("The swipe could not be performed (outside the screen, on the AMC overlay, or cancelled).")
+    }
+
+    internal fun doGlobal(svc: PhoneControlService, a: Map<String, String>): Act {
+        val action = a["action"].orEmpty().trim().lowercase()
+        cache = null
+        return if (svc.global(action)) Act.Done("Pressed $action.") else Act.Failed("Could not press '$action'.")
+    }
+
+    private suspend fun scroll(svc: PhoneControlService, a: Map<String, String>, grants: Set<String>, state: RunState): PhoneActionResult {
+        val before = captureCached(svc)?.snapshot?.text
+        val direction = a["direction"].orEmpty().trim().lowercase()
+        val result = single(svc, grants, state, doScroll(svc, a, state))
+        return if (result.ok && before != null && state.modelSnapshot?.text == before) {
             result.copy(text = result.text.replaceFirst("Scrolled $direction.", "Scrolled $direction, but the screen did not change (end of the list?)."))
         } else result
     }
 
-    private suspend fun openApp(svc: PhoneControlService, name: String, grants: Set<String>): PhoneActionResult {
+    private suspend fun openApp(svc: PhoneControlService, name: String, grants: Set<String>, state: RunState): PhoneActionResult {
         val app = resolveApp(name) ?: return fail("No installed app matches \"$name\". Use apps_list to find it.")
         prefs.loadPhoneBlocklist().blockReason(app.packageName, app.label)?.let {
             return fail("$it. AMC does not open it; the user can release it in Settings → Phone control.")
@@ -278,28 +474,29 @@ class AndroidPhoneController(
         val intent = pm.getLaunchIntentForPackage(app.packageName)
             ?: return fail("${app.label} cannot be opened from the launcher.")
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+        cache = null
         svc.startActivity(intent)
         val deadline = SystemClock.uptimeMillis() + 6_000L
         while (SystemClock.uptimeMillis() < deadline && svc.activePackage() != app.packageName) delay(200)
         val headline = if (svc.activePackage() == app.packageName) "Opened ${app.label}." else "Started ${app.label}, but it is not in front yet."
-        return observe(svc, grants, headline)
+        return observe(svc, grants, state, headline)
     }
 
-    private suspend fun waitFor(svc: PhoneControlService, call: ToolCall, grants: Set<String>): PhoneActionResult {
+    private suspend fun waitFor(svc: PhoneControlService, call: ToolCall, grants: Set<String>, state: RunState): PhoneActionResult {
         val a = call.arguments
         val text = a["text"].orEmpty().trim()
         val gone = PhoneTools.isTrue(a["gone"])
         val timeoutMs = (a["timeout_seconds"]?.trim()?.toDoubleOrNull()?.toLong() ?: 10L).coerceIn(1L, 60L) * 1000L
         val start = SystemClock.uptimeMillis()
         while (true) {
-            val snap = svc.capture(::labelOf)?.snapshot
-            val present = snap != null && locate(text, snap) != null
+            val snap = captureCached(svc)?.snapshot
+            val present = snap != null && locate(text, snap, state) != null
             if (present != gone) {
                 val waited = (SystemClock.uptimeMillis() - start) / 1000.0
-                return observe(svc, grants, "\"$text\" ${if (gone) "disappeared" else "appeared"} after ${"%.1f".format(waited)} s.", settle = false)
+                return observe(svc, grants, state, "\"$text\" ${if (gone) "disappeared" else "appeared"} after ${"%.1f".format(waited)} s.", settle = false)
             }
             if (SystemClock.uptimeMillis() - start >= timeoutMs) {
-                val obs = observe(svc, grants, "Timed out after ${timeoutMs / 1000} s: \"$text\" ${if (gone) "is still there" else "did not appear"}.", settle = false)
+                val obs = observe(svc, grants, state, "Timed out after ${timeoutMs / 1000} s: \"$text\" ${if (gone) "is still there" else "did not appear"}.", settle = false)
                 return obs.copy(ok = false)
             }
             delay(500)
@@ -308,7 +505,7 @@ class AndroidPhoneController(
 
     private suspend fun screenshot(svc: PhoneControlService, call: ToolCall, grants: Set<String>): PhoneActionResult {
         if (svc.isKeyguardLocked()) return fail("The phone is locked. AMC takes no screenshots of the lock screen.")
-        val cap = svc.capture(::labelOf, maxChars = 1_500) ?: return fail("The screen content is not available right now.")
+        val cap = captureCached(svc) ?: return fail("The screen content is not available right now.")
         // Same privacy gate as the element list: no image of a screen the run may not see.
         gateReason(cap.snapshot, svc.windowClass, grants)?.let { return fail(it) }
         return when (val shot = ScreenCapture.capture(context, svc)) {
@@ -341,7 +538,7 @@ class AndroidPhoneController(
     // Notifications
     // -------------------------------------------------------------------------------------------
 
-    private suspend fun notificationTool(call: ToolCall, grants: Set<String>): PhoneActionResult {
+    private suspend fun notificationTool(call: ToolCall, grants: Set<String>, state: RunState): PhoneActionResult {
         val a = call.arguments
         if (call.name == PhoneTools.NOTIFICATION_TRIGGER) return triggerTool(call)
         val listener = AmcNotificationListener.instance
@@ -362,7 +559,7 @@ class AndroidPhoneController(
                 val svc = PhoneControlService.instance ?: return PhoneActionResult("Opened the notification of ${info.appLabel}.")
                 val deadline = SystemClock.uptimeMillis() + 5_000L
                 while (SystemClock.uptimeMillis() < deadline && svc.activePackage() != info.packageName) delay(200)
-                observe(svc, grants, "Opened the notification of ${info.appLabel}.")
+                observe(svc, grants, state, "Opened the notification of ${info.appLabel}.")
             }
             PhoneTools.NOTIFICATION_REPLY -> {
                 val text = a["text"].orEmpty()
@@ -444,39 +641,87 @@ class AndroidPhoneController(
     // Observation and privacy gate
     // -------------------------------------------------------------------------------------------
 
-    /** Waits until the UI is quiet (no events for a moment), at most a few seconds. */
-    private suspend fun settle(svc: PhoneControlService, quietMs: Long = 350L, maxMs: Long = 2_500L) {
-        delay(150)
+    /**
+     * Captures the screen, or reuses the last capture while the app in front sent no event since
+     * (the risk check and the action then share one capture instead of reading the tree twice).
+     */
+    internal fun captureCached(svc: PhoneControlService): PhoneControlService.Capture? {
+        val now = SystemClock.uptimeMillis()
+        cache?.let { (at, cap) ->
+            if (svc.lastEventAt < at && now - at < CAPTURE_REUSE_MS) return cap
+        }
+        val cap = svc.capture(::labelOf) ?: return null
+        cache = now to cap
+        return cap
+    }
+
+    /**
+     * Waits until the app in front is quiet, at most [capMs]: an event of the app must have
+     * arrived after [since] (of [expectEvent] when given, e.g. text changed after typing), then
+     * no event for a short moment. Events of AMC, the keyboard and the status bar do not count.
+     */
+    internal suspend fun settle(svc: PhoneControlService, since: Long, expectEvent: Int? = null, capMs: Long = SETTLE_CAP_MS) {
+        delay(80)
         val start = SystemClock.uptimeMillis()
-        while (SystemClock.uptimeMillis() - start < maxMs) {
-            if (SystemClock.uptimeMillis() - svc.lastEventAt >= quietMs) return
-            delay(100)
+        while (SystemClock.uptimeMillis() - start < capMs) {
+            val reacted = if (expectEvent != null) svc.lastEventAt(expectEvent) >= since else svc.lastEventAt >= since
+            if (reacted && SystemClock.uptimeMillis() - svc.lastEventAt >= SETTLE_QUIET_MS) return
+            delay(50)
         }
     }
 
     private suspend fun observe(
         svc: PhoneControlService,
         grants: Set<String>,
+        state: RunState,
         headline: String?,
         settle: Boolean = true,
-        filter: String? = null
+        filter: String? = null,
+        expectEvent: Int? = null
     ): PhoneActionResult {
-        if (settle) settle(svc)
+        if (settle) settle(svc, SystemClock.uptimeMillis() - 200, expectEvent)
         fun withHeadline(body: String) = if (headline == null) body else "$headline\n\n$body"
+        if (!svc.isInteractive()) {
+            state.modelSnapshot = null
+            return PhoneActionResult(withHeadline("The display is off. Nothing can be read until the user turns it on."), ok = headline != null, transient = headline == null)
+        }
         if (svc.isKeyguardLocked()) {
-            modelSnapshot = null
+            state.modelSnapshot = null
             return PhoneActionResult(withHeadline("The phone is locked. AMC does not read or operate the lock screen."))
         }
-        val cap = svc.capture(::labelOf, filter = filter)
+        val cap = (if (filter == null) captureCached(svc) else svc.capture(::labelOf, filter = filter))
             ?: return PhoneActionResult(withHeadline("(The screen content is not available right now. Wait a moment and read it again.)"))
         val snap = cap.snapshot
         gateReason(snap, svc.windowClass, grants)?.let { reason ->
-            modelSnapshot = null
+            state.modelSnapshot = null
             return PhoneActionResult(withHeadline(reason), ok = headline != null)
         }
-        modelSnapshot = snap
+        state.modelSnapshot = snap
         return PhoneActionResult(withHeadline(snap.text))
     }
+
+    /** Batch support: the screen the batch's ids refer to, and recording what the model sees last. */
+    internal inner class BatchContext(private val state: RunState) {
+        val baseSnapshot: ScreenSnapshot? get() = state.turnSnapshot ?: state.modelSnapshot
+        fun publish(snapshot: ScreenSnapshot?) {
+            state.modelSnapshot = snapshot
+        }
+        suspend fun tap(svc: PhoneControlService, a: Map<String, String>) = doTap(svc, a, state)
+        suspend fun type(svc: PhoneControlService, a: Map<String, String>) = doType(svc, a, state)
+        suspend fun scroll(svc: PhoneControlService, a: Map<String, String>) = doScroll(svc, a, state)
+        suspend fun swipe(svc: PhoneControlService, a: Map<String, String>) = doSwipe(svc, a)
+        fun global(svc: PhoneControlService, a: Map<String, String>) = doGlobal(svc, a)
+        fun locate(target: String, fresh: ScreenSnapshot) = this@AndroidPhoneController.locate(target, fresh, state)
+        fun targetInfo(name: String, a: Map<String, String>, fresh: ScreenSnapshot): TargetInfo? = when (name) {
+            PhoneTools.SCREEN_TAP -> tapTargetInfo(a, fresh, state)
+            PhoneTools.SCREEN_TYPE -> fieldInfo(a["target"], fresh, state)
+            else -> null
+        }
+    }
+
+    private fun RunState.toBatchContext() = BatchContext(this)
+
+    internal fun gate(snap: ScreenSnapshot, windowClass: String?, grants: Set<String>): String? = gateReason(snap, windowClass, grants)
 
     /** Why the current screen must not be shown in this run, or null when it may be. */
     private fun gateReason(snap: ScreenSnapshot, windowClass: String?, grants: Set<String>): String? {
@@ -508,27 +753,30 @@ class AndroidPhoneController(
 
     private fun fail(text: String) = PhoneActionResult(text, ok = false)
 
-    private fun describe(el: ScreenElement): String {
+    internal fun describe(el: ScreenElement): String {
         val label = if (el.node.password) "" else ScreenTreeSerializer.clean(el.label).orEmpty()
         return "[${el.id}] ${el.node.role}" + if (label.isNotEmpty()) " \"$label\"" else ""
     }
 
-    /** An id from the last reading (re-located in [fresh]) or a text match in [fresh]. */
-    private fun locate(target: String, fresh: ScreenSnapshot): ScreenElement? {
+    /**
+     * An id the model saw (resolved against the screen at the start of this turn and re-located
+     * in [fresh]) or a text match in [fresh].
+     */
+    private fun locate(target: String, fresh: ScreenSnapshot, state: RunState): ScreenElement? {
         val id = ElementMatcher.parseId(target)
         if (id != null) {
-            val old = modelSnapshot?.byId(id) ?: return fresh.byId(id)
+            val seen = state.turnSnapshot ?: state.modelSnapshot
+            val old = seen?.byId(id) ?: return fresh.byId(id)
             return ElementMatcher.relocate(old, fresh)
         }
         return ElementMatcher.findByText(fresh, target)
     }
 
-    private fun findField(target: String?, snap: ScreenSnapshot): ScreenElement? {
+    /** The field to type into; never an element that cannot take text. */
+    private fun findField(target: String?, snap: ScreenSnapshot, state: RunState): ScreenElement? {
         if (!target.isNullOrBlank()) {
-            val el = locate(target, snap) ?: return null
-            if (el.node.editable || el.node.password) return el
-            // A label next to a field: the first editable descendant.
-            return snap.elements.firstOrNull { it.parentId == el.id && it.node.editable } ?: el
+            val el = locate(target, snap, state) ?: return null
+            return ElementMatcher.findInputField(snap, el)
         }
         return snap.elements.firstOrNull { it.node.focused && it.node.editable }
             ?: snap.elements.filter { it.node.editable }.singleOrNull()
@@ -543,11 +791,10 @@ class AndroidPhoneController(
         return null
     }
 
-    private fun tapTargetInfo(call: ToolCall, fresh: ScreenSnapshot): TargetInfo? {
-        val a = call.arguments
+    private fun tapTargetInfo(a: Map<String, String>, fresh: ScreenSnapshot, state: RunState): TargetInfo? {
         val target = a["target"]?.trim().orEmpty()
         val longPress = PhoneTools.isTrue(a["long_press"])
-        val el = if (target.isNotEmpty()) locate(target, fresh) else {
+        val el = if (target.isNotEmpty()) locate(target, fresh, state) else {
             val x = a["x"]?.trim()?.toDoubleOrNull()?.toInt()
             val y = a["y"]?.trim()?.toDoubleOrNull()?.toInt()
             if (x == null || y == null) null else ElementMatcher.elementAt(fresh, x, y)
@@ -562,9 +809,11 @@ class AndroidPhoneController(
         )
     }
 
-    private fun fieldInfo(target: String?, fresh: ScreenSnapshot): TargetInfo? {
-        val field = findField(target, fresh) ?: return null
-        return TargetInfo(label = field.label, password = field.node.password, editable = field.node.editable, viewId = field.node.viewId)
+    private fun fieldInfo(target: String?, fresh: ScreenSnapshot, state: RunState): TargetInfo? {
+        val field = findField(target, fresh, state) ?: return null
+        // The hint, not the typed text: the identity of a field must not change while typing.
+        val label = field.node.hint?.takeIf { it.isNotBlank() } ?: field.label
+        return TargetInfo(label = label, password = field.node.password, editable = field.node.editable, viewId = field.node.viewId)
     }
 
     fun labelOf(packageName: String): String {

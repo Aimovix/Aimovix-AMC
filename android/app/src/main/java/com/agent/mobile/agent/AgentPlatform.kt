@@ -10,6 +10,15 @@ interface AgentPlatform {
     /** True while the app's UI is visible; used to avoid redundant notifications. */
     fun isAppInForeground(): Boolean = false
 
+    /**
+     * Tells the user that [callId] waits for approval, with Approve / Reject actions where the
+     * platform supports them (routed through [ApprovalActions]).
+     */
+    fun notifyApprovalNeeded(callId: String, description: String) = notifyUser("AMC needs your approval", description)
+
+    /** The approval for [callId] was decided (or timed out): remove its notification. */
+    fun cancelApprovalNotification(callId: String) {}
+
     /** Schedules an unattended agent run. Returns the task id. */
     fun scheduleAgentTask(title: String, prompt: String, delayMinutes: Long, repeatEveryMinutes: Long): String
 

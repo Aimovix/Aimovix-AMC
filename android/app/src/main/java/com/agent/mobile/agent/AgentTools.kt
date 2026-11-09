@@ -36,14 +36,19 @@ object AgentTools {
     enum class ParamType(val jsonType: String, val geminiType: String) {
         STRING("string", "STRING"),
         INTEGER("integer", "INTEGER"),
-        BOOLEAN("boolean", "BOOLEAN")
+        BOOLEAN("boolean", "BOOLEAN"),
+        /** A list of objects described by [Param.items]. Arrives as a JSON array string in the arguments. */
+        ARRAY("array", "ARRAY"),
+        OBJECT("object", "OBJECT")
     }
 
     data class Param(
         val name: String,
         val type: ParamType,
         val description: String,
-        val required: Boolean = true
+        val required: Boolean = true,
+        /** For ARRAY: the properties of each item (an object). */
+        val items: List<Param> = emptyList()
     )
 
     data class Definition(
@@ -184,17 +189,21 @@ object AgentTools {
     // ---------------------------------------------------------------------------------------
 
     private fun jsonSchema(def: Definition, typeOf: (ParamType) -> String, objectType: String): JSONObject =
+        objectSchema(def.params, typeOf, objectType)
+
+    private fun objectSchema(params: List<Param>, typeOf: (ParamType) -> String, objectType: String): JSONObject =
         JSONObject().apply {
             put("type", objectType)
             put("properties", JSONObject().apply {
-                def.params.forEach { p ->
+                params.forEach { p ->
                     put(p.name, JSONObject().apply {
                         put("type", typeOf(p.type))
                         put("description", p.description)
+                        if (p.type == ParamType.ARRAY) put("items", objectSchema(p.items, typeOf, typeOf(ParamType.OBJECT)))
                     })
                 }
             })
-            put("required", JSONArray().apply { def.params.filter { it.required }.forEach { put(it.name) } })
+            put("required", JSONArray().apply { params.filter { it.required }.forEach { put(it.name) } })
         }
 
     private fun enabled(excluded: Set<String>) = if (excluded.isEmpty()) ALL else ALL.filter { it.name !in excluded }
