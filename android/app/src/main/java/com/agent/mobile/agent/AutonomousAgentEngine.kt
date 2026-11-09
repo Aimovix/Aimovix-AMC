@@ -10,6 +10,7 @@ import com.agent.mobile.data.repository.ChatRepository
 import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.data.storage.db.entity.ChatSession
 import com.agent.mobile.data.storage.db.entity.CommandAuditEntity
+import com.agent.mobile.phone.PhoneToolPolicy
 import com.agent.mobile.security.CommandSecurityFilter
 import com.agent.mobile.security.RiskLevel
 import com.agent.mobile.security.SecurityAssessment
@@ -42,7 +43,9 @@ class AutonomousAgentEngine(
     /** The user's persona and standing instructions (SOUL.md), injected into every system prompt. */
     val personaStore: TextFileStore? = null,
     /** 0 for a normal agent, 1 for a sub-agent. Sub-agents cannot delegate further. */
-    private val subAgentDepth: Int = 0
+    private val subAgentDepth: Int = 0,
+    /** Phone control (screen, notifications, intents, Shizuku). Null: those tools are not offered. */
+    private val phone: PhoneController? = null
 ) {
     companion object {
         private const val TAG = "AgentEngine"
@@ -83,8 +86,9 @@ class AutonomousAgentEngine(
         private val UNTRUSTED_OUTPUT_TOOLS = setOf(
             AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH,
             AgentTools.WEB_SEARCH, AgentTools.SEARCH_HISTORY, AgentTools.DELEGATE_TASK
-        )
-        private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS)
+        ) + PhoneTools.UNTRUSTED_OUTPUT
+        private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS) +
+            PhoneTools.LOOP_EXEMPT
     }
 
     data class UnattendedResult(
@@ -168,8 +172,19 @@ class AutonomousAgentEngine(
     @Volatile
     var channelName: String = "Telegram"
 
-    private val excludedTools: Set<String> =
+    private val baseExcludedTools: Set<String> =
         if (subAgentDepth >= MAX_SUBAGENT_DEPTH) setOf(AgentTools.DELEGATE_TASK) else emptySet()
+
+    /** Tools hidden from the model in the current run (base exclusions plus phone control rules for the mode). */
+    @Volatile
+    private var excludedTools: Set<String> = baseExcludedTools + PhoneTools.ALL_NAMES
+
+    /** Job of the running headless loop, cancelled by the phone control Stop button. */
+    @Volatile
+    private var headlessLoopJob: Job? = null
+
+    @Volatile
+    private var stoppedByUser = false
 
     private val steeringQueue = ConcurrentLinkedQueue<ChatMessage>()
     private val pendingWrites = java.util.Collections.synchronizedList(mutableListOf<Job>())
@@ -479,13 +494,24 @@ class AutonomousAgentEngine(
         _plan.value = emptyList()
         _currentStep.value = 0
         var success = true
+        stoppedByUser = false
         try {
             chatRepository?.saveMessage(activeSessionId, userMessage)
             val finished = withTimeoutOrNull(timeoutMs) {
-                runAgentLoop(activeSessionId, mode, skipped)
+                // A child job, so the phone control Stop button can end the run without cancelling the caller.
+                coroutineScope {
+                    val loop = launch { runAgentLoop(activeSessionId, mode, skipped) }
+                    headlessLoopJob = loop
+                    loop.join()
+                }
                 true
             }
-            if (finished == null) {
+            headlessLoopJob = null
+            if (stoppedByUser) {
+                success = false
+                recoverAbortedToolCalls(activeSessionId, "Stopped by the user.")
+                appendSystemMessage("🛑 Stopped by the user (Stop button of phone control).", activeSessionId)
+            } else if (finished == null) {
                 success = false
                 bridgeClient.interruptCurrent()
                 recoverAbortedToolCalls(activeSessionId, "Time limit reached.")
@@ -545,6 +571,37 @@ class AutonomousAgentEngine(
         var consecutiveErrors = 0
         var loopWarnings = 0
         var stopRequested = false
+        /** Per-run approvals that cover later calls with the same key (e.g. reading one messaging app). */
+        val grants = mutableSetOf<String>()
+        /** Overlay + notification while the agent operates the phone. */
+        var control: AutoCloseable? = null
+        /** Grant approved for the current call only (REMOTE runs, where grants are not kept). */
+        var callGrant: String? = null
+    }
+
+    /** Tools the model may not use in [mode]. */
+    private fun excludedFor(mode: RunMode): Set<String> {
+        val p = phone ?: return baseExcludedTools + PhoneTools.ALL_NAMES
+        val phoneExcluded = try {
+            p.excludedTools(mode)
+        } catch (e: Exception) {
+            Log.w(TAG, "Phone control unavailable: ${e.message}")
+            PhoneTools.ALL_NAMES
+        }
+        // Sub-agents research; they never drive the screen (their approvals would bypass the REMOTE rules).
+        val subAgentExcluded = if (mode == RunMode.SUBAGENT) PhoneTools.SCREEN_TOOLS else emptySet()
+        return baseExcludedTools + phoneExcluded + subAgentExcluded
+    }
+
+    /** Stop button of the phone control overlay or notification. */
+    private fun onPhoneControlStop() {
+        if (headless) {
+            stoppedByUser = true
+            bridgeClient.interruptCurrent()
+            headlessLoopJob?.cancel()
+        } else {
+            emergencyStop()
+        }
     }
 
     private suspend fun runAgentLoop(
@@ -568,8 +625,31 @@ class AutonomousAgentEngine(
             channel = channelName
         )
         val state = LoopState()
-        var iterations = 0
+        excludedTools = excludedFor(mode)
+        try {
+            runLoopIterations(executionSessionId, systemPrompt, mode, state, skippedApprovals, stepLimit, steerable)
+        } finally {
+            state.control?.let { handle ->
+                try {
+                    handle.close()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not end phone control: ${e.message}")
+                }
+            }
+            state.control = null
+        }
+    }
 
+    private suspend fun runLoopIterations(
+        executionSessionId: String,
+        systemPrompt: String,
+        mode: RunMode,
+        state: LoopState,
+        skippedApprovals: MutableList<String>,
+        stepLimit: Int,
+        steerable: Boolean
+    ) {
+        var iterations = 0
         while (currentCoroutineContext().isActive) {
             if (steerable) drainSteeringQueue(executionSessionId)
             if (iterations >= stepLimit) {
@@ -758,17 +838,38 @@ class AutonomousAgentEngine(
         skippedApprovals: MutableList<String>,
         pendingVision: MutableList<ChatMessage>
     ) {
-        val description = AgentTools.describe(toolCall)
-
         if (!AgentTools.isKnown(toolCall.name) || toolCall.name in excludedTools) {
+            val safeCall = if (PhoneTools.isPhoneTool(toolCall.name)) PhoneTools.redacted(toolCall) else toolCall
+            tools[index] = safeCall
+            updateMessageToolCalls(assistantMsgId, tools.toList(), MessageStatus.EXECUTING_TOOL)
+            val hint = if (PhoneTools.isPhoneTool(toolCall.name)) {
+                "Phone control tool '${toolCall.name}' is not available in this run (switched off for this mode, or the " +
+                    "feature is not set up). Tell the user if it is needed. Available tools: "
+            } else "Unknown tool '${toolCall.name}'. Available tools: "
             appendToolMessage(
-                sessionId, toolCall, toolCall.name, description, "",
-                "Unknown tool '${toolCall.name}'. Available tools: ${AgentTools.ALL.filter { it.name !in excludedTools }.joinToString { it.name }}.",
+                sessionId, safeCall, toolCall.name, AgentTools.describe(safeCall, redact = true), "",
+                hint + AgentTools.ALL.filter { it.name !in excludedTools }.joinToString { it.name } + ".",
                 -1, isError = true
             )
             state.consecutiveErrors++
             return
         }
+
+        // Risk first: it decides whether the call carries a secret that must not be shown or stored.
+        val phoneContext = if (PhoneTools.isPhoneTool(toolCall.name)) {
+            try {
+                phone?.riskContext(toolCall)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Phone risk context failed: ${e.message}")
+                null
+            }
+        } else null
+        val assessment = AgentTools.assess(toolCall, phoneContext)
+        val description = AgentTools.describe(toolCall, redact = assessment.redact)
+        // What is shown, stored and sent back to the model; the real arguments are only used to execute.
+        val displayCall = if (assessment.redact) PhoneTools.redacted(toolCall) else toolCall
 
         // 1. Loop protection: warn once, then stop.
         if (toolCall.name !in LOOP_EXEMPT_TOOLS &&
@@ -793,9 +894,9 @@ class AutonomousAgentEngine(
         }
         state.history.add(description)
 
-        // 2. Risk assessment.
-        val assessment = AgentTools.assess(toolCall)
-        val securedToolCall = toolCall.copy(riskLevel = assessment.level.name, riskReason = assessment.reason)
+        // 2. Risk assessment (computed above).
+        val securedToolCall = displayCall.copy(riskLevel = assessment.level.name, riskReason = assessment.reason)
+        val executableCall = toolCall.copy(riskLevel = assessment.level.name, riskReason = assessment.reason)
         tools[index] = securedToolCall
         updateMessageToolCalls(assistantMsgId, tools.toList(), MessageStatus.EXECUTING_TOOL)
 
@@ -808,10 +909,13 @@ class AutonomousAgentEngine(
             return
         }
 
-        // 3. Approval.
-        if (CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value)) {
+        // 3. Approval. In REMOTE runs every screen action asks, and per-run grants do not apply there.
+        val remoteForced = PhoneToolPolicy.requiresApprovalInMode(toolCall.name, mode)
+        val granted = !remoteForced && assessment.grantKey != null && assessment.grantKey in state.grants
+        if (!granted && (remoteForced || CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value))) {
             val skippedBefore = skippedApprovals.size
             val approved = requestApproval(assistantMsgId, securedToolCall, assessment, description, mode, skippedApprovals)
+            if (approved) assessment.grantKey?.let { if (remoteForced) state.callGrant = it else state.grants += it }
             if (!approved) {
                 val notAsked = skippedApprovals.size > skippedBefore
                 val reason = if (notAsked) {
@@ -837,7 +941,7 @@ class AutonomousAgentEngine(
         }
         val start = System.currentTimeMillis()
         val raw = try {
-            dispatchTool(securedToolCall, assistantMsgId, pendingVision, mode, skippedApprovals)
+            dispatchTool(executableCall, assistantMsgId, pendingVision, mode, skippedApprovals, state)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -949,12 +1053,15 @@ class AutonomousAgentEngine(
         assistantMsgId: String,
         pendingVision: MutableList<ChatMessage>,
         mode: RunMode,
-        skippedApprovals: MutableList<String>
+        skippedApprovals: MutableList<String>,
+        state: LoopState
     ): ToolResult {
         val a = call.arguments
         val description = AgentTools.describe(call)
         fun ok(text: String) = ToolResult(toolCallId = call.id, command = description, toolName = call.name, stdout = text)
         fun fail(text: String) = ToolResult(toolCallId = call.id, command = description, toolName = call.name, stderr = text, exitCode = 1, isError = true)
+
+        if (PhoneTools.isPhoneTool(call.name)) return runPhoneTool(call, mode, state, pendingVision)
 
         return when (call.name) {
             AgentTools.EXECUTE_COMMAND -> {
@@ -1055,6 +1162,67 @@ class AutonomousAgentEngine(
         }
     }
 
+    /**
+     * Runs a phone control tool. The first screen tool of a run shows the "AMC is in control"
+     * overlay and the ongoing notification; both stay until the run ends or the user taps Stop.
+     */
+    private suspend fun runPhoneTool(
+        call: ToolCall,
+        mode: RunMode,
+        state: LoopState,
+        pendingVision: MutableList<ChatMessage>
+    ): ToolResult {
+        val description = AgentTools.describe(call, redact = call.name == PhoneTools.SCREEN_TYPE)
+        fun result(text: String, ok: Boolean) = ToolResult(
+            toolCallId = call.id, command = description, toolName = call.name,
+            stdout = if (ok) text else "", stderr = if (ok) "" else text,
+            exitCode = if (ok) 0 else 1, isError = !ok
+        )
+        val p = phone ?: return result("Phone control is not available in this run.", false)
+        if (call.name in PhoneTools.SCREEN_TOOLS && state.control == null) {
+            state.control = try {
+                p.beginControl { onPhoneControlStop() }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not show the phone control overlay: ${e.message}")
+                null
+            }
+        }
+        val grants = state.grants.toSet() + listOfNotNull(state.callGrant)
+        state.callGrant = null
+        val r = withContext(Dispatchers.Default) { p.execute(call, mode, grants) }
+        val image = r.imageBase64
+        if (image != null) {
+            pendingVision += ChatMessage(
+                role = MessageRole.USER,
+                text = "📱 Screenshot of the phone screen (screen_capture):",
+                imageBase64 = image,
+                imageMimeType = r.imageMimeType,
+                status = MessageStatus.COMPLETED
+            )
+            if (r.sendImageToUser) {
+                deliverImageToUser("screenshot.jpg", image, "Screenshot")
+            }
+        }
+        return result(r.text, r.ok)
+    }
+
+    /** Sends an image to the channel chat, or shows it in the app's artifact panel. */
+    private suspend fun deliverImageToUser(fileName: String, base64: String, caption: String) {
+        val sink = attachmentSink
+        if (sink != null) {
+            try {
+                val bytes = java.util.Base64.getMimeDecoder().decode(base64)
+                sink.sendFile(fileName, bytes, caption)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not deliver image: ${e.message}")
+            }
+        } else {
+            appendArtifact(ArtifactItem(filename = fileName, path = fileName, type = ArtifactType.IMAGE, base64Data = base64))
+        }
+    }
+
     private fun formatHistoryHits(query: String, hits: List<ChatRepository.HistoryHit>): String {
         if (hits.isEmpty()) return "No earlier conversation mentions \"$query\"."
         val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
@@ -1110,7 +1278,8 @@ class AutonomousAgentEngine(
             headless = true,
             webSearcher = webSearcher,
             personaStore = personaStore,
-            subAgentDepth = subAgentDepth + 1
+            subAgentDepth = subAgentDepth + 1,
+            phone = phone
         )
         child.setModelConfig(_modelConfig.value)
         child.setSecurityPreset(_securityPreset.value)

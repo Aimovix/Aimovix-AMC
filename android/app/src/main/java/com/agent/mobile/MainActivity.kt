@@ -58,7 +58,8 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
             chatRepository = chatRepository,
             memoryStore = runtime.memoryStore,
             platform = runtime.platform,
-            personaStore = runtime.personaStore
+            personaStore = runtime.personaStore,
+            phone = runtime.phoneController
         )
         bridgeClient.connect(savedToken)
         // When the bridge is down, let AMC start it in Termux (if allowed) and reconnect at once.

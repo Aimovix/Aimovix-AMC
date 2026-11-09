@@ -1,6 +1,8 @@
 package com.agent.mobile.agent
 
 import com.agent.mobile.data.model.ToolCall
+import com.agent.mobile.phone.PhoneRiskContext
+import com.agent.mobile.phone.PhoneToolPolicy
 import com.agent.mobile.security.CommandSecurityFilter
 import com.agent.mobile.security.RiskLevel
 import com.agent.mobile.security.SecurityAssessment
@@ -33,7 +35,8 @@ object AgentTools {
 
     enum class ParamType(val jsonType: String, val geminiType: String) {
         STRING("string", "STRING"),
-        INTEGER("integer", "INTEGER")
+        INTEGER("integer", "INTEGER"),
+        BOOLEAN("boolean", "BOOLEAN")
     }
 
     data class Param(
@@ -49,7 +52,7 @@ object AgentTools {
         val params: List<Param>
     )
 
-    val ALL: List<Definition> = listOf(
+    private val CORE: List<Definition> = listOf(
         Definition(
             EXECUTE_COMMAND,
             "Run a Bash command in Termux on the user's phone (Linux shell + Termux:API). " +
@@ -169,6 +172,9 @@ object AgentTools {
         )
     )
 
+    /** Core tools followed by the phone control tools ([PhoneTools]). */
+    val ALL: List<Definition> = CORE + PhoneTools.DEFINITIONS
+
     private val byName = ALL.associateBy { it.name }
 
     fun isKnown(name: String): Boolean = byName.containsKey(name)
@@ -240,8 +246,9 @@ object AgentTools {
      * itself; for other tools a compact `name(arg)` string. Used for approval cards, loop
      * detection and the audit log.
      */
-    fun describe(call: ToolCall): String {
+    fun describe(call: ToolCall, redact: Boolean = false): String {
         val a = call.arguments
+        PhoneTools.describe(call, redact)?.let { return it }
         return when (call.name) {
             EXECUTE_COMMAND -> a["command"]?.trim().orEmpty()
             READ_FILE -> "read_file ${a["path"].orEmpty()}"
@@ -306,9 +313,14 @@ object AgentTools {
         Regex("""(^|/)\.(netrc|git-credentials)$""")
     )
 
-    /** Risk assessment for any tool call. Shell commands go through [CommandSecurityFilter]. */
-    fun assess(call: ToolCall): SecurityAssessment {
+    /**
+     * Risk assessment for any tool call. Shell commands go through [CommandSecurityFilter],
+     * phone control tools through [PhoneToolPolicy] with [phone] describing the current screen
+     * (without it, the policy assumes an unknown app in front).
+     */
+    fun assess(call: ToolCall, phone: PhoneRiskContext? = null): SecurityAssessment {
         val a = call.arguments
+        if (PhoneTools.isPhoneTool(call.name)) return PhoneToolPolicy.assess(call, phone ?: PhoneRiskContext())
         return when (call.name) {
             EXECUTE_COMMAND -> {
                 val cmd = a["command"]?.trim().orEmpty()

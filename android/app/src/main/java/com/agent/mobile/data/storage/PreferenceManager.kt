@@ -68,6 +68,10 @@ class PreferenceManager(
         private const val KEY_TELEGRAM_BOT_TOKEN = "key_telegram_bot_token"
         private const val KEY_TELEGRAM_ENABLED = "key_telegram_enabled"
         private const val KEY_TELEGRAM_STATE = "key_telegram_state"
+        private const val KEY_PHONE_BLOCKLIST = "key_phone_blocklist"
+        private const val KEY_PHONE_ALLOWED = "key_phone_allowed"
+        private const val KEY_PHONE_REMOTE = "key_phone_control_remote"
+        private const val KEY_PHONE_BACKGROUND = "key_phone_control_background"
 
         const val DEFAULT_MAX_STEPS = 30
         const val MIN_MAX_STEPS = 5
@@ -315,6 +319,38 @@ class PreferenceManager(
     }
 
     fun loadTelegramState(): String? = prefs.getString(KEY_TELEGRAM_STATE, null)
+
+    // --- Phone control ------------------------------------------------------------------------
+
+    /** Apps the agent may not operate. Defaults to [PackageBlocklist.DEFAULT_ENTRIES] until edited. */
+    fun loadPhoneBlocklist(): com.agent.mobile.phone.PackageBlocklist {
+        val stored = prefs.getString(KEY_PHONE_BLOCKLIST, null)
+        val entries = if (stored == null) com.agent.mobile.phone.PackageBlocklist.DEFAULT_ENTRIES
+        else com.agent.mobile.phone.PackageBlocklist.parseEntries(stored)
+        val allowed = prefs.getString(KEY_PHONE_ALLOWED, "").orEmpty().lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        return com.agent.mobile.phone.PackageBlocklist(entries, allowed)
+    }
+
+    fun savePhoneBlocklist(list: com.agent.mobile.phone.PackageBlocklist) {
+        prefs.edit()
+            .putString(KEY_PHONE_BLOCKLIST, list.entries.joinToString("\n"))
+            .putString(KEY_PHONE_ALLOWED, list.allowed.sorted().joinToString("\n"))
+            .apply()
+    }
+
+    /** Screen control in Telegram conversations. Off by default; when on, every action asks. */
+    fun loadPhoneControlRemote(): Boolean = prefs.getBoolean(KEY_PHONE_REMOTE, false)
+
+    fun savePhoneControlRemote(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_PHONE_REMOTE, enabled).apply()
+    }
+
+    /** Screen control in scheduled/background runs. Off by default. */
+    fun loadPhoneControlBackground(): Boolean = prefs.getBoolean(KEY_PHONE_BACKGROUND, false)
+
+    fun savePhoneControlBackground(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_PHONE_BACKGROUND, enabled).apply()
+    }
 
     // --- Legal consent ------------------------------------------------------------------------
 

@@ -526,7 +526,7 @@ fun SettingsScreen(
             )
 
             // Section 4b: try a command against every security mode
-            PolicySimulatorCard()
+            PolicySimulatorCard(remoteScreenControl = remember { preferenceManager.loadPhoneControlRemote() })
 
             // Section 5: Cron-Sync & Hybrid Scheduler
             if (bridgeClient != null) {
