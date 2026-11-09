@@ -21,7 +21,7 @@ echo "[2/5] Installing the bridge and CLI..."
 mkdir -p "$TARGET_DIR" "$PREFIX/bin"
 STAGING_DIR="$(mktemp -d "$TARGET_DIR/.install.XXXXXX")"
 trap 'rm -rf "$STAGING_DIR"' EXIT
-for name in bridge_daemon.py amc requirements.txt local_model_manager.sh; do
+for name in bridge_daemon.py amc requirements.txt local_model_manager.sh model_catalog.json; do
     if [ -n "$SCRIPT_DIR" ] && [ -s "$SCRIPT_DIR/$name" ]; then
         cp "$SCRIPT_DIR/$name" "$STAGING_DIR/$name"
     else
@@ -33,7 +33,7 @@ python -m pip install -r "$STAGING_DIR/requirements.txt"
 
 # Publish only after every download and dependency installation succeeds.
 chmod 700 "$TARGET_DIR"
-for name in bridge_daemon.py amc requirements.txt local_model_manager.sh; do
+for name in bridge_daemon.py amc requirements.txt local_model_manager.sh model_catalog.json; do
     mv "$STAGING_DIR/$name" "$TARGET_DIR/$name"
 done
 cp "$TARGET_DIR/amc" "$PREFIX/bin/amc"

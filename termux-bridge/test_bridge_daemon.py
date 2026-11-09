@@ -108,17 +108,82 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("usable", "".join(m.get("data", "") for m in messages))
         self.assertEqual(messages[-1]["exit_code"], 0)
 
-    async def test_busy_execution_is_rejected_without_replacing_process(self):
+    async def test_concurrent_executions_run_side_by_side(self):
+        client = await self.connect()
+        slow = make_python_cmd("-u", "-c", "import time; print('slow-ready', flush=True); time.sleep(30)")
+        await self.execute(client, slow, execution_id="slow")
+        self.assertIn("slow-ready", (await self.receive(client))["data"])
+        # A second command on the same connection runs while the first is still busy.
+        await self.execute(client, make_python_cmd("-c", "print('fast-done')"), execution_id="fast")
+        messages = await self.until(client, "completed")
+        self.assertEqual(messages[-1]["execution_id"], "fast")
+        self.assertEqual(messages[-1]["exit_code"], 0)
+        self.assertIn("fast-done", "".join(m.get("data", "") for m in messages if m.get("execution_id") == "fast"))
+        # Interrupting one id leaves nothing else touched and ends the slow job.
+        await client.send(json.dumps({"action": "interrupt", "execution_id": "slow"}))
+        messages = await self.until(client, "completed")
+        self.assertEqual(messages[-1]["execution_id"], "slow")
+        self.assertEqual(messages[-1]["exit_code"], 130)
+
+    async def test_duplicate_execution_id_is_rejected_without_replacing_process(self):
         client = await self.connect()
         cmd = make_python_cmd("-u", "-c", "import time; print('ready', flush=True); time.sleep(30)")
-        await self.execute(client, cmd)
+        await self.execute(client, cmd, execution_id="same")
         await self.receive(client)
-        await self.execute(client, make_python_cmd("-c", "print('should-not-run')"), execution_id="second")
+        await self.execute(client, make_python_cmd("-c", "print('should-not-run')"), execution_id="same")
         message = await self.receive(client)
         self.assertEqual(message["type"], "error")
-        self.assertEqual(message["execution_id"], "second")
+        self.assertEqual(message["execution_id"], "same")
         await client.send(json.dumps({"action": "interrupt"}))
         await self.until(client, "completed")
+
+    async def test_execution_limit(self):
+        with patch.object(bridge, "MAX_CONCURRENT_EXECUTIONS", 1):
+            client = await self.connect()
+            cmd = make_python_cmd("-u", "-c", "import time; print('ready', flush=True); time.sleep(30)")
+            await self.execute(client, cmd, execution_id="one")
+            await self.receive(client)
+            await self.execute(client, make_python_cmd("-c", "print('x')"), execution_id="two")
+            message = await self.receive(client)
+            self.assertEqual(message["type"], "error")
+            self.assertEqual(message["execution_id"], "two")
+            await client.send(json.dumps({"action": "interrupt"}))
+            await self.until(client, "completed")
+
+    async def test_write_file_append_is_done_by_the_server(self):
+        client = await self.connect()
+        target = Path(TEST_HOME.name) / "append.txt"
+        target.write_text("line1\n", encoding="utf-8")
+        await client.send(json.dumps({"action": "write_file", "path": "append.txt", "content": "line2\n",
+                                      "mode": "append", "request_id": "a1"}))
+        message = await self.receive(client)
+        self.assertEqual(message["type"], "file_written")
+        self.assertEqual(message["mode"], "append")
+        self.assertEqual(target.read_text(encoding="utf-8"), "line1\nline2\n")
+        # Appending to a missing file creates it.
+        await client.send(json.dumps({"action": "write_file", "path": "new_append.txt", "content": "x",
+                                      "mode": "append", "request_id": "a2"}))
+        self.assertEqual((await self.receive(client))["type"], "file_written")
+        self.assertEqual((Path(TEST_HOME.name) / "new_append.txt").read_text(encoding="utf-8"), "x")
+        await client.send(json.dumps({"action": "write_file", "path": "append.txt", "content": "x",
+                                      "mode": "truncate", "request_id": "a3"}))
+        message = await self.receive(client)
+        self.assertEqual(message["type"], "error")
+        self.assertEqual(target.read_text(encoding="utf-8"), "line1\nline2\n")
+
+    async def test_llm_command_args_are_validated(self):
+        args = bridge.llm_command_args("llm_start", {"model": "qwen3.5-4b-q4_k_m.gguf", "ctx": 8192, "threads": 4})
+        self.assertEqual(args[2], "start")
+        self.assertIn("--ctx", args)
+        self.assertIn("8192", args)
+        with self.assertRaises(ValueError):
+            bridge.llm_command_args("llm_start", {"model": "x; rm -rf ~"})
+        with self.assertRaises(ValueError):
+            bridge.llm_command_args("llm_install", {"url": "http://insecure.example/model.gguf"})
+        with self.assertRaises(ValueError):
+            bridge.llm_command_args("llm_rm", {})
+        self.assertEqual(bridge.parse_llm_status("noise\nstatus.running=1\nstatus.port=8080\n"),
+                         {"running": "1", "port": "8080"})
 
     async def test_connection_state_and_interrupts_are_isolated(self):
         first, second = await self.connect(), await self.connect()

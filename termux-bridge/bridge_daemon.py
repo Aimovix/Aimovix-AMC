@@ -306,11 +306,21 @@ def cleanup_process_resources(process):
 RECONNECT_GRACE_SECONDS = float(os.environ.get("BRIDGE_RECONNECT_GRACE", 30.0))
 DETACHED_SESSIONS: dict[str, "BridgeSession"] = {}
 
+# Commands that may run at the same time on one connection (agent, terminal, background jobs).
+MAX_CONCURRENT_EXECUTIONS = int(os.environ.get("BRIDGE_MAX_EXECUTIONS", 4))
+# Largest WebSocket frame. Clients split bigger writes into append chunks.
+MAX_FRAME_BYTES = 10 * 1024 * 1024
+# Largest file written through write_file in total (all chunks).
+MAX_WRITE_FILE_BYTES = 64 * 1024 * 1024
+LLM_SCRIPT = Path(__file__).with_name("local_model_manager.sh")
+LLM_ACTIONS = ("llm_status", "llm_install", "llm_start", "llm_stop")
+
+
 def register_detached_session(session: "BridgeSession"):
     """Register a detached session during reconnect grace window."""
     DETACHED_SESSIONS[session.session_id] = session
-    if session.execution_id:
-        DETACHED_SESSIONS[session.execution_id] = session
+    for execution_id in list(session.executions):
+        DETACHED_SESSIONS[execution_id] = session
 
 def unregister_detached_session(session: "BridgeSession"):
     """Remove all references to session from DETACHED_SESSIONS."""
@@ -323,7 +333,7 @@ def pop_detached_session(execution_id: str | None = None) -> "BridgeSession | No
     matched = None
     if execution_id:
         for k, sess in list(DETACHED_SESSIONS.items()):
-            if k == execution_id or getattr(sess, "execution_id", None) == execution_id:
+            if k == execution_id or execution_id in getattr(sess, "executions", {}):
                 matched = sess
                 break
     elif DETACHED_SESSIONS:
@@ -333,23 +343,165 @@ def pop_detached_session(execution_id: str | None = None) -> "BridgeSession | No
         return matched
     return None
 
+
+async def terminate_process_tree(process):
+    """Stop a command's whole process group (SIGINT, SIGTERM, then SIGKILL)."""
+    if process is None:
+        return
+    if sys.platform == "win32":
+        try:
+            if process.returncode is None:
+                process.kill()
+        except ProcessLookupError:
+            pass
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout=2)
+        cleanup_process_resources(process)
+        return
+
+    # Signal the entire group, even if its shell has already exited.
+    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    for sig in (signal.SIGINT, signal.SIGTERM, sigkill):
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            break
+        if sig != sigkill:
+            await asyncio.sleep(0.25)
+            if process.returncode is not None:
+                break
+    with suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(process.wait(), timeout=2)
+    cleanup_process_resources(process)
+
+
+class Execution:
+    """One running command of a session, addressed by its execution_id."""
+
+    def __init__(self, session: "BridgeSession", execution_id: str):
+        self.session = session
+        self.execution_id = execution_id
+        self.task: asyncio.Task | None = None
+        self.process = None
+
+    def is_running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    async def terminate_process(self):
+        await terminate_process_tree(self.process)
+
+    async def stop(self):
+        task = self.task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        if self.process is not None:
+            await self.terminate_process()
+            cleanup_process_resources(self.process)
+            self.process = None
+
+    async def run(self, command, cwd, timeout_seconds):
+        session = self.session
+        execution_id = self.execution_id
+        readers = []
+        try:
+            trimmed = command.strip()
+            if trimmed.startswith("cd ") or trimmed == "cd":
+                try:
+                    tokens = shlex.split(trimmed)
+                    # Only intercept a plain cd; let the shell handle compound commands.
+                    if tokens and tokens[0] == "cd" and len(tokens) <= 2 and not any(
+                        char in trimmed for char in ";&|<>\n\x60"
+                    ):
+                        raw_target = tokens[1] if len(tokens) == 2 else DEFAULT_CWD
+                        target = os.path.expandvars(os.path.expanduser(raw_target))
+                        target = os.path.abspath(os.path.join(cwd, target))
+                        if not os.path.isdir(target):
+                            raise ValueError(f"Directory not found: {target}")
+                        session.cwd = target
+                        await session.send("stdout", execution_id=execution_id, data=f"Directory changed to: {target}\n")
+                        await session.send("completed", execution_id=execution_id, exit_code=0, cwd=session.cwd)
+                        return
+                except ValueError as err:
+                    if str(err).startswith("Directory not found:"):
+                        raise
+                    pass
+
+            shell = shutil.which("bash", path=ENV.get("PATH")) or shutil.which("sh") or "sh"
+            # Shield spawn so cancellation cannot orphan a process created concurrently.
+            spawning = asyncio.create_task(asyncio.create_subprocess_shell(
+                command, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                cwd=cwd, executable=shell if sys.platform != "win32" else None,
+                env=ENV, start_new_session=sys.platform != "win32"
+            ))
+            try:
+                self.process = await asyncio.shield(spawning)
+            except asyncio.CancelledError:
+                self.process = await spawning
+                raise
+
+            async def stream(reader, kind):
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                while True:
+                    chunk = await reader.read(4096)
+                    if not chunk:
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            await session.send(kind, execution_id=execution_id, data=tail)
+                        break
+                    await session.send(kind, execution_id=execution_id, data=decoder.decode(chunk))
+
+            readers = [
+                asyncio.create_task(stream(self.process.stdout, "stdout")),
+                asyncio.create_task(stream(self.process.stderr, "stderr"))
+            ]
+            try:
+                await asyncio.wait_for(asyncio.gather(*readers, self.process.wait()), timeout_seconds)
+            except asyncio.TimeoutError:
+                await self.terminate_process()
+                await session.send("error", execution_id=execution_id, error="Command timed out and was stopped.")
+                return
+            await session.send("completed", execution_id=execution_id,
+                               exit_code=self.process.returncode, cwd=session.cwd)
+        except asyncio.CancelledError:
+            await self.terminate_process()
+            raise
+        except Exception as error:
+            await self.terminate_process()
+            with suppress(websockets.exceptions.ConnectionClosed):
+                await session.send("error", execution_id=execution_id, error=str(error))
+        finally:
+            for reader in readers:
+                if not reader.done():
+                    reader.cancel()
+            if readers:
+                await asyncio.gather(*readers, return_exceptions=True)
+            if self.process is not None:
+                cleanup_process_resources(self.process)
+            self.process = None
+            if session.executions.get(execution_id) is self:
+                del session.executions[execution_id]
+
+
 class BridgeSession:
-    """Own execution state per authenticated connection."""
+    """Own execution state per authenticated connection. Several commands may run at once,
+    each tracked by its execution_id (the agent, the terminal and background jobs share one
+    connection)."""
 
     def __init__(self, websocket):
         self.session_id = secrets.token_hex(8)
         self.websocket = websocket
         self.cwd = DEFAULT_CWD
-        self.task = None
-        self.process = None
-        self.execution_id = None
+        self.executions: dict[str, Execution] = {}
         self.buffered_output = []
         self.buffered_events = []
         self.grace_task = None
         self.file_tasks = set()
 
     def is_running(self) -> bool:
-        return self.task is not None and not self.task.done()
+        return any(e.is_running() for e in self.executions.values())
 
     async def attach(self, websocket):
         """Re-attach a newly connected WebSocket to an existing running session."""
@@ -397,58 +549,33 @@ class BridgeSession:
                 return
             except websockets.exceptions.ConnectionClosed:
                 self.websocket = None
-        if kind in ("completed", "interrupted", "error"):
+        if kind in ("completed", "interrupted", "error", "llm_result"):
             self.buffered_events.append({"type": kind, **payload})
         elif kind in ("stdout", "stderr"):
             self.buffered_output.append({"type": kind, **payload})
             if len(self.buffered_output) > 200:
                 self.buffered_output.pop(0)
 
-    async def terminate_process(self):
-        process = self.process
-        if process is None:
-            return
-        if sys.platform == "win32":
-            try:
-                if process.returncode is None:
-                    process.kill()
-            except ProcessLookupError:
-                pass
-            with suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(process.wait(), timeout=2)
-            cleanup_process_resources(process)
-            return
+    def start_execution(self, command, execution_id, cwd, timeout_seconds) -> Execution:
+        execution = Execution(self, execution_id)
+        self.executions[execution_id] = execution
+        execution.task = asyncio.create_task(execution.run(command, cwd, timeout_seconds))
+        return execution
 
-        # Signal the entire group, even if its shell has already exited.
-        sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-        for sig in (signal.SIGINT, signal.SIGTERM, sigkill):
-            try:
-                os.killpg(process.pid, sig)
-            except ProcessLookupError:
-                break
-            if sig != sigkill:
-                await asyncio.sleep(0.25)
-                if process.returncode is not None:
-                    break
-        with suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(process.wait(), timeout=2)
-        cleanup_process_resources(process)
+    async def stop_execution(self, execution_id: str) -> bool:
+        execution = self.executions.pop(execution_id, None)
+        if execution is None:
+            return False
+        await execution.stop()
+        return True
 
     async def stop(self):
         curr = asyncio.current_task()
         if self.grace_task is not None and self.grace_task != curr and not self.grace_task.done():
             self.grace_task.cancel()
             self.grace_task = None
-        task = self.task
-        if task is not None and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        self.task = None
-        if self.process is not None:
-            await self.terminate_process()
-            cleanup_process_resources(self.process)
-            self.process = None
+        for execution_id in list(self.executions):
+            await self.stop_execution(execution_id)
         for ft in list(self.file_tasks):
             if not ft.done():
                 ft.cancel()
@@ -458,86 +585,6 @@ class BridgeSession:
         self.buffered_output.clear()
         self.buffered_events.clear()
         unregister_detached_session(self)
-
-    async def run(self, command, execution_id, cwd, timeout_seconds):
-        readers = []
-        try:
-            trimmed = command.strip()
-            if trimmed.startswith("cd ") or trimmed == "cd":
-                try:
-                    tokens = shlex.split(trimmed)
-                    # Only intercept a plain cd; let the shell handle compound commands.
-                    if tokens and tokens[0] == "cd" and len(tokens) <= 2 and not any(
-                        char in trimmed for char in ";&|<>\n\x60"
-                    ):
-                        raw_target = tokens[1] if len(tokens) == 2 else DEFAULT_CWD
-                        target = os.path.expandvars(os.path.expanduser(raw_target))
-                        target = os.path.abspath(os.path.join(cwd, target))
-                        if not os.path.isdir(target):
-                            raise ValueError(f"Directory not found: {target}")
-                        self.cwd = target
-                        await self.send("stdout", execution_id=execution_id, data=f"Directory changed to: {target}\n")
-                        await self.send("completed", execution_id=execution_id, exit_code=0, cwd=self.cwd)
-                        return
-                except ValueError as err:
-                    if str(err).startswith("Directory not found:"):
-                        raise
-                    pass
-
-            shell = shutil.which("bash", path=ENV.get("PATH")) or shutil.which("sh") or "sh"
-            # Shield spawn so cancellation cannot orphan a process created concurrently.
-            spawning = asyncio.create_task(asyncio.create_subprocess_shell(
-                command, stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                cwd=cwd, executable=shell if sys.platform != "win32" else None,
-                env=ENV, start_new_session=sys.platform != "win32"
-            ))
-            try:
-                self.process = await asyncio.shield(spawning)
-            except asyncio.CancelledError:
-                self.process = await spawning
-                raise
-
-            async def stream(reader, kind):
-                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-                while True:
-                    chunk = await reader.read(4096)
-                    if not chunk:
-                        tail = decoder.decode(b"", final=True)
-                        if tail:
-                            await self.send(kind, execution_id=execution_id, data=tail)
-                        break
-                    await self.send(kind, execution_id=execution_id, data=decoder.decode(chunk))
-
-            readers = [
-                asyncio.create_task(stream(self.process.stdout, "stdout")),
-                asyncio.create_task(stream(self.process.stderr, "stderr"))
-            ]
-            try:
-                await asyncio.wait_for(asyncio.gather(*readers, self.process.wait()), timeout_seconds)
-            except asyncio.TimeoutError:
-                await self.terminate_process()
-                await self.send("error", execution_id=execution_id, error="Command timed out and was stopped.")
-                return
-            await self.send("completed", execution_id=execution_id,
-                            exit_code=self.process.returncode, cwd=self.cwd)
-        except asyncio.CancelledError:
-            await self.terminate_process()
-            raise
-        except Exception as error:
-            await self.terminate_process()
-            with suppress(websockets.exceptions.ConnectionClosed):
-                await self.send("error", execution_id=execution_id, error=str(error))
-        finally:
-            for reader in readers:
-                if not reader.done():
-                    reader.cancel()
-            if readers:
-                await asyncio.gather(*readers, return_exceptions=True)
-            if self.process is not None:
-                cleanup_process_resources(self.process)
-            self.process = None
-            self.execution_id = None
 
     async def transfer_file(self, action, msg):
         request_path = msg.get("path", "")
@@ -556,14 +603,24 @@ class BridgeSession:
                 content = msg.get("content", "")
                 if not isinstance(content, str):
                     raise ValueError("File content must be a string.")
+                mode = msg.get("mode", "write")
+                if mode not in ("write", "append"):
+                    raise ValueError("mode must be 'write' or 'append'.")
                 def write():
                     if os.path.exists(path) and not stat.S_ISREG(os.stat(path).st_mode):
                         raise ValueError("Target exists and is not a regular file.")
+                    data = content.encode("utf-8")
+                    existing = os.path.getsize(path) if (mode == "append" and os.path.exists(path)) else 0
+                    if existing + len(data) > MAX_WRITE_FILE_BYTES:
+                        raise ValueError(f"File would exceed the {MAX_WRITE_FILE_BYTES // (1024 * 1024)} MiB write limit.")
                     os.makedirs(os.path.dirname(path), exist_ok=True)
-                    Path(path).write_text(content, encoding="utf-8")
-                await asyncio.to_thread(write)
+                    # Append on the server: a failed read on the client can never truncate the file.
+                    with open(path, "ab" if mode == "append" else "wb") as target:
+                        target.write(data)
+                    return os.path.getsize(path)
+                size = await asyncio.to_thread(write)
                 with suppress(websockets.exceptions.ConnectionClosed):
-                    await self.send("file_written", path=request_path, success=True, **extra)
+                    await self.send("file_written", path=request_path, success=True, mode=mode, size=size, **extra)
             else:
                 def read():
                     if not os.path.exists(path):
@@ -600,6 +657,79 @@ class BridgeSession:
             with suppress(websockets.exceptions.ConnectionClosed):
                 await self.send("error", path=request_path, error=str(error), **extra)
 
+    async def llm_action(self, action, msg):
+        """Local model management (status, install, start, stop) through local_model_manager.sh."""
+        request_id = msg.get("request_id")
+        extra = {"request_id": request_id} if request_id is not None else {}
+        try:
+            args = llm_command_args(action, msg)
+            timeout = 3600 if action == "llm_install" else 120
+            process = await asyncio.create_subprocess_exec(
+                *args, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                env=ENV, start_new_session=sys.platform != "win32"
+            )
+            try:
+                out, _ = await asyncio.wait_for(process.communicate(), timeout)
+            except asyncio.TimeoutError:
+                await terminate_process_tree(process)
+                raise ValueError(f"{action} timed out after {timeout} s.")
+            except asyncio.CancelledError:
+                await terminate_process_tree(process)
+                raise
+            finally:
+                cleanup_process_resources(process)
+            text = out.decode("utf-8", errors="replace")
+            status = parse_llm_status(text)
+            with suppress(websockets.exceptions.ConnectionClosed):
+                await self.send("llm_result", action=action, ok=process.returncode == 0,
+                                exit_code=process.returncode, output=text[-8000:], status=status, **extra)
+        except asyncio.CancelledError:
+            pass
+        except Exception as error:
+            with suppress(websockets.exceptions.ConnectionClosed):
+                await self.send("llm_result", action=action, ok=False, exit_code=1, output=str(error), status={}, **extra)
+
+
+_LLM_ARG_PATTERN = {
+    "model": r"[A-Za-z0-9._\-]{1,128}",
+    "url": r"https://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%\-]{1,1024}",
+    "sha256": r"[A-Fa-f0-9]{64}",
+    "ctx": r"\d{3,6}",
+    "threads": r"\d{1,2}",
+    "port": r"\d{2,5}",
+}
+
+
+def llm_command_args(action: str, msg: dict) -> list[str]:
+    """Builds the argv for local_model_manager.sh. Every value is validated; nothing reaches a shell."""
+    import re
+    if action not in LLM_ACTIONS:
+        raise ValueError("Unknown llm action.")
+    if not LLM_SCRIPT.exists():
+        raise ValueError(f"{LLM_SCRIPT.name} is missing next to the bridge daemon.")
+    bash = shutil.which("bash", path=ENV.get("PATH")) or "bash"
+    args = [bash, str(LLM_SCRIPT), action.removeprefix("llm_")]
+    for key, pattern in _LLM_ARG_PATTERN.items():
+        value = msg.get(key)
+        if value is None or value == "":
+            continue
+        value = str(value)
+        if not re.fullmatch(pattern, value):
+            raise ValueError(f"Invalid value for {key}.")
+        args += [f"--{key}", value]
+    return args
+
+
+def parse_llm_status(text: str) -> dict:
+    """Reads KEY=VALUE lines (prefixed with 'status.') printed by local_model_manager.sh."""
+    status = {}
+    for line in text.splitlines():
+        if line.startswith("status.") and "=" in line:
+            key, _, value = line[len("status."):].partition("=")
+            status[key.strip()] = value.strip()
+    return status
+
 
 async def handle_connection(websocket):
     """Require a token for every client; receive controls while commands run."""
@@ -632,7 +762,9 @@ async def handle_connection(websocket):
                     else:
                         session = BridgeSession(websocket)
                     info = await asyncio.to_thread(get_system_info, session.cwd)
-                    await session.send("auth_ok", system=info, cwd=session.cwd)
+                    await session.send("auth_ok", system=info, cwd=session.cwd,
+                                       capabilities=["concurrent_execute", "write_append", "llm"],
+                                       max_frame_bytes=MAX_FRAME_BYTES)
                 else:
                     err_msg = json.dumps({"type": "auth_fail", "error": "Authentication failed: invalid token."})
                     with suppress(websockets.exceptions.ConnectionClosed):
@@ -662,8 +794,14 @@ async def handle_connection(websocket):
                 if not isinstance(command, str) or not command.strip():
                     await session.send("error", execution_id=execution_id, error="Command must be a nonempty string.")
                     continue
-                if session.task is not None and not session.task.done():
-                    await session.send("error", execution_id=execution_id, error="A command is already running on this connection.")
+                existing = session.executions.get(execution_id)
+                if existing is not None and existing.is_running():
+                    await session.send("error", execution_id=execution_id, error="A command with this execution_id is already running.")
+                    continue
+                running = sum(1 for e in session.executions.values() if e.is_running())
+                if running >= MAX_CONCURRENT_EXECUTIONS:
+                    await session.send("error", execution_id=execution_id,
+                                       error=f"Too many commands are running at once ({running}). Wait for one to finish.")
                     continue
                 raw_cwd = msg.get("cwd")
                 cwd = raw_cwd if (isinstance(raw_cwd, str) and raw_cwd.strip()) else session.cwd
@@ -676,17 +814,24 @@ async def handle_connection(websocket):
                 elif not isinstance(timeout_ms, (int, float)) or not 1 <= timeout_ms <= 3600000:
                     await session.send("error", execution_id=execution_id, error="Invalid command timeout.")
                     continue
-                session.execution_id = execution_id
-                session.task = asyncio.create_task(session.run(command.strip(), execution_id, cwd, timeout_ms / 1000))
+                session.start_execution(command.strip(), execution_id, cwd, timeout_ms / 1000)
             elif action == "interrupt":
-                execution_id = session.execution_id
                 requested = msg.get("execution_id")
-                if requested and requested != execution_id:
-                    await session.send("error", execution_id=requested, error="Execution is no longer active.")
-                    continue
-                await session.stop()
-                await session.send("interrupted", execution_id=execution_id or "")
-                if execution_id:
+                if requested:
+                    requested = str(requested)
+                    if requested not in session.executions:
+                        await session.send("error", execution_id=requested, error="Execution is no longer active.")
+                        continue
+                    targets = [requested]
+                else:
+                    # No id: stop everything running on this connection (emergency stop).
+                    targets = list(session.executions)
+                for execution_id in targets:
+                    await session.stop_execution(execution_id)
+                if not targets:
+                    await session.send("interrupted", execution_id="")
+                for execution_id in targets:
+                    await session.send("interrupted", execution_id=execution_id)
                     await session.send("completed", execution_id=execution_id, exit_code=130, cwd=session.cwd)
             elif action in ("read_file", "read_file_base64", "write_file"):
                 request_id = msg.get("request_id")
@@ -697,6 +842,10 @@ async def handle_connection(websocket):
                 ftask = asyncio.create_task(session.transfer_file(action, msg))
                 session.file_tasks.add(ftask)
                 ftask.add_done_callback(session.file_tasks.discard)
+            elif action in LLM_ACTIONS:
+                ltask = asyncio.create_task(session.llm_action(action, msg))
+                session.file_tasks.add(ltask)
+                ltask.add_done_callback(session.file_tasks.discard)
             else:
                 await session.send("error", error="Unknown action.")
     except websockets.exceptions.ConnectionClosed:
@@ -762,7 +911,7 @@ async def main():
     # Acquire the listening socket before publishing service state. A duplicate
     # start must never overwrite or remove the running instance's PID file.
     async with websockets.serve(
-        handle_connection, HOST, PORT, max_size=10 * 1024 * 1024,
+        handle_connection, HOST, PORT, max_size=MAX_FRAME_BYTES,
         origins=[None], ping_interval=None, ping_timeout=None
     ):
         AGENT_DIR.mkdir(parents=True, exist_ok=True)
