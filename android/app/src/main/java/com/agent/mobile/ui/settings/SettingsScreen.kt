@@ -518,6 +518,17 @@ fun SettingsScreen(
                 )
             }
 
+            // Section 3d: Phone control (screen, notifications, block list, triggers)
+            var remotePhoneControl by remember { mutableStateOf(preferenceManager.loadPhoneControlRemote()) }
+            com.agent.mobile.ui.settings.components.PhoneControlCard(
+                preferenceManager = preferenceManager,
+                remoteEnabled = remotePhoneControl,
+                onRemoteChange = {
+                    remotePhoneControl = it
+                    preferenceManager.savePhoneControlRemote(it)
+                }
+            )
+
             // Section 4: Security Cockpit & Guardrails
             SecurityCockpitCard(
                 agentEngine = agentEngine,
@@ -526,7 +537,7 @@ fun SettingsScreen(
             )
 
             // Section 4b: try a command against every security mode
-            PolicySimulatorCard(remoteScreenControl = remember { preferenceManager.loadPhoneControlRemote() })
+            PolicySimulatorCard(remoteScreenControl = remotePhoneControl)
 
             // Section 5: Cron-Sync & Hybrid Scheduler
             if (bridgeClient != null) {

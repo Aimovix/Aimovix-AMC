@@ -159,7 +159,7 @@ class PhoneControlService : AccessibilityService() {
             // A password's text never leaves the node.
             text = if (password) null else n.text?.toString(),
             contentDescription = if (password) null else n.contentDescription?.toString(),
-            hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) n.hintText?.toString() else null,
+            hint = n.hintText?.toString(),
             viewId = n.viewIdResourceName,
             bounds = Bounds(r.left, r.top, r.right, r.bottom),
             clickable = n.isClickable,

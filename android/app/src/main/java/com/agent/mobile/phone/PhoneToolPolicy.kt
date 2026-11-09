@@ -89,6 +89,15 @@ object PhoneToolPolicy {
         "com.android.vpndialogs", "com.android.managedprovisioning", "com.android.devicelockcontroller"
     )
     private const val SYSTEM_UI = "com.android.systemui"
+
+    /**
+     * Terminal apps. Typing into them would run shell commands past the security filter and could
+     * reveal the bridge token, so the screen tools never read or operate them.
+     */
+    val TERMINAL_PACKAGES = setOf("com.termux", "jackpal.androidterm", "com.termoneplus", "com.offsec.nhterm", "yarolegovich.materialterminal")
+
+    const val TERMINAL_REASON = "AMC does not read or operate terminal apps through the screen (that would bypass the " +
+        "command security filter). Use execute_command instead."
     private val INSTALLER_PACKAGES = setOf(
         "com.android.packageinstaller", "com.google.android.packageinstaller", "com.android.vending",
         "org.fdroid.fdroid", "com.aurora.store", "com.sec.android.app.samsungapps", "com.huawei.appmarket"
@@ -221,6 +230,7 @@ object PhoneToolPolicy {
         if (pkg == ctx.ownPackage) {
             return blocked("AMC does not operate its own app (it could approve its own requests). Switch to another app first.")
         }
+        if (pkg in TERMINAL_PACKAGES) return blocked(TERMINAL_REASON)
         ctx.blocklist.blockReason(pkg, ctx.foregroundLabel, ctx.windowClass)?.let {
             return blocked("$it. The user can release it in Settings → Phone control.")
         }

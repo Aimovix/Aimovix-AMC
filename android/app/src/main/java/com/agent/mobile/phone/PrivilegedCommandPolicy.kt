@@ -111,6 +111,7 @@ object PrivilegedCommandPolicy {
     private fun hardBlockForeground(ctx: PhoneRiskContext): SecurityAssessment? {
         val pkg = ctx.foregroundPackage ?: return null
         if (pkg == ctx.ownPackage) return blocked("AMC does not operate its own app.")
+        if (pkg in PhoneToolPolicy.TERMINAL_PACKAGES) return blocked(PhoneToolPolicy.TERMINAL_REASON)
         ctx.blocklist.blockReason(pkg, ctx.foregroundLabel, ctx.windowClass)?.let {
             return blocked("$it. The user can release it in Settings → Phone control.")
         }

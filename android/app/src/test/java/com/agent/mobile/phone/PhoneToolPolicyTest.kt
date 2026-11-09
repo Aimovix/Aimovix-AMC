@@ -311,4 +311,14 @@ class PhoneToolPolicyTest {
         assertEquals(CommandSecurityFilter.analyze("termux-clipboard-get").level, get.level)
         assertTrue(assess(call(PhoneTools.CLIPBOARD, "action" to "wipe"), PhoneRiskContext()).isBlocked)
     }
+
+    @Test
+    fun terminalAppsAreNeverOperatedThroughTheScreen() {
+        val termux = ctx("com.termux", "Termux", TargetInfo("", editable = true))
+        assertTrue(assess(call(PhoneTools.SCREEN_TYPE, "text" to "cat ~/.termux_agent_token", "submit" to "true"), termux).isBlocked)
+        assertTrue(assess(call(PhoneTools.SCREEN_READ), termux).isBlocked)
+        assertTrue(assess(call(PhoneTools.SCREEN_CAPTURE), termux).isBlocked)
+        assertTrue(AgentTools.assess(ToolCall(name = PhoneTools.PRIVILEGED_SHELL, arguments = mapOf("command" to "input text ls")), termux).isBlocked)
+        assertFalse(assess(call(PhoneTools.SCREEN_GLOBAL, "action" to "home"), termux).isBlocked)
+    }
 }

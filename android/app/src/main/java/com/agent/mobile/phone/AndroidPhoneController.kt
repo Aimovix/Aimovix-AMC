@@ -483,6 +483,7 @@ class AndroidPhoneController(
         val pkg = snap.packageName
         val name = snap.appLabel
         if (pkg == context.packageName) return "AMC itself is in front. Its screen is not read. Use screen_global home or open_app."
+        if (pkg in PhoneToolPolicy.TERMINAL_PACKAGES) return "$name is in front. ${PhoneToolPolicy.TERMINAL_REASON}"
         val blocklist = prefs.loadPhoneBlocklist()
         blocklist.blockReason(pkg, name, windowClass)?.let {
             return "$name is in front. $it, so its screen is not shown. Use screen_global back or home."

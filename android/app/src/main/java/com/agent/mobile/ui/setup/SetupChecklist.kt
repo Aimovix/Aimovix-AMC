@@ -29,10 +29,19 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.agent.mobile.core.termux.TermuxRunCommand
 import com.agent.mobile.data.network.TermuxBridgeClient
+import com.agent.mobile.phone.AmcNotificationListener
+import com.agent.mobile.phone.PhoneControlService
+import com.agent.mobile.phone.ShizukuShell
 import com.agent.mobile.ui.theme.*
 
-/** The steps a new user goes through, in order. */
-enum class SetupStep { TERMUX, TERMUX_API, RUN_COMMAND, BACKGROUND, PAIRED }
+/**
+ * The steps a new user goes through, in order. The first five set up Termux; the rest set up
+ * phone control (a second group, shown below the Termux steps).
+ */
+enum class SetupStep {
+    TERMUX, TERMUX_API, RUN_COMMAND, BACKGROUND, PAIRED,
+    RESTRICTED_SETTINGS, ACCESSIBILITY, NOTIFICATIONS, USAGE_STATS, SHIZUKU
+}
 
 /** What the app can observe about the setup right now. */
 data class SetupFacts(
@@ -40,10 +49,17 @@ data class SetupFacts(
     val termuxApiInstalled: Boolean,
     val runCommandGranted: Boolean,
     val batteryUnrestricted: Boolean,
-    val bridgeConnected: Boolean
+    val bridgeConnected: Boolean,
+    /** Android 13+ blocks accessibility and notification access for apps installed outside a store until allowed. */
+    val restrictedSettingsApply: Boolean = false,
+    val restrictedSettingsAllowed: Boolean = false,
+    val accessibilityEnabled: Boolean = false,
+    val notificationAccess: Boolean = false,
+    val usageAccess: Boolean = false,
+    val shizuku: ShizukuShell.Status = ShizukuShell.Status.NOT_INSTALLED
 )
 
-data class SetupItem(val step: SetupStep, val done: Boolean)
+data class SetupItem(val step: SetupStep, val done: Boolean, val optional: Boolean = false)
 
 /** A message under the open step: a result, an error, or a command to run in Termux. */
 data class SetupNotice(
@@ -64,12 +80,60 @@ fun setupItems(facts: SetupFacts): List<SetupItem> = listOf(
 /** The first step that is still open. The screen opens its row and offers its action. */
 fun nextSetupStep(items: List<SetupItem>): SetupStep? = items.firstOrNull { !it.done }?.step
 
+/**
+ * Phone control steps. "Allow restricted settings" only appears on Android 13+ when it applies,
+ * and counts as done once either permission behind it works. Usage access and Shizuku are optional.
+ */
+fun phoneControlItems(facts: SetupFacts): List<SetupItem> = buildList {
+    if (facts.restrictedSettingsApply) {
+        add(
+            SetupItem(
+                SetupStep.RESTRICTED_SETTINGS,
+                facts.restrictedSettingsAllowed || facts.accessibilityEnabled || facts.notificationAccess
+            )
+        )
+    }
+    add(SetupItem(SetupStep.ACCESSIBILITY, facts.accessibilityEnabled))
+    add(SetupItem(SetupStep.NOTIFICATIONS, facts.notificationAccess))
+    add(SetupItem(SetupStep.USAGE_STATS, facts.usageAccess, optional = true))
+    add(SetupItem(SetupStep.SHIZUKU, facts.shizuku == ShizukuShell.Status.READY, optional = true))
+}
+
+/** First open required step; once those are done, the first open optional one. */
+fun nextPhoneControlStep(items: List<SetupItem>): SetupStep? =
+    items.firstOrNull { !it.done && !it.optional }?.step ?: items.firstOrNull { !it.done }?.step
+
+/** True when every required phone control step is done (optional ones may stay open). */
+fun phoneControlReady(items: List<SetupItem>): Boolean = items.none { !it.done && !it.optional }
+
+/** The one action of the Shizuku step, which depends on how far Shizuku is set up. */
+fun shizukuAction(status: ShizukuShell.Status): String = when (status) {
+    ShizukuShell.Status.NOT_INSTALLED -> "Get Shizuku"
+    ShizukuShell.Status.NOT_RUNNING -> "Open Shizuku"
+    ShizukuShell.Status.NO_PERMISSION -> "Allow AMC in Shizuku"
+    ShizukuShell.Status.READY -> "Done"
+}
+
+fun shizukuHint(status: ShizukuShell.Status): String = when (status) {
+    ShizukuShell.Status.NOT_INSTALLED ->
+        "Optional. Shizuku gives AMC ADB rights without root (for example to change settings directly). Everything else works without it."
+    ShizukuShell.Status.NOT_RUNNING ->
+        "Shizuku is installed but not running. Open it and start it with wireless debugging, then come back."
+    ShizukuShell.Status.NO_PERMISSION -> "Shizuku runs. Allow AMC in the dialog that appears."
+    ShizukuShell.Status.READY -> "Shizuku is ready."
+}
+
 fun setupStepTitle(step: SetupStep): String = when (step) {
     SetupStep.TERMUX -> "Install Termux"
     SetupStep.TERMUX_API -> "Install Termux:API"
     SetupStep.RUN_COMMAND -> "Allow AMC to run commands in Termux"
     SetupStep.BACKGROUND -> "Let Termux run in the background"
     SetupStep.PAIRED -> "Start the bridge and pair"
+    SetupStep.RESTRICTED_SETTINGS -> "Allow restricted settings"
+    SetupStep.ACCESSIBILITY -> "Turn on AMC Phone Control"
+    SetupStep.NOTIFICATIONS -> "Allow notification access"
+    SetupStep.USAGE_STATS -> "Allow usage access"
+    SetupStep.SHIZUKU -> "Shizuku (ADB rights)"
 }
 
 fun setupStepHint(step: SetupStep): String = when (step) {
@@ -78,6 +142,17 @@ fun setupStepHint(step: SetupStep): String = when (step) {
     SetupStep.RUN_COMMAND -> "Android asks once. After that AMC can start the bridge in Termux for you."
     SetupStep.BACKGROUND -> "Set Termux's battery use to Unrestricted, so the bridge keeps running while the phone sleeps."
     SetupStep.PAIRED -> "AMC starts the bridge in Termux and fetches the token. Nothing to copy."
+    SetupStep.RESTRICTED_SETTINGS ->
+        "AMC comes from GitHub, not from an app store. Android 13 and later block accessibility and notification " +
+            "access for such apps until you allow it: in App info tap ⋮ (top right), then \"Allow restricted settings\", " +
+            "and confirm. Then come back here."
+    SetupStep.ACCESSIBILITY ->
+        "Lets the agent see the app in front and tap, type and scroll for you, only during tasks you give it. " +
+            "You will see what it can read and do before Android's settings open."
+    SetupStep.NOTIFICATIONS ->
+        "Lets the agent read, open and answer notifications when a task needs it. Answering always asks you first."
+    SetupStep.USAGE_STATS -> "Optional. Lets the agent tell you which apps you used and for how long."
+    SetupStep.SHIZUKU -> shizukuHint(ShizukuShell.Status.NOT_INSTALLED)
 }
 
 fun setupStepAction(step: SetupStep): String = when (step) {
@@ -85,6 +160,11 @@ fun setupStepAction(step: SetupStep): String = when (step) {
     SetupStep.RUN_COMMAND -> "Allow"
     SetupStep.BACKGROUND -> "Open Termux settings"
     SetupStep.PAIRED -> "Start & pair"
+    SetupStep.RESTRICTED_SETTINGS -> "Open App info"
+    SetupStep.ACCESSIBILITY -> "Review and turn on"
+    SetupStep.NOTIFICATIONS -> "Open notification access"
+    SetupStep.USAGE_STATS -> "Open usage access"
+    SetupStep.SHIZUKU -> shizukuAction(ShizukuShell.Status.NOT_INSTALLED)
 }
 
 /** The official F-Droid pages for the two apps; null for steps that have no page. */
@@ -100,7 +180,13 @@ fun readSetupFacts(context: Context, bridgeConnected: Boolean): SetupFacts = Set
     termuxApiInstalled = isPackageInstalled(context, "com.termux.api"),
     runCommandGranted = ContextCompat.checkSelfPermission(context, TermuxRunCommand.PERMISSION) == PackageManager.PERMISSION_GRANTED,
     batteryUnrestricted = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux"),
-    bridgeConnected = bridgeConnected
+    bridgeConnected = bridgeConnected,
+    restrictedSettingsApply = com.agent.mobile.phone.PhoneControlSetup.restrictedSettingsApply(context),
+    restrictedSettingsAllowed = com.agent.mobile.phone.PhoneControlSetup.restrictedSettingsAllowed(context),
+    accessibilityEnabled = PhoneControlService.isEnabledInSettings(context),
+    notificationAccess = AmcNotificationListener.isEnabled(context),
+    usageAccess = com.agent.mobile.phone.PhoneControlSetup.hasUsageAccess(context),
+    shizuku = ShizukuShell.status(context)
 )
 
 private fun isPackageInstalled(context: Context, packageName: String): Boolean = try {
@@ -184,14 +270,16 @@ fun SetupChecklist(
 }
 
 @Composable
-private fun SetupRow(
+internal fun SetupRow(
     number: Int,
     item: SetupItem,
     isNext: Boolean,
     busy: Boolean,
     notice: SetupNotice?,
     onAction: () -> Unit,
-    onInstallBridge: () -> Unit
+    onInstallBridge: () -> Unit,
+    hint: String = setupStepHint(item.step),
+    action: String = setupStepAction(item.step)
 ) {
     val source = remember(item.step) { MutableInteractionSource() }
     Column(
@@ -208,13 +296,18 @@ private fun SetupRow(
                     item.done -> TextMuted
                     isNext -> TextWhite
                     else -> TextSecondary
-                }
+                },
+                modifier = Modifier.weight(1f, fill = false)
             )
+            if (item.optional && !item.done) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = "Optional", style = MaterialTheme.typography.labelMedium, color = TextMuted)
+            }
         }
         AnimatedVisibility(visible = isNext, enter = amcEnter(), exit = amcExit()) {
             Column(modifier = Modifier.padding(start = 38.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = setupStepHint(item.step),
+                    text = hint,
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary
                 )
@@ -231,7 +324,7 @@ private fun SetupRow(
                         Spacer(modifier = Modifier.width(8.dp))
                     }
                     Text(
-                        text = if (busy) "Working…" else setupStepAction(item.step),
+                        text = if (busy) "Working…" else action,
                         style = MaterialTheme.typography.labelLarge
                     )
                 }
@@ -242,7 +335,7 @@ private fun SetupRow(
 }
 
 @Composable
-private fun StepBadge(number: Int, done: Boolean, active: Boolean) {
+internal fun StepBadge(number: Int, done: Boolean, active: Boolean) {
     val container by animateColorAsState(
         targetValue = when {
             done -> StatusOnline

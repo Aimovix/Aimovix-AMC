@@ -83,6 +83,9 @@ object ScreenCapture {
 
     private const val INTERVAL = "interval"
 
+    /** AccessibilityService.ERROR_TAKE_SCREENSHOT_SECURE_WINDOW (Android 14+). */
+    private const val ERROR_SECURE_WINDOW = 5
+
     @RequiresApi(Build.VERSION_CODES.R)
     private suspend fun takeOnce(service: PhoneControlService): Shot = suspendCancellableCoroutine { cont ->
         service.takeScreenshot(
@@ -102,10 +105,10 @@ object ScreenCapture {
                 }
 
                 override fun onFailure(errorCode: Int) {
-                    val reason = when (errorCode) {
+                    val reason = if (errorCode == ERROR_SECURE_WINDOW) {
+                        "No screenshot: the app in front protects its window (FLAG_SECURE). Use screen_read instead."
+                    } else when (errorCode) {
                         AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> INTERVAL
-                        // ERROR_TAKE_SCREENSHOT_SECURE_WINDOW (Android 14+)
-                        5 -> "No screenshot: the app in front protects its window (FLAG_SECURE). Use screen_read instead."
                         AccessibilityService.ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS ->
                             "No screenshot: AMC Phone Control is not allowed to take screenshots."
                         else -> "No screenshot (system error $errorCode)."
@@ -163,7 +166,7 @@ internal object ProjectionCapture {
             .putExtra(ScreenCaptureService.EXTRA_CODE, code)
             .putExtra(ScreenCaptureService.EXTRA_DATA, data)
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+            context.startForegroundService(intent)
         } catch (e: Exception) {
             Log.w(TAG, "Could not start the capture service: ${e.message}")
             return null
@@ -276,7 +279,7 @@ class ScreenCaptureService : Service() {
 
     private fun startInForeground() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager.getNotificationChannel(CHANNEL_ID) == null) {
+        if (manager.getNotificationChannel(CHANNEL_ID) == null) {
             manager.createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, getString(R.string.phone_control_channel), NotificationManager.IMPORTANCE_LOW)
             )

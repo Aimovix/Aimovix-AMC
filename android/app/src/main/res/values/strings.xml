@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">AMC</string>
+    <string name="app_name" translatable="false">AMC</string>
 
     <!-- Phone control (accessibility service) -->
     <string name="phone_control_service_label">AMC Phone Control</string>

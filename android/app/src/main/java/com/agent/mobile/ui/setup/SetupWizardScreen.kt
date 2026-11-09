@@ -54,6 +54,8 @@ fun SetupWizardScreen(
     }
     var notice by remember { mutableStateOf<SetupNotice?>(null) }
     var pairing by remember { mutableStateOf(false) }
+    var phoneNotice by remember { mutableStateOf<SetupNotice?>(null) }
+    var showDisclosure by remember { mutableStateOf(false) }
 
     LaunchedEffect(connectionStatus) {
         facts = readSetupFacts(context, connectionStatus is ConnectionStatus.Connected)
@@ -122,7 +124,55 @@ fun SetupWizardScreen(
                 }
             }
             SetupStep.PAIRED -> startPairing()
+            else -> Unit // phone control steps are handled by onPhoneStepAction
         }
+    }
+
+    fun onPhoneStepAction(step: SetupStep) {
+        phoneNotice = null
+        val ph = com.agent.mobile.phone.PhoneControlSetup
+        when (step) {
+            SetupStep.RESTRICTED_SETTINGS -> {
+                if (ph.startFirst(context, listOf(ph.appInfoIntent(context)))) {
+                    ph.markRestrictedSettingsVisited(context)
+                } else {
+                    phoneNotice = SetupNotice("Open Android settings → Apps → AMC, then ⋮ → Allow restricted settings.")
+                }
+            }
+            SetupStep.ACCESSIBILITY -> showDisclosure = true
+            SetupStep.NOTIFICATIONS -> if (!ph.startFirst(context, ph.notificationAccessIntents(context))) {
+                phoneNotice = SetupNotice("Open Android settings → Notifications → Device & app notifications (or Notification access) → AMC.")
+            }
+            SetupStep.USAGE_STATS -> if (!ph.startFirst(context, ph.usageAccessIntents(context))) {
+                phoneNotice = SetupNotice("Open Android settings → Apps → Special app access → Usage access → AMC.")
+            }
+            SetupStep.SHIZUKU -> when (facts.shizuku) {
+                com.agent.mobile.phone.ShizukuShell.Status.NOT_INSTALLED -> openUrl(com.agent.mobile.phone.ShizukuShell.DOWNLOAD_URL)
+                com.agent.mobile.phone.ShizukuShell.Status.NOT_RUNNING -> {
+                    val launch = context.packageManager.getLaunchIntentForPackage(com.agent.mobile.phone.ShizukuShell.PACKAGE)
+                    if (launch == null || !ph.startFirst(context, listOf(launch))) phoneNotice = SetupNotice("Open the Shizuku app and start it.")
+                }
+                com.agent.mobile.phone.ShizukuShell.Status.NO_PERMISSION -> if (!com.agent.mobile.phone.ShizukuShell.requestPermission()) {
+                    phoneNotice = SetupNotice("Shizuku stopped. Start it again in the Shizuku app.")
+                }
+                com.agent.mobile.phone.ShizukuShell.Status.READY -> Unit
+            }
+            else -> Unit
+        }
+        facts = readSetupFacts(context, connectionStatus is ConnectionStatus.Connected)
+    }
+
+    if (showDisclosure) {
+        PhoneControlDisclosureDialog(
+            onContinue = {
+                showDisclosure = false
+                val ph = com.agent.mobile.phone.PhoneControlSetup
+                if (!ph.startFirst(context, ph.accessibilityIntents(context))) {
+                    phoneNotice = SetupNotice("Open Android settings → Accessibility → AMC Phone Control.")
+                }
+            },
+            onDismiss = { showDisclosure = false }
+        )
     }
 
     var isTermuxIgnoringBattery by remember {
@@ -264,6 +314,14 @@ fun SetupWizardScreen(
                 onAction = { step -> onStepAction(step) },
                 onInstallBridge = { installBridge() },
                 onContinueToChat = onNavigateChat
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            PhoneControlChecklist(
+                facts = facts,
+                notice = phoneNotice,
+                onAction = { step -> onPhoneStepAction(step) }
             )
 
             Spacer(modifier = Modifier.height(24.dp))

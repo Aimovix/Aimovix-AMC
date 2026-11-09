@@ -1,14 +1,11 @@
 package com.agent.mobile.phone
 
-import android.app.AppOpsManager
 import android.app.usage.UsageStatsManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
-import android.os.Process
 import android.provider.AlarmClock
 import android.provider.CalendarContract
 import android.provider.Settings
@@ -128,16 +125,7 @@ internal class SystemIntents(private val context: Context, private val labelOf: 
         }
     }
 
-    fun hasUsageAccess(): Boolean {
-        val ops = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-        @Suppress("DEPRECATION")
-        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
-        } else {
-            ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
-        }
-        return mode == AppOpsManager.MODE_ALLOWED
-    }
+    fun hasUsageAccess(): Boolean = PhoneControlSetup.hasUsageAccess(context)
 
     fun usage(args: Map<String, String>): PhoneActionResult {
         if (!hasUsageAccess()) return fail("Usage access is not granted. Ask the user to allow it in AMC → Setup.")
