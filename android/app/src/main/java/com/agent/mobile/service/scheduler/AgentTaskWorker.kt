@@ -65,7 +65,8 @@ class AgentTaskWorker(
             memoryStore = runtime.memoryStore,
             platform = runtime.platform,
             headless = true,
-            personaStore = runtime.personaStore
+            personaStore = runtime.personaStore,
+            phone = runtime.phoneController
         )
         return try {
             if (!runtime.bridgeStarter.ensureConnected(bridge, token, 20_000L)) {

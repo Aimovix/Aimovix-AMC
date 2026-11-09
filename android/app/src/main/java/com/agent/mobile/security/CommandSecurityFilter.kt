@@ -25,7 +25,15 @@ data class SecurityAssessment(
      * camera, microphone). They always need the user's personal confirmation, in every preset
      * including Turbo, and are never executed in unattended background runs.
      */
-    val alwaysConfirm: Boolean = false
+    val alwaysConfirm: Boolean = false,
+    /**
+     * When set, one approval covers every later call with the same key in the same run (e.g.
+     * "read:com.whatsapp" lets the agent read and navigate that app after one approval). Only
+     * used for reading and navigating; sending, paying, deleting and similar never get a key.
+     */
+    val grantKey: String? = null,
+    /** The call carries a secret (typing into a password field): its text is never logged or stored. */
+    val redact: Boolean = false
 )
 
 object CommandSecurityFilter {

@@ -24,7 +24,8 @@ class EngineChannelAgent(
         memoryStore = runtime.memoryStore,
         platform = runtime.platform,
         headless = true,
-        personaStore = runtime.personaStore
+        personaStore = runtime.personaStore,
+        phone = runtime.phoneController
     ).also { it.channelName = channelName }
 
     override val isBusy: Boolean get() = engine.isBusy.value

@@ -1,0 +1,13 @@
+<resources>
+    <string name="phone_control_service_label">AMC Phone Control</string>
+    <string name="phone_control_service_description">Erlaubt dem AMC-Agenten, den Bildschirm zu lesen und Apps für dich zu bedienen: Er sieht Texte und Schaltflächen der App im Vordergrund (nie den Inhalt von Passwortfeldern), kann tippen, Text eingeben, scrollen, wischen und Zurück, Startbildschirm und Letzte Apps drücken. Er handelt nur bei Aufgaben, die du ihm gibst, und nur, während der Hinweis \"AMC steuert\" mit Stopp-Knopf sichtbar ist. Banking-, Passwort- und Authenticator-Apps sind standardmäßig gesperrt. Nachrichten senden, Zahlungen, Installationen, Löschen und Änderungen an Einstellungen fragen immer vorher nach. AMC entsperrt oder umgeht nie deinen Sperrbildschirm.</string>
+    <string name="phone_control_overlay_title">AMC steuert</string>
+    <string name="phone_control_stop">Stopp</string>
+    <string name="phone_control_stop_description">AMC-Steuerung des Handys stoppen</string>
+    <string name="phone_control_channel">Handy-Steuerung</string>
+    <string name="phone_control_channel_description">Wird angezeigt, solange AMC dein Handy bedient, mit Stopp-Knopf</string>
+    <string name="phone_control_notification_title">AMC bedient dein Handy</string>
+    <string name="phone_control_notification_text">Tippe auf Stopp, um sofort abzubrechen.</string>
+    <string name="notification_access_label">AMC-Benachrichtigungen für den Agenten</string>
+    <string name="screen_capture_notification_title">AMC kann Screenshots machen, solange es dein Handy bedient</string>
+</resources>

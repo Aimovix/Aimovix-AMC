@@ -14,8 +14,8 @@ android {
         applicationId = "com.agent.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.5.0"
+        versionCode = 15
+        versionName = "1.7.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -99,6 +99,10 @@ dependencies {
 
     // WorkManager
     implementation(libs.androidx.work.runtime.ktx)
+
+    // Optional ADB-level commands through Shizuku (phone control)
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
 
     // Unit & Integration Testing
     testImplementation(libs.junit)

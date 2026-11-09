@@ -26,6 +26,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.agent.mobile.data.model.ConnectionStatus
+import com.agent.mobile.core.termux.TermuxPairing
+import com.agent.mobile.core.termux.TermuxRunCommand
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.launch
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.ui.theme.*
 
@@ -35,12 +40,141 @@ fun SetupWizardScreen(
     bridgeClient: TermuxBridgeClient,
     savedToken: String,
     onTokenChanged: (String) -> Unit,
+    onNavigateChat: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val connectionStatus by bridgeClient.connectionStatus.collectAsState()
     var inputToken by remember { mutableStateOf(savedToken) }
+    val coroutineScope = rememberCoroutineScope()
+    // Live checklist: re-read on resume, on every connection change, and after each action.
+    var facts by remember {
+        mutableStateOf(readSetupFacts(context, bridgeClient.connectionStatus.value is ConnectionStatus.Connected))
+    }
+    var notice by remember { mutableStateOf<SetupNotice?>(null) }
+    var pairing by remember { mutableStateOf(false) }
+    var phoneNotice by remember { mutableStateOf<SetupNotice?>(null) }
+    var showDisclosure by remember { mutableStateOf(false) }
+
+    LaunchedEffect(connectionStatus) {
+        facts = readSetupFacts(context, connectionStatus is ConnectionStatus.Connected)
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        facts = readSetupFacts(context, connectionStatus is ConnectionStatus.Connected)
+        notice = if (granted) null else SetupNotice("Permission was not granted. You can still pair manually in Step 4.")
+    }
+
+    fun openUrl(url: String) {
+        try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            notice = SetupNotice("Could not open the browser. Open $url yourself.")
+        }
+    }
+
+    fun startPairing() {
+        pairing = true
+        notice = SetupNotice("Asking Termux for the bridge token…")
+        coroutineScope.launch {
+            val outcome = TermuxPairing.pair(context)
+            pairing = false
+            when (outcome) {
+                is TermuxPairing.Outcome.Paired -> {
+                    notice = null
+                    inputToken = outcome.token
+                    onTokenChanged(outcome.token)
+                    bridgeClient.forceReconnect(outcome.token)
+                }
+                TermuxPairing.Outcome.NotInstalled -> notice = SetupNotice(
+                    message = "The AMC bridge is not installed in Termux yet.",
+                    canInstallBridge = true
+                )
+                is TermuxPairing.Outcome.NeedsExternalApps -> notice = SetupNotice(
+                    message = outcome.message + " Run this once in Termux:",
+                    command = TermuxRunCommand.ALLOW_EXTERNAL_APPS_COMMAND
+                )
+                is TermuxPairing.Outcome.Failed -> notice = SetupNotice(outcome.message)
+            }
+            facts = readSetupFacts(context, connectionStatus is ConnectionStatus.Connected)
+        }
+    }
+
+    fun installBridge() {
+        val started = TermuxRunCommand.start(context, TermuxRunCommand.INSTALL_SCRIPT, "AMC: install bridge", background = false)
+        notice = SetupNotice(
+            if (started) {
+                "The installer is running in Termux. When it says 'Setup complete', press Start & pair again."
+            } else {
+                "Could not open Termux. Run the installer from Step 2 instead."
+            }
+        )
+    }
+
+    fun onStepAction(step: SetupStep) {
+        when (step) {
+            SetupStep.TERMUX, SetupStep.TERMUX_API -> setupStepUrl(step)?.let { openUrl(it) }
+            SetupStep.RUN_COMMAND -> permissionLauncher.launch(TermuxRunCommand.PERMISSION)
+            SetupStep.BACKGROUND -> {
+                try {
+                    context.startActivity(TermuxBridgeClient.getTermuxBatterySettingsIntent())
+                } catch (e: Exception) {
+                    notice = SetupNotice("Open Android settings, then Apps, Termux, Battery, and choose Unrestricted.")
+                }
+            }
+            SetupStep.PAIRED -> startPairing()
+            else -> Unit // phone control steps are handled by onPhoneStepAction
+        }
+    }
+
+    fun onPhoneStepAction(step: SetupStep) {
+        phoneNotice = null
+        val ph = com.agent.mobile.phone.PhoneControlSetup
+        when (step) {
+            SetupStep.RESTRICTED_SETTINGS -> {
+                if (ph.startFirst(context, listOf(ph.appInfoIntent(context)))) {
+                    ph.markRestrictedSettingsVisited(context)
+                } else {
+                    phoneNotice = SetupNotice("Open Android settings → Apps → AMC, then ⋮ → Allow restricted settings.")
+                }
+            }
+            SetupStep.ACCESSIBILITY -> showDisclosure = true
+            SetupStep.NOTIFICATIONS -> if (!ph.startFirst(context, ph.notificationAccessIntents(context))) {
+                phoneNotice = SetupNotice("Open Android settings → Notifications → Device & app notifications (or Notification access) → AMC.")
+            }
+            SetupStep.USAGE_STATS -> if (!ph.startFirst(context, ph.usageAccessIntents(context))) {
+                phoneNotice = SetupNotice("Open Android settings → Apps → Special app access → Usage access → AMC.")
+            }
+            SetupStep.SHIZUKU -> when (facts.shizuku) {
+                com.agent.mobile.phone.ShizukuShell.Status.NOT_INSTALLED -> openUrl(com.agent.mobile.phone.ShizukuShell.DOWNLOAD_URL)
+                com.agent.mobile.phone.ShizukuShell.Status.NOT_RUNNING -> {
+                    val launch = context.packageManager.getLaunchIntentForPackage(com.agent.mobile.phone.ShizukuShell.PACKAGE)
+                    if (launch == null || !ph.startFirst(context, listOf(launch))) phoneNotice = SetupNotice("Open the Shizuku app and start it.")
+                }
+                com.agent.mobile.phone.ShizukuShell.Status.NO_PERMISSION -> if (!com.agent.mobile.phone.ShizukuShell.requestPermission()) {
+                    phoneNotice = SetupNotice("Shizuku stopped. Start it again in the Shizuku app.")
+                }
+                com.agent.mobile.phone.ShizukuShell.Status.READY -> Unit
+            }
+            else -> Unit
+        }
+        facts = readSetupFacts(context, connectionStatus is ConnectionStatus.Connected)
+    }
+
+    if (showDisclosure) {
+        PhoneControlDisclosureDialog(
+            onContinue = {
+                showDisclosure = false
+                val ph = com.agent.mobile.phone.PhoneControlSetup
+                if (!ph.startFirst(context, ph.accessibilityIntents(context))) {
+                    phoneNotice = SetupNotice("Open Android settings → Accessibility → AMC Phone Control.")
+                }
+            },
+            onDismiss = { showDisclosure = false }
+        )
+    }
+
     var isTermuxIgnoringBattery by remember {
         mutableStateOf(TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux"))
     }
@@ -50,6 +184,7 @@ fun SetupWizardScreen(
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 isTermuxIgnoringBattery = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, "com.termux")
+                facts = readSetupFacts(context, bridgeClient.connectionStatus.value is ConnectionStatus.Connected)
                 bridgeClient.reconnectIfDisconnected(force = true)
             }
         }
@@ -172,12 +307,21 @@ fun SetupWizardScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            QuickConnectCard(
-                bridgeClient = bridgeClient,
-                onTokenReceived = { token ->
-                    inputToken = token
-                    onTokenChanged(token)
-                }
+            SetupChecklist(
+                facts = facts,
+                busy = pairing,
+                notice = notice,
+                onAction = { step -> onStepAction(step) },
+                onInstallBridge = { installBridge() },
+                onContinueToChat = onNavigateChat
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            PhoneControlChecklist(
+                facts = facts,
+                notice = phoneNotice,
+                onAction = { step -> onPhoneStepAction(step) }
             )
 
             Spacer(modifier = Modifier.height(24.dp))

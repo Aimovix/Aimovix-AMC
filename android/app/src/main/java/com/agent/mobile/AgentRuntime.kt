@@ -28,6 +28,11 @@ class AgentRuntime private constructor(context: Context) {
     val personaStore = TextFileStore(File(appContext.filesDir, "agent/SOUL.md"))
     val scheduler = SchedulerManager(appContext)
     val platform: AgentPlatform = AndroidAgentPlatform(appContext, scheduler)
+    /** Phone control layer (screen, notifications, intents, Shizuku) shared by every engine. */
+    val phoneController: com.agent.mobile.agent.PhoneController =
+        com.agent.mobile.phone.AndroidPhoneController(appContext, preferenceManager) { title, prompt ->
+            scheduler.scheduleAgentTask(title, prompt, delayMinutes = 0, repeatEveryMinutes = 0)
+        }
     val telegram: TelegramChannelManager by lazy { TelegramChannelManager(this) }
     /** Starts the Termux bridge through RUN_COMMAND when it is not reachable. */
     val bridgeStarter = com.agent.mobile.core.termux.BridgeStarter(appContext)

@@ -36,6 +36,7 @@ import com.agent.mobile.data.repository.ChatRepository
 import com.agent.mobile.data.storage.PreferenceManager
 import com.agent.mobile.service.scheduler.SchedulerManager
 import com.agent.mobile.ui.settings.components.AutonomyCard
+import com.agent.mobile.ui.settings.components.PolicySimulatorCard
 import com.agent.mobile.ui.settings.components.CronSyncCard
 import com.agent.mobile.ui.settings.components.SecurityCockpitCard
 import com.agent.mobile.ui.theme.*
@@ -517,12 +518,26 @@ fun SettingsScreen(
                 )
             }
 
+            // Section 3d: Phone control (screen, notifications, block list, triggers)
+            var remotePhoneControl by remember { mutableStateOf(preferenceManager.loadPhoneControlRemote()) }
+            com.agent.mobile.ui.settings.components.PhoneControlCard(
+                preferenceManager = preferenceManager,
+                remoteEnabled = remotePhoneControl,
+                onRemoteChange = {
+                    remotePhoneControl = it
+                    preferenceManager.savePhoneControlRemote(it)
+                }
+            )
+
             // Section 4: Security Cockpit & Guardrails
             SecurityCockpitCard(
                 agentEngine = agentEngine,
                 preferenceManager = preferenceManager,
                 chatRepository = chatRepository
             )
+
+            // Section 4b: try a command against every security mode
+            PolicySimulatorCard(remoteScreenControl = remotePhoneControl)
 
             // Section 5: Cron-Sync & Hybrid Scheduler
             if (bridgeClient != null) {

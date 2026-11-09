@@ -1,3 +1,16 @@
 <resources>
-    <string name="app_name">AMC</string>
+    <string name="app_name" translatable="false">AMC</string>
+
+    <!-- Phone control (accessibility service) -->
+    <string name="phone_control_service_label">AMC Phone Control</string>
+    <string name="phone_control_service_description">Lets the AMC agent read the screen and operate apps for you: it can see the text and buttons of the app in front (never the content of password fields), tap, type, scroll, swipe and press Back, Home and Recents. It only acts while you watch the \"AMC is in control\" banner with its Stop button, and only for tasks you give it. Banking, password and authenticator apps are blocked by default. Sending messages, payments, installs, deletions and settings changes always ask you first. AMC never unlocks or bypasses your lock screen.</string>
+    <string name="phone_control_overlay_title">AMC is in control</string>
+    <string name="phone_control_stop">Stop</string>
+    <string name="phone_control_stop_description">Stop AMC controlling the phone</string>
+    <string name="phone_control_channel">Phone control</string>
+    <string name="phone_control_channel_description">Shown while AMC operates your phone, with a Stop button</string>
+    <string name="phone_control_notification_title">AMC is controlling your phone</string>
+    <string name="phone_control_notification_text">Tap Stop to end it immediately.</string>
+    <string name="notification_access_label">AMC notifications for the agent</string>
+    <string name="screen_capture_notification_title">AMC can take screenshots while it controls your phone</string>
 </resources>

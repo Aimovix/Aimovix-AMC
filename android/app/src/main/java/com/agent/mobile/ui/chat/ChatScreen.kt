@@ -12,6 +12,13 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -50,6 +57,8 @@ import com.agent.mobile.ui.chat.components.AgentProgressPanel
 import com.agent.mobile.ui.chat.components.ConnectionBanner
 import com.agent.mobile.ui.chat.components.ArtifactViewerDialog
 import com.agent.mobile.ui.chat.components.MessageBubble
+import com.agent.mobile.ui.chat.components.MessageActionsSheet
+import com.agent.mobile.ui.chat.components.EmptyStateSuggestions
 import com.agent.mobile.ui.chat.components.QuickActionToolbar
 import com.agent.mobile.ui.chat.components.SessionDrawerContent
 import com.agent.mobile.ui.chat.components.VoiceInputButton
@@ -87,6 +96,9 @@ fun ChatScreen(
 
     var inputText by remember { mutableStateOf("") }
     var showModelPickerDialog by remember { mutableStateOf(false) }
+    var actionMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    val inputFocus = remember { FocusRequester() }
+    val haptics = LocalHapticFeedback.current
     var viewingArtifactPath by remember { mutableStateOf<String?>(null) }
     val viewingArtifact = artifacts.firstOrNull { it.path == viewingArtifactPath }
 
@@ -312,7 +324,10 @@ fun ChatScreen(
             floatingActionButton = {
                 if (isBusy) {
                     ExtendedFloatingActionButton(
-                        onClick = { agentEngine.emergencyStop() },
+                        onClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            agentEngine.emergencyStop()
+                        },
                         containerColor = RedEmergency,
                         contentColor = Color.White,
                         shape = RoundedCornerShape(12.dp),
@@ -424,10 +439,29 @@ fun ChatScreen(
                         }
                     }
 
+                    if (messages.isEmpty()) {
+                        item {
+                            EmptyStateSuggestions(
+                                onPick = { text ->
+                                    inputText = text
+                                    runCatching { inputFocus.requestFocus() }
+                                },
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+                        }
+                    }
+
                     items(messages, key = { it.id }) { msg ->
                         MessageBubble(
                             message = msg,
-                            modifier = Modifier.animateItem(),
+                            modifier = Modifier
+                                .animateItem()
+                                .pointerInput(msg.id) {
+                                    detectTapGestures(onLongPress = {
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        actionMessage = msg
+                                    })
+                                },
                             pendingApproval = pendingApproval,
                             onApproveTool = { toolId -> agentEngine.approvePendingAction(toolId) },
                             onRejectTool = { toolId -> agentEngine.rejectPendingAction(toolId) }
@@ -447,9 +481,9 @@ fun ChatScreen(
                 // Quick Action Hardware Toolbar
                 QuickActionToolbar(
                     onActionSelected = { prompt ->
-                        if (!isBusy) {
-                            agentEngine.startTask(prompt)
-                        }
+                        // Fill the input rather than sending: the user reads and edits it, then sends.
+                        inputText = prompt
+                        runCatching { inputFocus.requestFocus() }
                     }
                 )
 
@@ -558,7 +592,7 @@ fun ChatScreen(
                                     )
                                 },
                                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, color = TextWhite),
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.weight(1f).focusRequester(inputFocus),
                                 colors = TextFieldDefaults.colors(
                                     focusedContainerColor = Color.Transparent,
                                     unfocusedContainerColor = Color.Transparent,
@@ -623,9 +657,18 @@ fun ChatScreen(
 
                             // Send Button
                             val canSend = inputText.isNotBlank() || pendingImageBase64 != null
+                            val sendColor by animateColorAsState(
+                                targetValue = if (canSend) AccentPrimary else DarkCardElevated,
+                                label = "sendColor"
+                            )
+                            val sendTint by animateColorAsState(
+                                targetValue = if (canSend) Color.Black else TextMuted,
+                                label = "sendTint"
+                            )
                             Surface(
                                 onClick = {
                                     if (canSend) {
+                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                         val prompt = inputText.trim().ifEmpty { "Analyze the attached image." }
                                         val imgB64 = pendingImageBase64
                                         val mime = pendingImageMimeType
@@ -665,14 +708,14 @@ fun ChatScreen(
                                     }
                                 },
                                 shape = RoundedCornerShape(8.dp),
-                                color = if (canSend) AccentPrimary else DarkCardElevated,
+                                color = sendColor,
                                 modifier = Modifier.size(36.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.Send,
                                         contentDescription = "Send",
-                                        tint = if (canSend) Color.Black else TextMuted,
+                                        tint = sendTint,
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }
@@ -682,6 +725,19 @@ fun ChatScreen(
                 }
             }
         }
+    }
+
+    // Long-press menu for a message: copy, or send the same request again
+    actionMessage?.let { message ->
+        val resend: () -> Unit = {
+            agentEngine.startTask(message.text, message.imageBase64, message.imageMimeType)
+            actionMessage = null
+        }
+        MessageActionsSheet(
+            message = message,
+            onResend = if (message.role == MessageRole.USER) resend else null,
+            onDismiss = { actionMessage = null }
+        )
     }
 
     // Artifact Viewer Dialog
