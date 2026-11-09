@@ -71,6 +71,7 @@ class AndroidPhoneController(
         if (mode == RunMode.UNATTENDED && !prefs.loadPhoneControlBackground()) addAll(PhoneTools.SCREEN_TOOLS)
         if (AmcNotificationListener.instance == null) addAll(PhoneTools.NOTIFICATION_TOOLS)
         if (!intents.hasUsageAccess()) add(PhoneTools.USAGE_STATS)
+        if (ShizukuShell.status(context) != ShizukuShell.Status.READY) add(PhoneTools.PRIVILEGED_SHELL)
     }
 
     override fun beginControl(onStop: () -> Unit): AutoCloseable = PhoneControlSession.begin(context, onStop)
@@ -150,6 +151,7 @@ class AndroidPhoneController(
             PhoneTools.OPEN_SETTINGS -> return intents.openSettings(a["page"].orEmpty(), a["package"])
             PhoneTools.CLIPBOARD -> return intents.clipboard(a)
             PhoneTools.USAGE_STATS -> return intents.usage(a)
+            PhoneTools.PRIVILEGED_SHELL -> return privilegedShell(a["command"].orEmpty())
         }
         val svc = PhoneControlService.instance
             ?: return fail("Phone control is off. Ask the user to enable \"AMC Phone Control\" in AMC → Setup (Android accessibility settings).")
@@ -318,6 +320,21 @@ class AndroidPhoneController(
                 sendImageToUser = PhoneTools.isTrue(call.arguments["send_to_user"])
             )
         }
+    }
+
+    private suspend fun privilegedShell(command: String): PhoneActionResult {
+        val args = PrivilegedCommandPolicy.tokenize(command) ?: return fail("Only one plain command is allowed (no shell syntax).")
+        if (args.first() !in PrivilegedCommandPolicy.ALLOWED_BINARIES) return fail("Command not allowed in privileged_shell.")
+        if (ShizukuShell.status(context) != ShizukuShell.Status.READY) {
+            return fail("Shizuku is not running or AMC has no Shizuku permission. Ask the user to set it up in AMC → Setup.")
+        }
+        val r = ShizukuShell.run(context, args)
+        val body = buildString {
+            append("exit_code: ").append(r.exitCode)
+            if (r.stdout.isNotBlank()) append("\n").append(r.stdout.trimEnd())
+            if (r.stderr.isNotBlank()) append("\nstderr: ").append(r.stderr.trimEnd())
+        }
+        return PhoneActionResult(body, ok = r.exitCode == 0 && !r.timedOut)
     }
 
     // -------------------------------------------------------------------------------------------

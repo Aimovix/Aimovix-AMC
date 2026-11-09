@@ -143,6 +143,7 @@ object PolicySimulator {
         PhoneTools.OPEN_SETTINGS to "page",
         PhoneTools.CLIPBOARD to "action",
         PhoneTools.USAGE_STATS to "hours",
+        PhoneTools.PRIVILEGED_SHELL to "command",
         AgentTools.READ_FILE to "path",
         AgentTools.WRITE_FILE to "path",
         AgentTools.WEB_FETCH to "url",
@@ -171,7 +172,9 @@ private val SAMPLES = listOf(
     Sample("Read notifications", "notifications_list"),
     Sample("Reply to a message", "notification_reply \"On my way\" id=n1 @com.whatsapp"),
     Sample("Set an alarm", "set_alarm hour=7 minute=30"),
-    Sample("Read the clipboard", "clipboard get")
+    Sample("Read the clipboard", "clipboard get"),
+    Sample("ADB: read a setting", "privileged_shell settings get global airplane_mode_on"),
+    Sample("ADB: uninstall", "privileged_shell pm uninstall com.example.game")
 )
 
 /**

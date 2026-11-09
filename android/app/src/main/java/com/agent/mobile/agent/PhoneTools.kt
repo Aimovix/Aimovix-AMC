@@ -45,6 +45,9 @@ object PhoneTools {
 
     val INTENT_TOOLS: Set<String> = setOf(SET_ALARM, CALENDAR_ADD, SHARE_TEXT, OPEN_URL, OPEN_SETTINGS, CLIPBOARD, USAGE_STATS)
 
+    // Shizuku (optional ADB rights)
+    const val PRIVILEGED_SHELL = "privileged_shell"
+
     /** Tools that drive the screen. They show the "AMC is in control" overlay while they run. */
     val SCREEN_TOOLS: Set<String> = setOf(
         SCREEN_READ, SCREEN_TAP, SCREEN_TYPE, SCREEN_SCROLL, SCREEN_SWIPE, SCREEN_GLOBAL, OPEN_APP, WAIT_FOR, SCREEN_CAPTURE
@@ -57,7 +60,8 @@ object PhoneTools {
     val ALL_NAMES: Set<String> get() = DEFINITIONS.map { it.name }.toSet()
 
     /** Output that shows third-party content (screens, app names) and must be treated as untrusted. */
-    val UNTRUSTED_OUTPUT: Set<String> = SCREEN_TOOLS + APPS_LIST + NOTIFICATIONS_LIST + NOTIFICATION_OPEN + CLIPBOARD + USAGE_STATS
+    val UNTRUSTED_OUTPUT: Set<String> = SCREEN_TOOLS + APPS_LIST + NOTIFICATIONS_LIST + NOTIFICATION_OPEN + CLIPBOARD + USAGE_STATS +
+        PRIVILEGED_SHELL
 
     /** Polling and scrolling repeat by nature; the step budget limits them instead of loop protection. */
     val LOOP_EXEMPT: Set<String> = setOf(SCREEN_READ, SCREEN_SCROLL, SCREEN_GLOBAL, WAIT_FOR, SCREEN_CAPTURE)
@@ -244,6 +248,13 @@ object PhoneTools {
             USAGE_STATS,
             "Screen time: which apps were used and for how long (needs usage access).",
             listOf(Param("hours", ParamType.INTEGER, "Look back this many hours (default 24, max 168).", required = false))
+        ),
+        Definition(
+            PRIVILEGED_SHELL,
+            "Run one ADB-level command through Shizuku: input, pm, settings, dumpsys, screencap or am, as plain " +
+                "arguments (no pipes, quotes or chaining). Example: 'settings get global airplane_mode_on'. " +
+                "High risk: use only when screen tools and execute_command cannot do it.",
+            listOf(Param("command", ParamType.STRING, "The command, e.g. 'dumpsys battery' or 'input keyevent KEYCODE_HOME'."))
         )
     )
 
@@ -287,6 +298,7 @@ object PhoneTools {
             OPEN_SETTINGS -> "open_settings ${a["page"].orEmpty()}" + a["package"]?.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
             CLIPBOARD -> if (a["action"].equals("set", ignoreCase = true)) "clipboard set [${a["text"]?.length ?: 0} chars]" else "clipboard ${a["action"].orEmpty()}"
             USAGE_STATS -> "usage_stats ${a["hours"].orEmpty().ifBlank { "24" }}h"
+            PRIVILEGED_SHELL -> "privileged_shell ${a["command"].orEmpty().trim().take(200)}"
             NOTIFICATION_TRIGGER -> when (a["action"].orEmpty().trim().lowercase()) {
                 "add" -> "notification_trigger add: ${a["app"].orEmpty()}" +
                     a["contains"]?.takeIf { it.isNotBlank() }?.let { " containing \"$it\"" }.orEmpty() +

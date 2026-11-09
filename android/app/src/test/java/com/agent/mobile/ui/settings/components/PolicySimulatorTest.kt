@@ -126,4 +126,13 @@ class PolicySimulatorTest {
         assertEquals(PolicyVerdict.ASKS, verdicts("clipboard get")[SecurityPreset.AUTONOMOUS])
         verdicts("open_url javascript:alert(1)").values.forEach { assertEquals(PolicyVerdict.BLOCKED, it) }
     }
+
+    @Test
+    fun privilegedShellIsSimulated() {
+        val read = verdicts("privileged_shell settings get global airplane_mode_on")
+        assertEquals(PolicyVerdict.ASKS, read[SecurityPreset.AUTONOMOUS])
+        assertEquals(PolicyVerdict.RUNS, read[SecurityPreset.TURBO])
+        verdicts("privileged_shell pm uninstall com.example.game").values.forEach { assertEquals(PolicyVerdict.ASKS, it) }
+        verdicts("privileged_shell rm -rf /").values.forEach { assertEquals(PolicyVerdict.BLOCKED, it) }
+    }
 }

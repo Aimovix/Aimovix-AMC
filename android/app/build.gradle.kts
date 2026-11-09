@@ -100,6 +100,10 @@ dependencies {
     // WorkManager
     implementation(libs.androidx.work.runtime.ktx)
 
+    // Optional ADB-level commands through Shizuku (phone control)
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
+
     // Unit & Integration Testing
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)

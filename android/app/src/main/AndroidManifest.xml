@@ -110,6 +110,15 @@
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
+        <!-- Shizuku hands its binder to AMC through this provider (optional privileged_shell). -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
         <!-- Stop action of the "AMC is controlling your phone" notification. -->
         <receiver
             android:name=".phone.PhoneControlStopReceiver"

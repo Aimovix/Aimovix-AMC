@@ -203,6 +203,7 @@ object PhoneToolPolicy {
             PhoneTools.SCREEN_CAPTURE -> assessCapture(call, ctx)
             in PhoneTools.NOTIFICATION_TOOLS -> assessNotification(call, ctx)
             in PhoneTools.INTENT_TOOLS -> assessIntent(call)
+            PhoneTools.PRIVILEGED_SHELL -> PrivilegedCommandPolicy.assess(call.arguments["command"].orEmpty(), ctx)
             PhoneTools.OPEN_APP -> assessOpenApp(a["name"].orEmpty(), ctx)
             PhoneTools.SCREEN_GLOBAL -> assessGlobal(a["action"].orEmpty().trim().lowercase(), ctx)
             PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL, PhoneTools.SCREEN_SWIPE ->
