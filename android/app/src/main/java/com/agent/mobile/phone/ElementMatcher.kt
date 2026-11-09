@@ -101,9 +101,13 @@ object ElementMatcher {
     /**
      * Finds [old] (from an earlier snapshot) in [fresh]. Same view id and text first, then same
      * class and text, then same class and nearly the same bounds.
+     *
+     * Input fields are matched differently: their text changes when the user or the agent types,
+     * and they move when the keyboard opens, so neither text nor position identifies them.
      */
     fun relocate(old: ScreenElement, fresh: ScreenSnapshot): ScreenElement? {
         val o = old.node
+        if (o.editable || o.password) return relocateField(old, fresh)
         val candidates = fresh.elements
         fun sameText(n: UiNode) = !o.password && (n.text ?: "") == (o.text ?: "") && (n.contentDescription ?: "") == (o.contentDescription ?: "")
         if (!o.viewId.isNullOrBlank()) {
@@ -118,6 +122,58 @@ object ElementMatcher {
         return candidates.filter { it.node.className == o.className && distance(it.node.bounds, o.bounds) <= 24 }
             .minByOrNull { distance(it.node.bounds, o.bounds) }
     }
+
+    /** View id, then class + hint, then the focused field, then the only field on the screen. */
+    private fun relocateField(old: ScreenElement, fresh: ScreenSnapshot): ScreenElement? {
+        val o = old.node
+        val fields = fresh.elements.filter { it.node.editable || it.node.password }
+        if (fields.isEmpty()) return null
+        if (!o.viewId.isNullOrBlank()) {
+            val sameId = fields.filter { it.node.viewId == o.viewId }
+            if (sameId.size == 1) return sameId.single()
+            sameId.minByOrNull { horizontalDistance(it.node.bounds, o.bounds) }?.let { return it }
+        }
+        val hint = o.hint?.trim()?.takeIf { it.isNotEmpty() }
+        if (hint != null) {
+            fields.filter { it.node.className == o.className && it.node.hint?.trim().equals(hint, ignoreCase = true) }
+                .minByOrNull { horizontalDistance(it.node.bounds, o.bounds) }?.let { return it }
+        }
+        fields.firstOrNull { it.node.focused }?.let { return it }
+        return fields.singleOrNull()
+    }
+
+    /**
+     * The input field the model means by [el]. Never returns an element that cannot take text:
+     * the element itself when it is a field, else a field inside it (any depth), else a sibling
+     * field, else the nearest field on the same row or below (a label above or beside its field).
+     */
+    fun findInputField(snapshot: ScreenSnapshot, el: ScreenElement): ScreenElement? {
+        fun isField(e: ScreenElement) = e.node.editable || e.node.password
+        if (isField(el)) return el
+        val fields = snapshot.elements.filter(::isField)
+        if (fields.isEmpty()) return null
+        fields.filter { isDescendant(snapshot, it, el) }.let { inside ->
+            if (inside.isNotEmpty()) return inside.firstOrNull { it.node.focused } ?: inside.first()
+        }
+        if (el.parentId != null) {
+            fields.filter { it.parentId == el.parentId }.minByOrNull { centerDistance(it.node.bounds, el.node.bounds) }?.let { return it }
+        }
+        val b = el.node.bounds
+        return fields.filter { f ->
+            val fb = f.node.bounds
+            // Same row (vertical overlap) or below the label.
+            (fb.top < b.bottom && b.top < fb.bottom) || fb.top >= b.top
+        }.minByOrNull { centerDistance(it.node.bounds, b) }
+    }
+
+    private fun centerDistance(a: Bounds, b: Bounds): Long {
+        val dx = (a.centerX - b.centerX).toLong()
+        val dy = (a.centerY - b.centerY).toLong()
+        return dx * dx + dy * dy
+    }
+
+    private fun horizontalDistance(a: Bounds, b: Bounds): Int =
+        maxOf(kotlin.math.abs(a.left - b.left), kotlin.math.abs(a.right - b.right))
 
     private fun distance(a: Bounds, b: Bounds): Int =
         maxOf(kotlin.math.abs(a.left - b.left), kotlin.math.abs(a.top - b.top), kotlin.math.abs(a.right - b.right), kotlin.math.abs(a.bottom - b.bottom))

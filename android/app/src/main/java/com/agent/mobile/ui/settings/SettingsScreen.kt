@@ -539,6 +539,15 @@ fun SettingsScreen(
             // Section 4b: try a command against every security mode
             PolicySimulatorCard(remoteScreenControl = remotePhoneControl)
 
+            // Section 4c: local model on the phone (Termux llama.cpp)
+            if (bridgeClient != null) {
+                com.agent.mobile.ui.settings.components.LocalModelCard(
+                    agentEngine = agentEngine,
+                    preferenceManager = preferenceManager,
+                    bridgeClient = bridgeClient
+                )
+            }
+
             // Section 5: Cron-Sync & Hybrid Scheduler
             if (bridgeClient != null) {
                 CronSyncCard(

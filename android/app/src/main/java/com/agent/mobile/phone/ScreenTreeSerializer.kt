@@ -32,7 +32,8 @@ object ScreenTreeSerializer {
         screen: Bounds? = null,
         maxChars: Int = DEFAULT_MAX_CHARS,
         maxElements: Int = DEFAULT_MAX_ELEMENTS,
-        filter: String? = null
+        filter: String? = null,
+        partial: Boolean = false
     ): ScreenSnapshot {
         val elements = mutableListOf<ScreenElement>()
         if (root != null) collect(root, screen, null, 0, elements)
@@ -45,6 +46,7 @@ object ScreenTreeSerializer {
             if (screen != null && !screen.isEmpty()) append(" · ").append(screen.width).append('x').append(screen.height)
             append(" · ").append(elements.size).append(" elements")
             if (query != null) append(" · filter \"").append(query).append("\": ").append(shown.size).append(" match")
+            if (partial) append(" · partial (the app answered slowly; read again for the rest)")
         }
 
         val out = StringBuilder(header)
@@ -74,7 +76,8 @@ object ScreenTreeSerializer {
             text = out.toString(),
             truncated = truncated,
             screenWidth = screen?.width ?: 0,
-            screenHeight = screen?.height ?: 0
+            screenHeight = screen?.height ?: 0,
+            partial = partial
         )
     }
 
@@ -139,7 +142,10 @@ object ScreenTreeSerializer {
             if (desc != null && desc != text) {
                 if (text == null) sb.append(' ').append(quote(desc)) else sb.append(" desc=").append(quote(desc))
             }
-            if (text == null && n.editable) clean(n.hint)?.let { sb.append(" hint=").append(quote(it)) }
+            if (text == null && n.editable) {
+                clean(n.hint)?.let { sb.append(" hint=").append(quote(it)) }
+                if (n.showingHint) sb.append(" empty")
+            }
         }
         val flags = buildList {
             if (n.clickable) add("click")

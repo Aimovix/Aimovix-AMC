@@ -200,6 +200,39 @@ class AutonomousAgentEngineTest {
     }
 
     @Test
+    fun olderScreenReadingsAreMaskedButTheLatestStays() {
+        fun screen(id: String, headline: String, body: String) = ChatMessage(
+            role = MessageRole.TOOL,
+            text = "[UNTRUSTED_OUTPUT_START]\n$headline\n\nScreen: Notes (com.example.notes) · 3 elements\n$body\n[UNTRUSTED_OUTPUT_END]",
+            toolResult = ToolResult(toolCallId = id, command = "screen_tap", toolName = PhoneTools.SCREEN_TAP, stdout = "x")
+        )
+        fun call(id: String) = ChatMessage(role = MessageRole.ASSISTANT, text = "", toolCalls = listOf(ToolCall(id = id, name = PhoneTools.SCREEN_TAP)))
+        val msgs = listOf(
+            ChatMessage(role = MessageRole.USER, text = "Add milk"),
+            call("a"), screen("a", "Tapped [e1] Button \"Add\".", "[e1] Button \"Old\""),
+            call("b"), screen("b", "Typed.", "[e2] Field \"Milk\""),
+            call("c"), screen("c", "Tapped [e3] Button \"Save\".", "[e3] Text \"Saved\"")
+        )
+        val window = engine.prepareContextMessages(msgs)
+        val tools = window.filter { it.role == MessageRole.TOOL }
+        assertEquals(3, tools.size)
+        assertTrue(tools[0].text.contains("Tapped [e1] Button"))
+        assertTrue(tools[0].text.contains("omitted"))
+        assertFalse(tools[0].text.contains("Old"))
+        assertTrue(tools[0].text.endsWith("[UNTRUSTED_OUTPUT_END]"))
+        assertFalse(tools[1].text.contains("Milk\""))
+        assertTrue("the latest reading is complete", tools[2].text.contains("[e3] Text \"Saved\""))
+    }
+
+    @Test
+    fun localModelsGetTheCompactToolProfile() {
+        val profile = AgentTools.LOCAL_PROFILE
+        assertTrue(profile.size in 8..14)
+        assertTrue(profile.all { AgentTools.isKnown(it) })
+        assertTrue(PhoneTools.SCREEN_TAP in profile)
+    }
+
+    @Test
     fun testPrepareContextDropsToolResultsWithoutMatchingCall() {
         val msgs = listOf(
             ChatMessage(role = MessageRole.USER, text = "Hi"),

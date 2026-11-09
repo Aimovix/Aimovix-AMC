@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "note": "Default local model catalog. The app downloads the signed copy from the GitHub release when available; this file is the offline fallback. Entries with an empty sha256 are not verified yet: the release pipeline must fill in the checksum before the Smart Setup offers them without asking.",
+  "models": [
+    {
+      "id": "qwen3.5-4b-q4_k_m",
+      "title": "Qwen3.5 4B Instruct Q4_K_M (~2.8 GB, 12 GB+ RAM, recommended)",
+      "file": "Qwen3.5-4B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+      "sha256": "",
+      "size_mb": 2800,
+      "min_ram_mb": 11000,
+      "ctx": 16384,
+      "tier": "primary"
+    },
+    {
+      "id": "qwen3.5-4b-q4_0",
+      "title": "Qwen3.5 4B Instruct Q4_0 (~2.6 GB, 8-11 GB RAM, faster on ARM)",
+      "file": "Qwen3.5-4B-Q4_0.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_0.gguf",
+      "sha256": "",
+      "size_mb": 2600,
+      "min_ram_mb": 7500,
+      "ctx": 8192,
+      "tier": "speed"
+    },
+    {
+      "id": "qwen3.5-2b-q4_k_m",
+      "title": "Qwen3.5 2B Instruct Q4_K_M (~1.5 GB, 6-8 GB RAM, screen steps only)",
+      "file": "Qwen3.5-2B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
+      "sha256": "",
+      "size_mb": 1500,
+      "min_ram_mb": 5500,
+      "ctx": 8192,
+      "tier": "small"
+    },
+    {
+      "id": "gemma-4-e4b-q4_k_m",
+      "title": "Gemma 4 E4B Q4_K_M (experimental, benchmark first)",
+      "file": "gemma-4-E4B-it-Q4_K_M.gguf",
+      "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
+      "sha256": "",
+      "size_mb": 3000,
+      "min_ram_mb": 11000,
+      "ctx": 8192,
+      "tier": "experimental"
+    }
+  ]
+}

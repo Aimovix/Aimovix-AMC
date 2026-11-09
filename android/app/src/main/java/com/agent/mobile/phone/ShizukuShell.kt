@@ -25,6 +25,36 @@ object ShizukuShell {
 
     enum class Status { NOT_INSTALLED, NOT_RUNNING, NO_PERMISSION, READY }
 
+    @Volatile
+    private var listening = false
+
+    /**
+     * Shizuku's binder arrives asynchronously after app start, so a status check right at a cold
+     * start says NOT_RUNNING. The sticky listener fires as soon as the binder is there; callers
+     * that compute tool lists re-check on every step.
+     */
+    fun startListening() {
+        if (listening) return
+        try {
+            Shizuku.addBinderReceivedListenerSticky { Log.i(TAG, "Shizuku binder received") }
+            Shizuku.addBinderDeadListener { Log.i(TAG, "Shizuku binder died") }
+            listening = true
+        } catch (e: Throwable) {
+            Log.w(TAG, "Could not listen for Shizuku: ${e.message}")
+        }
+    }
+
+    /** Waits briefly for the binder after a cold start. Returns the status afterwards. */
+    suspend fun awaitStatus(context: Context, timeoutMs: Long = 1_500L): Status {
+        startListening()
+        val first = status(context)
+        if (first != Status.NOT_RUNNING || !isInstalled(context)) return first
+        return withTimeoutOrNull(timeoutMs) {
+            while (!Shizuku.pingBinder()) kotlinx.coroutines.delay(100)
+            status(context)
+        } ?: first
+    }
+
     fun isInstalled(context: Context): Boolean = try {
         context.packageManager.getPackageInfo(PACKAGE, 0)
         true

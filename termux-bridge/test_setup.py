@@ -13,7 +13,7 @@ class InstallerTests(unittest.TestCase):
             root = Path(directory)
             target = root / '.termux_agent'
             target.mkdir()
-            names = ('bridge_daemon.py', 'amc', 'requirements.txt', 'local_model_manager.sh')
+            names = ('bridge_daemon.py', 'amc', 'requirements.txt', 'local_model_manager.sh', 'model_catalog.json')
             for name in names:
                 (target / name).write_text('original-' + name)
             script = root / 'setup.sh'

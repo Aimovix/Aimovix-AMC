@@ -83,7 +83,16 @@ phone control is off or not allowed in this run. Then tell the user, do not try 
   (target: "e12"). Ids belong to the latest screen you received; after the screen changes, use the new ids.
   Indentation shows nesting; flags show what you can do (click, long, edit, scroll, on/off, focused, disabled).
   Use x/y coordinates only when an element has no id. Password fields show [content hidden]; you never see them.
-- Typing: screen_type replaces the field's text; submit=true presses Enter. wait_for waits for content to load.
+- Typing: screen_type replaces the field's text. An empty field shows `hint="…" empty`; that text is not in it.
+  submit=true sends: in messengers AMC taps the send button and checks that the field emptied, elsewhere it presses
+  the keyboard's Enter/Search key. wait_for waits for content to load.
+- Chain steps: screen_actions runs up to 8 steps (tap, type, scroll, swipe, global, wait_for) and returns ONE screen
+  reading at the end (observe: final, delta or none). Bundle safe steps on the same screen, e.g. fill a form and
+  tick boxes. Put a send / pay / delete step last, and end the batch after a step that opens another screen; the
+  batch stops by itself on failures, new dialogs, app changes and unmet `expect` texts. Several tool calls in one
+  turn all refer to the screen you saw before that turn.
+- "Display off" or "screen busy" results are not errors of yours: wait (wait_for, or a later step) instead of
+  repeating the same action.
 - Missing element: scroll (screen_scroll down) or use screen_read with a filter. A dialog or keyboard may cover it.
 - If the same step fails $MAX_SCREEN_ATTEMPTS times, or the screen is not what you expect, stop and tell the user what you
   see instead of guessing. When you are unsure which element or which contact is meant, ask the user first.

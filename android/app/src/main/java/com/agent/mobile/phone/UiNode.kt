@@ -36,6 +36,8 @@ data class UiNode(
     val enabled: Boolean = true,
     /** Password input: its text is never read, logged or sent to the model. */
     val password: Boolean = false,
+    /** The field is empty and shows its hint (API 26+); [text] is null then. */
+    val showingHint: Boolean = false,
     val visible: Boolean = true,
     val ref: Int = -1,
     val children: List<UiNode> = emptyList()
@@ -92,7 +94,9 @@ data class ScreenSnapshot(
     val truncated: Boolean,
     val screenWidth: Int = 0,
     val screenHeight: Int = 0,
-    val capturedAt: Long = System.currentTimeMillis()
+    val capturedAt: Long = System.currentTimeMillis(),
+    /** The capture ran out of time and stopped early: some elements may be missing. */
+    val partial: Boolean = false
 ) {
     fun byId(id: String): ScreenElement? = elements.firstOrNull { it.id == id }
 }

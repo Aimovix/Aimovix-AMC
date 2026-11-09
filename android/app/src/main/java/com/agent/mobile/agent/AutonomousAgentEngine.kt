@@ -76,6 +76,12 @@ class AutonomousAgentEngine(
         private const val REFLECTION_THRESHOLD = 3
         private const val MAX_CONSECUTIVE_ERRORS = 5
 
+        /** Interactive approvals that nobody answers are rejected after this (configurable in Settings). */
+        const val DEFAULT_APPROVAL_TIMEOUT_MS = 10 * 60_000L
+
+        /** Exit code of a tool failure that is not the agent's fault (display off, screen busy). */
+        const val TRANSIENT_EXIT_CODE = 75
+
         private const val DEFAULT_COMMAND_TIMEOUT_MS = 90_000L
         private const val MAX_COMMAND_TIMEOUT_MS = 30 * 60_000L
 
@@ -87,6 +93,9 @@ class AutonomousAgentEngine(
             AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH,
             AgentTools.WEB_SEARCH, AgentTools.SEARCH_HISTORY, AgentTools.DELEGATE_TASK
         ) + PhoneTools.UNTRUSTED_OUTPUT
+        /** Start of a screen reading in a tool result ("Screen: App (pkg) · …"). */
+        private val SCREEN_HEADER = Regex("(^|\\n)Screen: ")
+
         private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS) +
             PhoneTools.LOOP_EXEMPT
     }
@@ -567,6 +576,8 @@ class AutonomousAgentEngine(
     }
 
     private class LoopState {
+        /** Identifies this run towards the phone controller (screen lease, element ids per turn). */
+        val runId: String = UUID.randomUUID().toString()
         val history = mutableListOf<String>()
         var consecutiveErrors = 0
         var loopWarnings = 0
@@ -581,7 +592,7 @@ class AutonomousAgentEngine(
 
     /** Tools the model may not use in [mode]. */
     private fun excludedFor(mode: RunMode): Set<String> {
-        val p = phone ?: return baseExcludedTools + PhoneTools.ALL_NAMES
+        val p = phone ?: return baseExcludedTools + PhoneTools.ALL_NAMES + localProfileExcluded()
         val phoneExcluded = try {
             p.excludedTools(mode)
         } catch (e: Exception) {
@@ -593,8 +604,14 @@ class AutonomousAgentEngine(
         // Screenshots only for models that can look at images.
         val visionExcluded = if (com.agent.mobile.phone.ScreenshotSupport.likelySupportsVision(_modelConfig.value)) emptySet()
         else setOf(PhoneTools.SCREEN_CAPTURE)
-        return baseExcludedTools + phoneExcluded + subAgentExcluded + visionExcluded
+        return baseExcludedTools + phoneExcluded + subAgentExcluded + visionExcluded + localProfileExcluded()
     }
+
+    /** On-device models get the compact tool profile (prefill cost, reliability of small models). */
+    private fun localProfileExcluded(): Set<String> =
+        if (_modelConfig.value.provider == ProviderType.LOCAL) {
+            AgentTools.ALL.map { it.name }.filter { it !in AgentTools.LOCAL_PROFILE }.toSet()
+        } else emptySet()
 
     /** Stop button of the phone control overlay or notification. */
     private fun onPhoneControlStop() {
@@ -640,6 +657,11 @@ class AutonomousAgentEngine(
                 }
             }
             state.control = null
+            try {
+                phone?.endRun(state.runId)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not end the phone run: ${e.message}")
+            }
         }
     }
 
@@ -665,6 +687,7 @@ class AutonomousAgentEngine(
             }
             iterations++
             _currentStep.value = iterations
+            if (iterations > 1) excludedTools = excludedFor(mode)
 
             val outcome = runSingleStep(executionSessionId, systemPrompt, mode, state, skippedApprovals)
             if (outcome == StepOutcome.STOP || state.stopRequested) break
@@ -807,6 +830,14 @@ class AutonomousAgentEngine(
         _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
 
         val pendingVisionObservations = mutableListOf<ChatMessage>()
+        // Element ids in this turn's calls refer to the screen the model saw before the turn.
+        if (tools.any { PhoneTools.isPhoneTool(it.name) }) {
+            try {
+                phone?.beginTurn(state.runId)
+            } catch (e: Exception) {
+                Log.w(TAG, "Phone turn start failed: ${e.message}")
+            }
+        }
         for ((index, toolCall) in tools.withIndex()) {
             if (!currentCoroutineContext().isActive) break
             if (state.stopRequested) {
@@ -861,7 +892,7 @@ class AutonomousAgentEngine(
         // Risk first: it decides whether the call carries a secret that must not be shown or stored.
         val phoneContext = if (PhoneTools.isPhoneTool(toolCall.name)) {
             try {
-                phone?.riskContext(toolCall)
+                phone?.riskContext(toolCall, state.runId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -878,6 +909,7 @@ class AutonomousAgentEngine(
         if (toolCall.name !in LOOP_EXEMPT_TOOLS &&
             isRunawayOrLoopDetected(description, state.history, state.consecutiveErrors)
         ) {
+            releasePhoneCall(toolCall)
             if (state.loopWarnings == 0) {
                 state.loopWarnings++
                 appendToolMessage(
@@ -904,6 +936,7 @@ class AutonomousAgentEngine(
         updateMessageToolCalls(assistantMsgId, tools.toList(), MessageStatus.EXECUTING_TOOL)
 
         if (assessment.isBlocked) {
+            releasePhoneCall(toolCall)
             appendSystemMessage("🛡️ Security block: `$description` was blocked.\nReason: ${assessment.reason}", sessionId)
             val blocked = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "", "Security block active: ${assessment.reason}", -1, isError = true)
             updateMessageToolResult(assistantMsgId, blocked, MessageStatus.ERROR)
@@ -917,9 +950,16 @@ class AutonomousAgentEngine(
         val granted = !remoteForced && assessment.grantKey != null && assessment.grantKey in state.grants
         if (!granted && (remoteForced || CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value))) {
             val skippedBefore = skippedApprovals.size
-            val approved = requestApproval(assistantMsgId, securedToolCall, assessment, description, mode, skippedApprovals)
-            if (approved) assessment.grantKey?.let { if (remoteForced) state.callGrant = it else state.grants += it }
+            val approved = requestApproval(
+                assistantMsgId, securedToolCall, assessment, description, mode, skippedApprovals,
+                onScreen = state.control != null && PhoneTools.isPhoneTool(toolCall.name)
+            )
+            if (approved) {
+                assessment.grantKey?.let { if (remoteForced) state.callGrant = it else state.grants += it }
+                if (PhoneTools.isPhoneTool(toolCall.name)) phone?.noteApproved(toolCall.id)
+            }
             if (!approved) {
+                releasePhoneCall(toolCall)
                 val notAsked = skippedApprovals.size > skippedBefore
                 val reason = if (notAsked) {
                     "Not executed: this action requires the user's approval, and the user cannot be asked during this " +
@@ -952,7 +992,13 @@ class AutonomousAgentEngine(
         }
         val duration = System.currentTimeMillis() - start
         val failed = raw.isError || raw.exitCode != 0
-        if (failed) state.consecutiveErrors++ else state.consecutiveErrors = 0
+        val transient = failed && raw.exitCode == TRANSIENT_EXIT_CODE && PhoneTools.isPhoneTool(toolCall.name)
+        when {
+            // Display off or screen busy: waiting is right, repeating it is not a loop.
+            transient -> state.history.removeLastOrNull()
+            failed -> state.consecutiveErrors++
+            else -> state.consecutiveErrors = 0
+        }
 
         recordAudit(sessionId, description, assessment.level.name, assessment.reason, raw, duration, approved = true)
         if (toolCall.name == AgentTools.EXECUTE_COMMAND) {
@@ -1002,7 +1048,8 @@ class AutonomousAgentEngine(
         assessment: SecurityAssessment,
         description: String,
         mode: RunMode,
-        skipped: MutableList<String>
+        skipped: MutableList<String>,
+        onScreen: Boolean = false
     ): Boolean = when (mode) {
         RunMode.UNATTENDED -> {
             skipped += description
@@ -1022,28 +1069,81 @@ class AutonomousAgentEngine(
                 }
             }
         }
-        RunMode.INTERACTIVE -> {
-            updateMessageStatus(assistantMsgId, MessageStatus.WAITING_FOR_APPROVAL)
-            _pendingApproval.value = Pair(assistantMsgId, call)
-            platformNotifyApprovalNeeded(description)
-            val deferred = CompletableDeferred<Boolean>()
-            approvalContinuation = deferred
-            try {
-                deferred.await()
-            } finally {
-                _pendingApproval.value = null
-                approvalContinuation = null
-                updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
+        RunMode.INTERACTIVE -> requestInteractiveApproval(assistantMsgId, call, assessment, description, onScreen)
+    }
+
+    /**
+     * Interactive approval. The chat card is always shown; while the agent operates the phone the
+     * same question also appears as a panel directly above the app in front ([onScreen]), so the
+     * user does not have to switch to AMC. The notification offers Approve / Reject as well. The
+     * first answer wins; no answer within the timeout counts as a rejection.
+     */
+    private suspend fun requestInteractiveApproval(
+        assistantMsgId: String,
+        call: ToolCall,
+        assessment: SecurityAssessment,
+        description: String,
+        onScreen: Boolean
+    ): Boolean = coroutineScope {
+        updateMessageStatus(assistantMsgId, MessageStatus.WAITING_FOR_APPROVAL)
+        _pendingApproval.value = Pair(assistantMsgId, call)
+        val deferred = CompletableDeferred<Boolean>()
+        approvalContinuation = deferred
+        ApprovalActions.register(call.id) { approved -> deferred.complete(approved) }
+        platformNotifyApprovalNeeded(call.id, description)
+        val panel = if (onScreen && phone != null) launch {
+            val answer = try {
+                phone.requestOnScreenApproval(
+                    title = "AMC: ${description.take(120)}",
+                    detail = assessment.reason
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "On-screen approval failed: ${e.message}")
+                null
             }
+            if (answer != null) deferred.complete(answer)
+        } else null
+        val timeoutMs = preferenceManager?.loadApprovalTimeoutMs() ?: DEFAULT_APPROVAL_TIMEOUT_MS
+        try {
+            val answer = withTimeoutOrNull(timeoutMs) { deferred.await() }
+            if (answer == null) {
+                appendSystemMessage(
+                    "⏱️ No answer to the approval request within ${timeoutMs / 60_000} minutes: `${description.take(120)}` was not executed.",
+                    _currentSession.value?.id
+                )
+            }
+            answer ?: false
+        } finally {
+            panel?.cancel()
+            ApprovalActions.unregister(call.id)
+            try {
+                platform?.cancelApprovalNotification(call.id)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not cancel the approval notification: ${e.message}")
+            }
+            _pendingApproval.value = null
+            approvalContinuation = null
+            updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
         }
     }
 
-    private fun platformNotifyApprovalNeeded(description: String) {
+    private fun releasePhoneCall(call: ToolCall) {
+        if (!PhoneTools.isPhoneTool(call.name)) return
+        try {
+            phone?.releaseCall(call.id)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not release the phone call: ${e.message}")
+        }
+    }
+
+    private fun platformNotifyApprovalNeeded(callId: String, description: String) {
         // Only useful when the user left the app while the agent works.
         val p = platform ?: return
         if (!headless && !p.isAppInForeground()) {
             try {
-                p.notifyUser("AMC needs your approval", description.take(200))
+                p.notifyApprovalNeeded(callId, description.take(200))
             } catch (e: Exception) {
                 Log.w(TAG, "Approval notification failed: ${e.message}")
             }
@@ -1089,14 +1189,12 @@ class AutonomousAgentEngine(
                 val path = a["path"].orEmpty()
                 val content = a["content"].orEmpty()
                 val append = a["mode"].equals("append", ignoreCase = true)
-                val finalContent = if (append) {
-                    val existing = try { bridgeClient.readFile(path, timeoutMs = 20_000L) } catch (e: Exception) { "" }
-                    existing + content
-                } else content
-                val written = bridgeClient.writeFile(path, finalContent, timeoutMs = 20_000L)
+                // Appending happens on the bridge: a failed read can no longer overwrite the file.
+                val written = bridgeClient.writeFile(path, content, timeoutMs = 20_000L, append = append)
                 if (written) {
                     if (path.contains(".amc/skills")) invalidateSkillsCache()
-                    registerArtifactForPath(path, finalContent)
+                    // After an append only the bridge knows the whole file; the viewer loads it on demand.
+                    registerArtifactForPath(path, if (append) null else content)
                     ok("${if (append) "Appended" else "Wrote"} ${content.length} characters to $path.")
                 } else fail("Could not write $path.")
             }
@@ -1192,7 +1290,8 @@ class AutonomousAgentEngine(
         }
         val grants = state.grants.toSet() + listOfNotNull(state.callGrant)
         state.callGrant = null
-        val r = withContext(Dispatchers.Default) { p.execute(call, mode, grants) }
+        // The controller moves node access to its own phone thread; nothing blocks the main thread.
+        val r = p.execute(call, mode, grants, state.runId)
         val image = r.imageBase64
         if (image != null) {
             pendingVision += ChatMessage(
@@ -1205,6 +1304,12 @@ class AutonomousAgentEngine(
             if (r.sendImageToUser) {
                 deliverImageToUser("screenshot.jpg", image, "Screenshot")
             }
+        }
+        if (!r.ok && r.transient) {
+            return ToolResult(
+                toolCallId = call.id, command = description, toolName = call.name,
+                stderr = r.text, exitCode = TRANSIENT_EXIT_CODE, isError = true
+            )
         }
         return result(r.text, r.ok)
     }
@@ -1488,11 +1593,41 @@ class AutonomousAgentEngine(
             }
         }
 
+        maskSupersededScreens(window)
+
         // Keep images only on the most recent messages.
         val imageIndices = window.indices.filter { window[it].imageBase64 != null }
         val stripImages = imageIndices.dropLast(MAX_IMAGES_IN_CONTEXT).toSet()
         return window.mapIndexed { i, m ->
             if (i in stripImages) m.copy(imageBase64 = null, imageMimeType = null, text = (m.text + "\n[earlier image omitted]").trim()) else m
+        }
+    }
+
+    /**
+     * Screen readings are large and only the latest one matters: every full reading before the
+     * newest full one (and the deltas based on those) is cut to its headline. The newest full
+     * reading and the deltas after it stay, so the prompt prefix up to it stays stable for
+     * prompt caching until the next full reading arrives.
+     */
+    internal fun maskSupersededScreens(window: MutableList<ChatMessage>) {
+        fun isScreen(m: ChatMessage) = m.role == MessageRole.TOOL && m.toolResult?.toolName in PhoneTools.SCREEN_TOOLS
+        fun isFull(m: ChatMessage) = isScreen(m) && SCREEN_HEADER.containsMatchIn(m.text) && !m.text.contains("Δ since your last reading")
+        val lastFull = window.indexOfLast { isFull(it) }
+        if (lastFull <= 0) return
+        for (i in 0 until lastFull) {
+            val m = window[i]
+            if (!isScreen(m)) continue
+            val untrusted = m.text.startsWith("[UNTRUSTED_OUTPUT_START]")
+            val body = m.text.removePrefix("[UNTRUSTED_OUTPUT_START]").removeSuffix("[UNTRUSTED_OUTPUT_END]").trim()
+            val match = SCREEN_HEADER.find(body) ?: continue
+            val headline = body.substring(0, match.range.first).trim()
+            val core = listOf(headline, "[Earlier screen reading omitted; a newer one follows.]").filter { it.isNotEmpty() }.joinToString("\n")
+            val masked = if (untrusted) "[UNTRUSTED_OUTPUT_START]\n$core\n[UNTRUSTED_OUTPUT_END]" else core
+            val result = m.toolResult
+            window[i] = m.copy(
+                text = masked,
+                toolResult = result?.copy(stdout = if (result.stdout.isEmpty()) "" else masked)
+            )
         }
     }
 

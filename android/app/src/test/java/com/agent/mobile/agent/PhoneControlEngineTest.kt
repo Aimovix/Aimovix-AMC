@@ -51,7 +51,27 @@ class PhoneControlEngineTest {
         @Volatile var stop: (() -> Unit)? = null
 
         var contextFor: (ToolCall) -> PhoneRiskContext = { context }
+        /** Answer of the on-screen approval panel; null: not available (ask in the chat). */
+        @Volatile var onScreenAnswer: Boolean? = null
+        val onScreenAsked = AtomicInteger()
+        val released = CopyOnWriteArrayList<String>()
+        val approvedIds = CopyOnWriteArrayList<String>()
+        val runIds = CopyOnWriteArrayList<String>()
+        val ended = CopyOnWriteArrayList<String>()
+        val turns = AtomicInteger()
         override suspend fun riskContext(call: ToolCall) = contextFor(call)
+        override suspend fun execute(call: ToolCall, mode: RunMode, grants: Set<String>, runId: String): PhoneActionResult {
+            runIds += runId
+            return execute(call, mode, grants)
+        }
+        override fun beginTurn(runId: String) { turns.incrementAndGet() }
+        override fun endRun(runId: String) { ended += runId }
+        override fun noteApproved(callId: String) { approvedIds += callId }
+        override fun releaseCall(callId: String) { released += callId }
+        override suspend fun requestOnScreenApproval(title: String, detail: String): Boolean? {
+            onScreenAsked.incrementAndGet()
+            return onScreenAnswer
+        }
         override suspend fun execute(call: ToolCall, mode: RunMode, grants: Set<String>): PhoneActionResult {
             executed += call to grants
             return onExecute(call)
@@ -263,6 +283,70 @@ class PhoneControlEngineTest {
         assertEquals(listOf(PhoneTools.SCREEN_READ, PhoneTools.SCREEN_TAP), asked)
         assertEquals(3, phone.executed.size)
         assertTrue("the scroll ran under the grant", phone.executed[1].second.contains("read:com.whatsapp"))
+    }
+
+    private suspend fun runInteractive(e: AutonomousAgentEngine, phone: FakePhone, expectedExecutions: Int, prompt: String = "go") {
+        withTimeout(10_000) { while (!e.isInitialized.value) delay(10) }
+        assertTrue(e.startTask(prompt))
+        withTimeout(20_000) {
+            delay(50)
+            while (e.isBusy.value) delay(10)
+        }
+        assertEquals(expectedExecutions, phone.executed.size)
+    }
+
+    @Test
+    fun onScreenApprovalAnswersWithoutSwitchingToTheChat() = runBlocking {
+        toolCall("c1", PhoneTools.SCREEN_READ, JSONObject())
+        toolCall("c2", PhoneTools.SCREEN_TAP, JSONObject().put("target", "e9"))
+        reply("Sent.")
+        val notes = PhoneRiskContext(foregroundPackage = "com.example.notes", foregroundLabel = "Notes")
+        val phone = FakePhone(notes)
+        phone.contextFor = { call -> if (call.name == PhoneTools.SCREEN_TAP) notes.copy(target = TargetInfo("Send")) else notes }
+        phone.onScreenAnswer = true
+        val e = engine(phone, headless = false)
+        runInteractive(e, phone, expectedExecutions = 2)
+        assertEquals("the panel over the app asked once", 1, phone.onScreenAsked.get())
+        assertEquals(listOf("c2"), phone.approvedIds)
+        assertNull(e.pendingApproval.value)
+        assertEquals("one run id for the whole run", 1, phone.runIds.toSet().size)
+        assertEquals(phone.runIds.toSet().toList(), phone.ended.toList())
+        assertTrue(phone.turns.get() >= 2)
+    }
+
+    @Test
+    fun rejectedOnScreenApprovalReleasesTheCall() = runBlocking {
+        toolCall("c1", PhoneTools.SCREEN_READ, JSONObject())
+        toolCall("c2", PhoneTools.SCREEN_TAP, JSONObject().put("target", "e9"))
+        reply("Not sent.")
+        val notes = PhoneRiskContext(foregroundPackage = "com.example.notes", foregroundLabel = "Notes")
+        val phone = FakePhone(notes)
+        phone.contextFor = { call -> if (call.name == PhoneTools.SCREEN_TAP) notes.copy(target = TargetInfo("Send")) else notes }
+        phone.onScreenAnswer = false
+        val e = engine(phone, headless = false)
+        runInteractive(e, phone, expectedExecutions = 1)
+        assertEquals(listOf("c2"), phone.released)
+        assertTrue(phone.approvedIds.isEmpty())
+    }
+
+    @Test
+    fun blockedCallsAreReleased() = runBlocking {
+        toolCall("c1", PhoneTools.SCREEN_TAP, JSONObject().put("target", "e1"))
+        reply("ok")
+        val phone = FakePhone(PhoneRiskContext(foregroundPackage = PhoneRiskContext.OWN_PACKAGE, foregroundLabel = "AMC"))
+        engine(phone).runHeadless("t", "tap", RunMode.UNATTENDED)
+        assertEquals(0, phone.executed.size)
+        assertEquals(listOf("c1"), phone.released)
+    }
+
+    @Test
+    fun displayOffIsNotALoop() = runBlocking {
+        repeat(4) { toolCall("c$it", PhoneTools.SCREEN_TAP, JSONObject().put("target", "e1")) }
+        reply("Waited.")
+        val phone = FakePhone()
+        phone.onExecute = { PhoneActionResult("The display is off.", ok = false, transient = true) }
+        engine(phone).runHeadless("t", "tap", RunMode.UNATTENDED)
+        assertEquals("identical taps were not stopped by loop protection", 4, phone.executed.size)
     }
 
     @Test

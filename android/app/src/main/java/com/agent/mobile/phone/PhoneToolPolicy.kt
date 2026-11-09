@@ -20,7 +20,9 @@ data class PhoneRiskContext(
     val targetPackage: String? = null,
     val targetLabel: String? = null,
     val blocklist: PackageBlocklist = PackageBlocklist.DEFAULT,
-    val ownPackage: String = OWN_PACKAGE
+    val ownPackage: String = OWN_PACKAGE,
+    /** screen_actions: the target of each step, resolved on the current screen (null when unknown). */
+    val stepTargets: List<TargetInfo?> = emptyList()
 ) {
     companion object {
         const val OWN_PACKAGE = "com.agent.mobile"
@@ -217,6 +219,7 @@ object PhoneToolPolicy {
             PhoneTools.SCREEN_GLOBAL -> assessGlobal(a["action"].orEmpty().trim().lowercase(), ctx)
             PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL, PhoneTools.SCREEN_SWIPE ->
                 assessScreenAction(call, ctx)
+            PhoneTools.SCREEN_BATCH -> assessBatch(call, ctx)
             else -> blocked("Unknown phone tool '${call.name}'.")
         }
     }
@@ -370,6 +373,44 @@ object PhoneToolPolicy {
                 confirm("Opens the notification shade, which can contain private messages", grantKey = "notifications")
             else -> low("Presses the system ${action.replace('_', ' ')} button")
         }
+    }
+
+    /**
+     * A screen_actions batch: every step is assessed on its own (with its own target). One
+     * blocked step blocks the batch. Steps that always need the user make the whole batch ask once,
+     * with every step listed; sending and paying steps are marked. A batch whose only sensitive
+     * steps read one private app carries that app's grant key, like the single tools.
+     */
+    private fun assessBatch(call: ToolCall, ctx: PhoneRiskContext): SecurityAssessment {
+        val parsed = ActionBatchParser.parse(call.arguments["steps"])
+        parsed.error?.let { return blocked(it) }
+        val results = parsed.steps.mapIndexed { i, step ->
+            step to assess(step.toToolCall(call.id, i), ctx.copy(target = ctx.stepTargets.getOrNull(i)))
+        }
+        results.withIndex().firstOrNull { it.value.second.isBlocked }?.let { (i, r) ->
+            return blocked("Step ${i + 1} (${r.first.action}): ${r.second.reason}")
+        }
+        val level = results.maxOf { it.second.level.ordinal }.let { RiskLevel.values()[it] }
+        val confirming = results.filter { it.second.alwaysConfirm }
+        val redact = results.any { it.second.redact }
+        val sensitive = results.any { it.second.sensitive }
+        val summary = results.mapIndexed { i, (step, r) ->
+            val mark = if (r.alwaysConfirm && r.grantKey == null) "⚠ " else ""
+            "${i + 1}. $mark${step.action}: ${r.reason}"
+        }.joinToString("; ")
+        if (confirming.isEmpty()) {
+            return SecurityAssessment(level, "Runs ${results.size} screen steps: $summary", sensitive = sensitive, redact = redact)
+        }
+        val keys = confirming.map { it.second.grantKey }.distinct()
+        val grantKey = keys.singleOrNull()
+        return SecurityAssessment(
+            level = maxOf(level, RiskLevel.HIGH),
+            reason = "Runs ${results.size} screen steps, some need your approval: $summary",
+            sensitive = true,
+            alwaysConfirm = true,
+            grantKey = grantKey,
+            redact = redact
+        )
     }
 
     private fun assessScreenAction(call: ToolCall, ctx: PhoneRiskContext): SecurityAssessment {

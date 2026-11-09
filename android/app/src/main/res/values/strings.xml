@@ -11,6 +11,11 @@
     <string name="phone_control_channel_description">Shown while AMC operates your phone, with a Stop button</string>
     <string name="phone_control_notification_title">AMC is controlling your phone</string>
     <string name="phone_control_notification_text">Tap Stop to end it immediately.</string>
+    <string name="phone_control_approval_title">AMC asks for approval</string>
+    <string name="phone_control_approve">Approve</string>
+    <string name="phone_control_reject">Reject</string>
+    <string name="phone_control_approval_channel">Approvals</string>
+    <string name="phone_control_approval_channel_description">AMC asks before sensitive actions</string>
     <string name="notification_access_label">AMC notifications for the agent</string>
     <string name="screen_capture_notification_title">AMC can take screenshots while it controls your phone</string>
 </resources>

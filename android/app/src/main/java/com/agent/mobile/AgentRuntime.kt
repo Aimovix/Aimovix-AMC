@@ -56,6 +56,14 @@ class AndroidAgentPlatform(
         AgentNotifier.notify(context, title, message)
     }
 
+    override fun notifyApprovalNeeded(callId: String, description: String) {
+        AgentNotifier.notifyApproval(context, callId, description)
+    }
+
+    override fun cancelApprovalNotification(callId: String) {
+        AgentNotifier.cancelApproval(context, callId)
+    }
+
     override fun isAppInForeground(): Boolean {
         val info = android.app.ActivityManager.RunningAppProcessInfo()
         android.app.ActivityManager.getMyMemoryState(info)

@@ -45,6 +45,28 @@ class TermuxBridgeClient(
         /** Time the bridge has to answer the auth handshake after the socket opened. */
         const val AUTH_TIMEOUT_MS = 8_000L
 
+        /** Wait between retries when an old daemon is still busy with another command. */
+        private const val BUSY_RETRY_MS = 500L
+        /** Characters per write_file frame: even 4-byte UTF-8 plus JSON escaping stays far below 10 MiB. */
+        const val WRITE_CHUNK_CHARS = 256 * 1024
+        const val MAX_WRITE_BYTES = 64L * 1024 * 1024
+        const val WRITE_APPEND_CAPABILITY = "write_append"
+        val LLM_ACTIONS = setOf("llm_status", "llm_install", "llm_start", "llm_stop")
+
+        /** Splits [content] into transfer chunks without cutting a surrogate pair. */
+        fun chunkForTransfer(content: String, chunkChars: Int = WRITE_CHUNK_CHARS): List<String> {
+            if (content.length <= chunkChars) return listOf(content)
+            val out = mutableListOf<String>()
+            var start = 0
+            while (start < content.length) {
+                var end = minOf(start + chunkChars, content.length)
+                if (end < content.length && Character.isHighSurrogate(content[end - 1])) end--
+                out += content.substring(start, end)
+                start = end
+            }
+            return out
+        }
+
         @Volatile
         private var singletonInstance: TermuxBridgeClient? = null
 
@@ -216,6 +238,12 @@ class TermuxBridgeClient(
     // Map for waiting file reads (keyed by request_id and path)
     private val pendingFileReads = ConcurrentHashMap<String, CompletableDeferred<String>>()
     private val pendingFileWrites = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+    private val pendingLlmActions = ConcurrentHashMap<String, CompletableDeferred<LlmActionResult>>()
+
+    /** Features the connected daemon announced in auth_ok (empty for daemons before v1.7.1). */
+    @Volatile
+    var serverCapabilities: Set<String> = emptySet()
+        private set
 
     // Connection generation to prevent stale callbacks
     private val connectionGeneration = java.util.concurrent.atomic.AtomicLong(0)
@@ -621,6 +649,8 @@ class TermuxBridgeClient(
         pendingExecutions.clear()
         executionBuffers.clear()
         executionChunkCallbacks.clear()
+        pendingLlmActions.values.forEach { it.complete(LlmActionResult(false, reason, emptyMap())) }
+        pendingLlmActions.clear()
         pendingPings.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
         pendingPings.clear()
         pendingFileReads.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
@@ -658,6 +688,9 @@ class TermuxBridgeClient(
                     authWatchdog?.cancel()
                     reconnectAttempts = 0
                     val info = parseSystemInfo(json)
+                    serverCapabilities = json.optJSONArray("capabilities")?.let { arr ->
+                        (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }.toSet()
+                    } ?: emptySet()
                     _connectionStatus.value = ConnectionStatus.Connected(info)
                     // Once connected, cancel any scheduled reconnects and start heartbeat
                     reconnectJob?.cancel()
@@ -749,6 +782,18 @@ class TermuxBridgeClient(
                     val deferred = if (reqId.isNotEmpty()) pendingFileWrites.remove(reqId) else pendingFileWrites.remove(path)
                     deferred?.complete(success)
                 }
+                "llm_result" -> {
+                    val reqId = json.optString("request_id")
+                    val status = json.optJSONObject("status")
+                    val map = status?.keys()?.asSequence()?.associateWith { status.optString(it) } ?: emptyMap()
+                    pendingLlmActions.remove(reqId)?.complete(
+                        LlmActionResult(
+                            ok = json.optBoolean("ok", false),
+                            output = json.optString("output"),
+                            status = map
+                        )
+                    )
+                }
                 "error" -> {
                     val execId = json.optString("execution_id")
                     val err = json.optString("error")
@@ -787,6 +832,25 @@ class TermuxBridgeClient(
         command: String,
         timeoutMs: Long = 90_000L,
         onChunk: ((String) -> Unit)? = null
+    ): ToolResult {
+        // Daemons before v1.7.1 run one command per connection and reject a second one at once.
+        // Wait for the running one instead of failing (the agent and the terminal share a client).
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            val remaining = deadline - System.currentTimeMillis()
+            val result = executeOnce(command, remaining.coerceAtLeast(1_000L), onChunk)
+            if (!isBusyRejection(result) || remaining <= BUSY_RETRY_MS) return result
+            delay(BUSY_RETRY_MS)
+        }
+    }
+
+    private fun isBusyRejection(result: ToolResult): Boolean =
+        result.isError && result.stdout.isEmpty() && result.stderr.contains("already running on this connection")
+
+    private suspend fun executeOnce(
+        command: String,
+        timeoutMs: Long,
+        onChunk: ((String) -> Unit)?
     ): ToolResult = withContext(Dispatchers.IO) {
         val assessment = CommandSecurityFilter.analyze(command)
         if (assessment.isBlocked) {
@@ -898,7 +962,41 @@ class TermuxBridgeClient(
         webSocket?.send(msg.toString())
     }
 
-    suspend fun writeFile(path: String, content: String, timeoutMs: Long = 10_000L): Boolean = withContext(Dispatchers.IO) {
+    /**
+     * Writes [content] to [path]. With [append] the daemon appends on its side (a failed read can
+     * never truncate the file). Large contents are sent in chunks below the WebSocket frame limit;
+     * the first chunk writes or appends, the rest append.
+     */
+    suspend fun writeFile(path: String, content: String, timeoutMs: Long = 10_000L, append: Boolean = false): Boolean {
+        val bytes = content.toByteArray(Charsets.UTF_8).size.toLong()
+        require(bytes <= MAX_WRITE_BYTES) { "Content is too large for write_file (${bytes / (1024 * 1024)} MiB, limit ${MAX_WRITE_BYTES / (1024 * 1024)} MiB)." }
+        val chunks = chunkForTransfer(content)
+        val canAppend = WRITE_APPEND_CAPABILITY in serverCapabilities
+        if ((append || chunks.size > 1) && !canAppend) {
+            if (chunks.size > 1) throw java.io.IOException("The Termux bridge is too old for large files. Update it with 'amc update'.")
+            return appendWithoutServerSupport(path, content, timeoutMs)
+        }
+        for ((index, chunk) in chunks.withIndex()) {
+            val mode = if (index == 0 && !append) "write" else "append"
+            if (!sendWrite(path, chunk, if (canAppend) mode else null, timeoutMs)) return false
+        }
+        return true
+    }
+
+    /** Old daemons: append by reading first. Only a missing file counts as empty; any other error aborts. */
+    private suspend fun appendWithoutServerSupport(path: String, content: String, timeoutMs: Long): Boolean {
+        val existing = try {
+            readFile(path, timeoutMs)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (e.message?.contains("No such file", ignoreCase = true) == true) "" else
+                throw java.io.IOException("Could not read $path before appending (nothing was written): ${e.message}")
+        }
+        return sendWrite(path, existing + content, null, timeoutMs)
+    }
+
+    private suspend fun sendWrite(path: String, content: String, mode: String?, timeoutMs: Long): Boolean = withContext(Dispatchers.IO) {
         val reqId = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<Boolean>()
         pendingFileWrites[reqId] = deferred
@@ -907,6 +1005,7 @@ class TermuxBridgeClient(
             put("request_id", reqId)
             put("path", path)
             put("content", content)
+            mode?.let { put("mode", it) }
         }
         val ws = webSocket
         if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
@@ -925,6 +1024,34 @@ class TermuxBridgeClient(
         }
     }
 
+    /** Runs a local model action (status, install, start, stop) through the bridge. */
+    suspend fun llmAction(action: String, params: Map<String, String> = emptyMap(), timeoutMs: Long = 120_000L): LlmActionResult =
+        withContext(Dispatchers.IO) {
+            require(action in LLM_ACTIONS) { "Unknown llm action $action" }
+            val ws = webSocket
+            if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) {
+                return@withContext LlmActionResult(false, "No connection to Termux.", emptyMap())
+            }
+            val reqId = UUID.randomUUID().toString()
+            val deferred = CompletableDeferred<LlmActionResult>()
+            pendingLlmActions[reqId] = deferred
+            val msg = JSONObject().apply {
+                put("action", action)
+                put("request_id", reqId)
+                params.forEach { (k, v) -> put(k, v) }
+            }
+            if (!ws.send(msg.toString())) {
+                pendingLlmActions.remove(reqId)
+                return@withContext LlmActionResult(false, "Could not send $action (socket closed).", emptyMap())
+            }
+            try {
+                withTimeoutOrNull(timeoutMs) { deferred.await() }
+                    ?: LlmActionResult(false, "$action did not answer within ${timeoutMs / 1000} s.", emptyMap())
+            } finally {
+                pendingLlmActions.remove(reqId)
+            }
+        }
+
     suspend fun readFile(path: String, timeoutMs: Long = 10_000L): String = withContext(Dispatchers.IO) {
         val reqId = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<String>()
@@ -939,7 +1066,10 @@ class TermuxBridgeClient(
             pendingFileReads.remove(reqId)
             throw IllegalStateException("No connection to Termux")
         }
-        ws.send(msg.toString())
+        if (!ws.send(msg.toString())) {
+            pendingFileReads.remove(reqId)
+            throw java.io.IOException("Failed to send read_file message (socket closed)")
+        }
         try {
             withTimeout(timeoutMs) { deferred.await() }
         } finally {
@@ -961,7 +1091,10 @@ class TermuxBridgeClient(
             pendingFileReads.remove(reqId)
             throw IllegalStateException("No connection to Termux")
         }
-        ws.send(msg.toString())
+        if (!ws.send(msg.toString())) {
+            pendingFileReads.remove(reqId)
+            throw java.io.IOException("Failed to send read_file_base64 message (socket closed)")
+        }
         try {
             withTimeout(timeoutMs) { deferred.await() }
         } finally {
@@ -1018,3 +1151,6 @@ class TermuxBridgeClient(
         _connectionStatus.value = ConnectionStatus.Disconnected
     }
 }
+
+/** Answer of an llm_* bridge action. [status] holds the script's "status.KEY=VALUE" lines. */
+data class LlmActionResult(val ok: Boolean, val output: String, val status: Map<String, String>)

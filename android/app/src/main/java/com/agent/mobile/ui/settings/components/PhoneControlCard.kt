@@ -72,7 +72,24 @@ fun PhoneControlCard(
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            StatusRow("Screen control (accessibility)", if (accessibility) "On" else "Off", accessibility)
+            // Enabled in the settings but not connected: the system or an OEM battery killer stopped it.
+            val connected = PhoneControlService.instance != null
+            StatusRow(
+                "Screen control (accessibility)",
+                when {
+                    accessibility && connected -> "On"
+                    accessibility -> "On, but not running"
+                    else -> "Off"
+                },
+                accessibility && connected
+            )
+            if (accessibility && !connected) {
+                Text(
+                    text = "Android stopped the AMC Phone Control service (crash or battery optimization). Turn it off " +
+                        "and on again in the accessibility settings, and exclude AMC from battery optimization.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
             StatusRow("Notification access", if (notifications) "On" else "Off", notifications)
             StatusRow("Usage access", if (usage) "On" else "Off (optional)", usage)
             StatusRow("Shizuku", shizukuStatusText(shizuku), shizuku == ShizukuShell.Status.READY)

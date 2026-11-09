@@ -22,6 +22,9 @@ object PhoneTools {
     const val APPS_LIST = "apps_list"
     const val WAIT_FOR = "wait_for"
     const val SCREEN_CAPTURE = "screen_capture"
+    /** Several screen steps in one call (action chaining). */
+    const val SCREEN_BATCH = "screen_actions"
+    const val MAX_BATCH_STEPS = 8
 
     // Notifications (notification listener)
     const val NOTIFICATIONS_LIST = "notifications_list"
@@ -50,7 +53,8 @@ object PhoneTools {
 
     /** Tools that drive the screen. They show the "AMC is in control" overlay while they run. */
     val SCREEN_TOOLS: Set<String> = setOf(
-        SCREEN_READ, SCREEN_TAP, SCREEN_TYPE, SCREEN_SCROLL, SCREEN_SWIPE, SCREEN_GLOBAL, OPEN_APP, WAIT_FOR, SCREEN_CAPTURE
+        SCREEN_READ, SCREEN_TAP, SCREEN_TYPE, SCREEN_SCROLL, SCREEN_SWIPE, SCREEN_GLOBAL, OPEN_APP, WAIT_FOR, SCREEN_CAPTURE,
+        SCREEN_BATCH
     )
 
     /** Screen tools that change something on the phone (everything except reading and waiting). */
@@ -95,6 +99,37 @@ object PhoneTools {
                 Param("text", ParamType.STRING, "The text to enter."),
                 Param("target", ParamType.STRING, "Field id like 'e5', or its visible text or hint.", required = false),
                 Param("submit", ParamType.BOOLEAN, "true to press Enter after typing.", required = false)
+            )
+        ),
+        Definition(
+            SCREEN_BATCH,
+            "Run up to $MAX_BATCH_STEPS screen steps in one call, then get one screen reading at the end. Use it for " +
+                "safe steps on the SAME screen (fill a form, tap a few toggles, type then tap). Each step is checked " +
+                "and approved like a single tool; the batch stops at the first failure, a new window or dialog, an app " +
+                "change, or an unmet 'expect'. Put a send / pay step last, and end the batch after a step that navigates.",
+            listOf(
+                Param(
+                    "steps", ParamType.ARRAY,
+                    "The steps in order.",
+                    items = listOf(
+                        Param("action", ParamType.STRING, "tap | type | scroll | swipe | global | wait_for"),
+                        Param("target", ParamType.STRING, "Element id like 'e12' or visible text (tap, type, scroll).", required = false),
+                        Param("text", ParamType.STRING, "Text to type (type) or to wait for (wait_for).", required = false),
+                        Param("submit", ParamType.BOOLEAN, "type: send / press Enter afterwards.", required = false),
+                        Param("long_press", ParamType.BOOLEAN, "tap: long press.", required = false),
+                        Param("x", ParamType.INTEGER, "tap: x without target.", required = false),
+                        Param("y", ParamType.INTEGER, "tap: y without target.", required = false),
+                        Param("direction", ParamType.STRING, "scroll: up | down | left | right.", required = false),
+                        Param("x1", ParamType.INTEGER, "swipe start x.", required = false),
+                        Param("y1", ParamType.INTEGER, "swipe start y.", required = false),
+                        Param("x2", ParamType.INTEGER, "swipe end x.", required = false),
+                        Param("y2", ParamType.INTEGER, "swipe end y.", required = false),
+                        Param("global", ParamType.STRING, "global: back | home | recents.", required = false),
+                        Param("timeout_seconds", ParamType.INTEGER, "wait_for: max wait (default 5).", required = false),
+                        Param("expect", ParamType.STRING, "Optional text that must be on the screen after this step; otherwise the batch stops.", required = false)
+                    )
+                ),
+                Param("observe", ParamType.STRING, "Screen reading at the end: 'final' (default, full), 'delta' (only changes) or 'none'.", required = false)
             )
         ),
         Definition(
@@ -286,6 +321,11 @@ object PhoneTools {
             APPS_LIST -> "apps_list" + a["filter"]?.takeIf { it.isNotBlank() }?.let { " \"$it\"" }.orEmpty()
             WAIT_FOR -> "wait_for \"${a["text"].orEmpty().take(80)}\"" + if (flag(a["gone"])) " to disappear" else ""
             SCREEN_CAPTURE -> "screen_capture" + if (flag(a["send_to_user"])) " (send to user)" else ""
+            SCREEN_BATCH -> com.agent.mobile.phone.ActionBatchParser.parse(a["steps"]).let { parsed ->
+                parsed.steps.takeIf { it.isNotEmpty() }?.joinToString(" → ", prefix = "screen_actions: ") { step ->
+                    describe(step.toToolCall(call.id), redact) ?: step.action
+                } ?: "screen_actions (invalid: ${parsed.error})"
+            }
             NOTIFICATIONS_LIST -> "notifications_list" + a["app"]?.takeIf { it.isNotBlank() }?.let { " \"$it\"" }.orEmpty()
             NOTIFICATION_OPEN -> "notification_open ${a["id"].orEmpty()}"
             NOTIFICATION_REPLY -> "notification_reply ${a["id"].orEmpty()}: \"${a["text"].orEmpty().replace('\n', ' ').take(200)}\""
@@ -311,8 +351,11 @@ object PhoneTools {
     }
 
     /** Arguments safe to store: secrets are replaced. */
-    fun redactedArguments(call: ToolCall): Map<String, String> =
-        if (call.name == SCREEN_TYPE) call.arguments + ("text" to "••••••") else call.arguments
+    fun redactedArguments(call: ToolCall): Map<String, String> = when (call.name) {
+        SCREEN_TYPE -> call.arguments + ("text" to "••••••")
+        SCREEN_BATCH -> call.arguments + ("steps" to com.agent.mobile.phone.ActionBatchParser.redactedSteps(call.arguments["steps"]))
+        else -> call.arguments
+    }
 
     /** The call as it may be shown, stored and replayed: secret arguments replaced, raw provider JSON dropped. */
     fun redacted(call: ToolCall): ToolCall = call.copy(arguments = redactedArguments(call), rawJson = "")
