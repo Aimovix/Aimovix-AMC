@@ -34,6 +34,17 @@ object PhoneTools {
         NOTIFICATIONS_LIST, NOTIFICATION_OPEN, NOTIFICATION_REPLY, NOTIFICATION_DISMISS, NOTIFICATION_TRIGGER
     )
 
+    // System intents (no special permissions)
+    const val SET_ALARM = "set_alarm"
+    const val CALENDAR_ADD = "calendar_add"
+    const val SHARE_TEXT = "share_text"
+    const val OPEN_URL = "open_url"
+    const val OPEN_SETTINGS = "open_settings"
+    const val CLIPBOARD = "clipboard"
+    const val USAGE_STATS = "usage_stats"
+
+    val INTENT_TOOLS: Set<String> = setOf(SET_ALARM, CALENDAR_ADD, SHARE_TEXT, OPEN_URL, OPEN_SETTINGS, CLIPBOARD, USAGE_STATS)
+
     /** Tools that drive the screen. They show the "AMC is in control" overlay while they run. */
     val SCREEN_TOOLS: Set<String> = setOf(
         SCREEN_READ, SCREEN_TAP, SCREEN_TYPE, SCREEN_SCROLL, SCREEN_SWIPE, SCREEN_GLOBAL, OPEN_APP, WAIT_FOR, SCREEN_CAPTURE
@@ -46,7 +57,7 @@ object PhoneTools {
     val ALL_NAMES: Set<String> get() = DEFINITIONS.map { it.name }.toSet()
 
     /** Output that shows third-party content (screens, app names) and must be treated as untrusted. */
-    val UNTRUSTED_OUTPUT: Set<String> = SCREEN_TOOLS + APPS_LIST + NOTIFICATIONS_LIST + NOTIFICATION_OPEN
+    val UNTRUSTED_OUTPUT: Set<String> = SCREEN_TOOLS + APPS_LIST + NOTIFICATIONS_LIST + NOTIFICATION_OPEN + CLIPBOARD + USAGE_STATS
 
     /** Polling and scrolling repeat by nature; the step budget limits them instead of loop protection. */
     val LOOP_EXEMPT: Set<String> = setOf(SCREEN_READ, SCREEN_SCROLL, SCREEN_GLOBAL, WAIT_FOR, SCREEN_CAPTURE)
@@ -175,6 +186,64 @@ object PhoneTools {
                 Param("prompt", ParamType.STRING, "Complete instruction for the background run (for add).", required = false),
                 Param("id", ParamType.STRING, "Trigger id (for remove).", required = false)
             )
+        ),
+        Definition(
+            SET_ALARM,
+            "Set an alarm (hour + minute) or start a timer (timer_seconds) in the clock app.",
+            listOf(
+                Param("hour", ParamType.INTEGER, "Alarm hour 0-23.", required = false),
+                Param("minute", ParamType.INTEGER, "Alarm minute 0-59 (default 0).", required = false),
+                Param("timer_seconds", ParamType.INTEGER, "Timer length in seconds (instead of hour/minute).", required = false),
+                Param("label", ParamType.STRING, "Optional label.", required = false)
+            )
+        ),
+        Definition(
+            CALENDAR_ADD,
+            "Open the calendar with a prefilled new event; the event is saved when the user (or you, with phone control) taps Save.",
+            listOf(
+                Param("title", ParamType.STRING, "Event title."),
+                Param("start", ParamType.STRING, "Start as 'yyyy-MM-dd HH:mm' (or 'yyyy-MM-dd' for all day), local time."),
+                Param("end", ParamType.STRING, "End as 'yyyy-MM-dd HH:mm' (default: one hour after start).", required = false),
+                Param("all_day", ParamType.BOOLEAN, "true for an all-day event.", required = false),
+                Param("location", ParamType.STRING, "Optional location.", required = false),
+                Param("description", ParamType.STRING, "Optional notes.", required = false)
+            )
+        ),
+        Definition(
+            SHARE_TEXT,
+            "Open Android's share sheet with a text; the user picks the app and sends it.",
+            listOf(
+                Param("text", ParamType.STRING, "Text to share."),
+                Param("subject", ParamType.STRING, "Optional subject (for e-mail).", required = false)
+            )
+        ),
+        Definition(
+            OPEN_URL,
+            "Open a web link (http/https) in the browser or the app that handles it.",
+            listOf(Param("url", ParamType.STRING, "The link."))
+        ),
+        Definition(
+            OPEN_SETTINGS,
+            "Open a system settings page: settings, wifi, bluetooth, network, airplane, data_usage, nfc, display, sound, " +
+                "battery, location, date, language, storage, apps, app_details, app_notifications, usage_access. " +
+                "Changing something there with screen tools always asks the user.",
+            listOf(
+                Param("page", ParamType.STRING, "One of the pages listed above."),
+                Param("package", ParamType.STRING, "App package for app_details and app_notifications.", required = false)
+            )
+        ),
+        Definition(
+            CLIPBOARD,
+            "Read (action=get) or replace (action=set) the clipboard text.",
+            listOf(
+                Param("action", ParamType.STRING, "get | set"),
+                Param("text", ParamType.STRING, "Text for action=set.", required = false)
+            )
+        ),
+        Definition(
+            USAGE_STATS,
+            "Screen time: which apps were used and for how long (needs usage access).",
+            listOf(Param("hours", ParamType.INTEGER, "Look back this many hours (default 24, max 168).", required = false))
         )
     )
 
@@ -210,6 +279,14 @@ object PhoneTools {
             NOTIFICATION_OPEN -> "notification_open ${a["id"].orEmpty()}"
             NOTIFICATION_REPLY -> "notification_reply ${a["id"].orEmpty()}: \"${a["text"].orEmpty().replace('\n', ' ').take(200)}\""
             NOTIFICATION_DISMISS -> "notification_dismiss ${a["id"].orEmpty()}"
+            SET_ALARM -> a["timer_seconds"]?.takeIf { it.isNotBlank() }?.let { "set_alarm timer ${it}s" }
+                ?: "set_alarm ${a["hour"].orEmpty()}:${a["minute"].orEmpty().ifBlank { "00" }.padStart(2, '0')}"
+            CALENDAR_ADD -> "calendar_add \"${a["title"].orEmpty().take(80)}\" ${a["start"].orEmpty()}"
+            SHARE_TEXT -> "share_text \"${a["text"].orEmpty().replace('\n', ' ').take(120)}\""
+            OPEN_URL -> "open_url ${a["url"].orEmpty().take(200)}"
+            OPEN_SETTINGS -> "open_settings ${a["page"].orEmpty()}" + a["package"]?.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
+            CLIPBOARD -> if (a["action"].equals("set", ignoreCase = true)) "clipboard set [${a["text"]?.length ?: 0} chars]" else "clipboard ${a["action"].orEmpty()}"
+            USAGE_STATS -> "usage_stats ${a["hours"].orEmpty().ifBlank { "24" }}h"
             NOTIFICATION_TRIGGER -> when (a["action"].orEmpty().trim().lowercase()) {
                 "add" -> "notification_trigger add: ${a["app"].orEmpty()}" +
                     a["contains"]?.takeIf { it.isNotBlank() }?.let { " containing \"$it\"" }.orEmpty() +

@@ -119,4 +119,11 @@ class PolicySimulatorTest {
     fun executeCommandPrefixIsCheckedAsShell() {
         verdicts("execute_command rm -rf /").values.forEach { assertEquals(PolicyVerdict.BLOCKED, it) }
     }
+
+    @Test
+    fun alarmsRunInAutonomousAndClipboardAsks() {
+        assertEquals(PolicyVerdict.RUNS, verdicts("set_alarm hour=7 minute=30")[SecurityPreset.AUTONOMOUS])
+        assertEquals(PolicyVerdict.ASKS, verdicts("clipboard get")[SecurityPreset.AUTONOMOUS])
+        verdicts("open_url javascript:alert(1)").values.forEach { assertEquals(PolicyVerdict.BLOCKED, it) }
+    }
 }

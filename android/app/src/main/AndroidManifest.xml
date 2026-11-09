@@ -20,6 +20,12 @@
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
+    <!-- set_alarm: alarms and timers through the clock app. -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- usage_stats: screen time, only when the user grants usage access in system settings. -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
 
     <queries>
         <package android:name="com.termux" />

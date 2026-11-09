@@ -58,6 +58,8 @@ class AndroidPhoneController(
 
     private val pm: PackageManager get() = context.packageManager
 
+    private val intents by lazy { SystemIntents(context, ::labelOf) }
+
     // -------------------------------------------------------------------------------------------
     // PhoneController
     // -------------------------------------------------------------------------------------------
@@ -68,6 +70,7 @@ class AndroidPhoneController(
         if (mode == RunMode.REMOTE && !prefs.loadPhoneControlRemote()) addAll(PhoneTools.SCREEN_TOOLS)
         if (mode == RunMode.UNATTENDED && !prefs.loadPhoneControlBackground()) addAll(PhoneTools.SCREEN_TOOLS)
         if (AmcNotificationListener.instance == null) addAll(PhoneTools.NOTIFICATION_TOOLS)
+        if (!intents.hasUsageAccess()) add(PhoneTools.USAGE_STATS)
     }
 
     override fun beginControl(onStop: () -> Unit): AutoCloseable = PhoneControlSession.begin(context, onStop)
@@ -84,6 +87,7 @@ class AndroidPhoneController(
                 .let { it?.packageName to it?.appLabel }
             else -> null to null
         }
+        if (call.name in PhoneTools.INTENT_TOOLS) return PhoneRiskContext(blocklist = blocklist, ownPackage = context.packageName)
         if (call.name in PhoneTools.NOTIFICATION_TOOLS) {
             val locked = svc?.isKeyguardLocked() ?: false
             return PhoneRiskContext(keyguardLocked = locked, blocklist = blocklist, targetPackage = targetPkg, targetLabel = targetLabel, ownPackage = context.packageName)
@@ -138,6 +142,15 @@ class AndroidPhoneController(
             return PhoneActionResult(AppMatcher.format(installedApps(), a["filter"], prefs.loadPhoneBlocklist()))
         }
         if (call.name in PhoneTools.NOTIFICATION_TOOLS) return notificationTool(call, grants)
+        when (call.name) {
+            PhoneTools.SET_ALARM -> return intents.setAlarm(a)
+            PhoneTools.CALENDAR_ADD -> return intents.addCalendarEvent(a)
+            PhoneTools.SHARE_TEXT -> return intents.share(a)
+            PhoneTools.OPEN_URL -> return intents.openUrl(a["url"].orEmpty())
+            PhoneTools.OPEN_SETTINGS -> return intents.openSettings(a["page"].orEmpty(), a["package"])
+            PhoneTools.CLIPBOARD -> return intents.clipboard(a)
+            PhoneTools.USAGE_STATS -> return intents.usage(a)
+        }
         val svc = PhoneControlService.instance
             ?: return fail("Phone control is off. Ask the user to enable \"AMC Phone Control\" in AMC → Setup (Android accessibility settings).")
 

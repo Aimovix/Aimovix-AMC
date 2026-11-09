@@ -202,6 +202,7 @@ object PhoneToolPolicy {
             PhoneTools.SCREEN_READ, PhoneTools.WAIT_FOR -> assessRead(call, ctx)
             PhoneTools.SCREEN_CAPTURE -> assessCapture(call, ctx)
             in PhoneTools.NOTIFICATION_TOOLS -> assessNotification(call, ctx)
+            in PhoneTools.INTENT_TOOLS -> assessIntent(call)
             PhoneTools.OPEN_APP -> assessOpenApp(a["name"].orEmpty(), ctx)
             PhoneTools.SCREEN_GLOBAL -> assessGlobal(a["action"].orEmpty().trim().lowercase(), ctx)
             PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL, PhoneTools.SCREEN_SWIPE ->
@@ -291,6 +292,42 @@ object PhoneToolPolicy {
                 }
                 else -> blocked("action must be add, list or remove.")
             }
+        }
+    }
+
+    private fun assessIntent(call: ToolCall): SecurityAssessment {
+        val a = call.arguments
+        return when (call.name) {
+            PhoneTools.SET_ALARM -> when (val spec = SystemIntentSpecs.parseAlarm(a)) {
+                is SystemIntentSpecs.Alarm.Invalid -> blocked(spec.reason)
+                is SystemIntentSpecs.Alarm.Timer -> medium("Starts a timer in the clock app")
+                is SystemIntentSpecs.Alarm.At -> medium("Sets an alarm in the clock app")
+            }
+            PhoneTools.CALENDAR_ADD -> {
+                val (_, error) = SystemIntentSpecs.parseEvent(a)
+                if (error != null) blocked(error) else medium("Opens the calendar with a new event to save")
+            }
+            PhoneTools.SHARE_TEXT ->
+                if (a["text"].isNullOrBlank()) blocked("Text to share is required.")
+                else medium("Opens the share sheet; the target app is chosen there")
+            PhoneTools.OPEN_URL -> {
+                val url = a["url"].orEmpty()
+                if (!SystemIntentSpecs.isOpenableUrl(url)) blocked("Only http:// and https:// links can be opened.")
+                else medium("Opens ${SystemIntentSpecs.host(url)}")
+            }
+            PhoneTools.OPEN_SETTINGS -> {
+                val page = a["page"].orEmpty().trim().lowercase()
+                if (page !in SystemIntentSpecs.SETTINGS_PAGES) blocked("Unknown or not allowed settings page '$page'.")
+                else low("Opens the $page settings page (changes there always ask)")
+            }
+            PhoneTools.CLIPBOARD -> when (a["action"].orEmpty().trim().lowercase()) {
+                "get" -> SecurityAssessment(RiskLevel.HIGH, "Reads the clipboard (it can contain passwords or private data)")
+                "set" -> if (a["text"] == null) blocked("Text is required for action=set.")
+                else SecurityAssessment(RiskLevel.HIGH, "Replaces the clipboard content")
+                else -> blocked("action must be get or set.")
+            }
+            PhoneTools.USAGE_STATS -> medium("Reads which apps you used and for how long")
+            else -> blocked("Unknown tool '${call.name}'.")
         }
     }
 

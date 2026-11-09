@@ -287,4 +287,28 @@ class PhoneToolPolicyTest {
         assertTrue(assess(call(PhoneTools.NOTIFICATION_TRIGGER, "action" to "fire"), PhoneRiskContext()).isBlocked)
         assertTrue(assess(call(PhoneTools.NOTIFICATION_TRIGGER, "action" to "add", "app" to "Gmail"), PhoneRiskContext()).isBlocked)
     }
+
+    @Test
+    fun systemIntentsAreClassified() {
+        val none = PhoneRiskContext()
+        assertEquals(RiskLevel.MEDIUM, assess(call(PhoneTools.SET_ALARM, "hour" to "7"), none).level)
+        assertTrue(assess(call(PhoneTools.SET_ALARM, "hour" to "25"), none).isBlocked)
+        assertEquals(RiskLevel.MEDIUM, assess(call(PhoneTools.CALENDAR_ADD, "title" to "x", "start" to "2026-11-10 09:00"), none).level)
+        assertTrue(assess(call(PhoneTools.CALENDAR_ADD, "title" to "x", "start" to "soon"), none).isBlocked)
+        assertTrue(assess(call(PhoneTools.OPEN_URL, "url" to "javascript:alert(1)"), none).isBlocked)
+        assertEquals(RiskLevel.MEDIUM, assess(call(PhoneTools.OPEN_URL, "url" to "https://example.com"), none).level)
+        assertEquals(RiskLevel.LOW, assess(call(PhoneTools.OPEN_SETTINGS, "page" to "wifi"), none).level)
+        assertTrue(assess(call(PhoneTools.OPEN_SETTINGS, "page" to "security"), none).isBlocked)
+        assertEquals(RiskLevel.MEDIUM, assess(call(PhoneTools.SHARE_TEXT, "text" to "hi"), none).level)
+        assertEquals(RiskLevel.MEDIUM, assess(call(PhoneTools.USAGE_STATS), none).level)
+    }
+
+    @Test
+    fun clipboardIsSensitiveLikeTheTermuxCommand() {
+        val get = assess(call(PhoneTools.CLIPBOARD, "action" to "get"), PhoneRiskContext())
+        assertEquals(RiskLevel.HIGH, get.level)
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(get, SecurityPreset.AUTONOMOUS))
+        assertEquals(CommandSecurityFilter.analyze("termux-clipboard-get").level, get.level)
+        assertTrue(assess(call(PhoneTools.CLIPBOARD, "action" to "wipe"), PhoneRiskContext()).isBlocked)
+    }
 }
