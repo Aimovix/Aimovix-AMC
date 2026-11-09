@@ -284,6 +284,7 @@ class MainActivity : ComponentActivity() {
                                 2 -> SetupWizardScreen(
                                     bridgeClient = bridgeClient,
                                     savedToken = currentToken,
+                                    onNavigateChat = { selectedTab = 0 },
                                     onTokenChanged = { newToken ->
                                         currentToken = newToken
                                         preferenceManager.saveAuthToken(newToken)

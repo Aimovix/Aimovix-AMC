@@ -1,5 +1,6 @@
 package com.agent.mobile.ui.chat.components
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -101,26 +102,35 @@ private fun AssistantMessage(
 
         if (allCalls.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val transition = amcContentTransform()
                 for (tc in allCalls) {
-                    val isThisWaiting = pendingApproval?.first == message.id && pendingApproval.second.id == tc.id
-                    if (isThisWaiting) {
-                        ApprovalPromptCard(
-                            toolCall = pendingApproval.second,
-                            onApprove = { onApproveTool(tc.id) },
-                            onReject = { onRejectTool(tc.id) }
-                        )
-                    } else {
-                        val matchingResult = if (message.toolResult?.toolCallId == tc.id) message.toolResult else null
-                        StreamingTerminalCard(
-                            toolCall = tc,
-                            toolResult = matchingResult,
-                            liveOutput = if (message.status == MessageStatus.EXECUTING_TOOL) message.streamingTerminalOutput else "",
-                            status = if (matchingResult != null) {
-                                if (matchingResult.isError) MessageStatus.ERROR else MessageStatus.COMPLETED
-                            } else {
-                                message.status
-                            }
-                        )
+                    // The approval request and the result share one slot, so the swap is a short crossfade.
+                    val waitingCall = pendingApproval?.takeIf { it.first == message.id && it.second.id == tc.id }?.second
+                    AnimatedContent(
+                        targetState = waitingCall != null,
+                        transitionSpec = { transition },
+                        label = "tool-${tc.id}"
+                    ) { waiting ->
+                        if (waiting && waitingCall != null) {
+                            ApprovalPromptCard(
+                                toolCall = waitingCall,
+                                onApprove = { onApproveTool(tc.id) },
+                                onReject = { onRejectTool(tc.id) }
+                            )
+                        } else {
+                            val matchingResult = if (message.toolResult?.toolCallId == tc.id) message.toolResult else null
+                            StreamingTerminalCard(
+                                toolCall = tc,
+                                toolResult = matchingResult,
+                                liveOutput = if (message.status == MessageStatus.EXECUTING_TOOL) message.streamingTerminalOutput else "",
+                                status = if (matchingResult != null) {
+                                    if (matchingResult.isError) MessageStatus.ERROR else MessageStatus.COMPLETED
+                                } else {
+                                    message.status
+                                },
+                                startedAt = message.timestamp
+                            )
+                        }
                     }
                 }
                 // Approval requested by a sub-agent working for one of these calls.

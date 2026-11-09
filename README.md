@@ -38,7 +38,7 @@ bash setup-amc.sh
 The installer downloads from `main` by default. To pin a specific release tag or branch:
 
 ```bash
-AMC_REF=v1.5.0 bash setup-amc.sh
+AMC_REF=v1.6.0 bash setup-amc.sh
 ```
 
 To test a development branch with local files, clone that branch and run its local installer:
@@ -52,7 +52,7 @@ Setup installs Python, Git, curl, jq, Termux:API tools, the pinned Python depend
 
 ### 4. Pair the app
 
-Open **AMC → Setup → Quick connect**, allow AMC to run commands in Termux, then tap **Auto-connect**. AMC asks Termux (through Termux's official `RUN_COMMAND` interface) to start the bridge and hand over the token; nothing has to be copied. From then on AMC also restarts the bridge by itself whenever it is not reachable (app, background tasks and the Telegram channel).
+Open **AMC → Setup**. A live checklist shows what is left: install Termux and Termux:API, allow AMC to run commands in Termux, let Termux run in the background, then tap **Start & pair**. AMC asks Termux (through Termux's official `RUN_COMMAND` interface) to start the bridge and hand over the token; nothing has to be copied. From then on AMC also restarts the bridge by itself whenever it is not reachable (app, background tasks and the Telegram channel).
 
 The installer enables `allow-external-apps = true` in `~/.termux/termux.properties`, which `RUN_COMMAND` requires (opt out with `AMC_ALLOW_EXTERNAL_APPS=0`). Only apps you grant the Termux "Run commands in Termux environment" permission can use it. For older installations, Quick connect shows the one-line command to enable it.
 
@@ -102,7 +102,9 @@ Then just write to your bot, for example *"How full is my storage?"* or *"Take a
 
 ## Using AMC
 
-- **Chat:** submit a task, attach an image, or use a quick action.
+- **Chat:** submit a task, attach an image, or tap a quick action or example: it fills the input, so you can change it before you send. Press and hold a message to copy it or send it again. Press and hold a tool's line to copy its command.
+- **Chats drawer:** swipe a chat to the left to delete it. Undo is available for a few seconds.
+- **Try a command:** in **Settings**, type a command or tap an example to see how each security mode would treat it. Nothing runs there.
 - **Security presets:** choose between **Autonomous** (default; routine work runs on its own, while SMS, calls, camera, location, clipboard, deleting files and killing processes still ask first), **Supervised** (every action needs approval), **Full machine** (manual review for commands, full device file access), **Turbo mode** (no approval prompts at all; only catastrophic commands stay blocked), and **Custom** (granular control with strict mode, custom allowlists, and blocklists). Background runs can never approve themselves: actions that need approval are skipped and listed in the result notification.
 - **Strict mode:** available in Custom preset; requires approval for every agent command, even operations covered by a custom allowlist.
 - **Emergency stop:** requests cancellation through the active bridge connection. The bridge handles controls while commands run and terminates the command's process group. The UI reports a request rather than claiming immediate completion.
