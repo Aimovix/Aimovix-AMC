@@ -88,6 +88,11 @@ object PhoneControlSession {
         PhoneControlService.instance?.overlay?.hide()
         appContext?.let { ctx ->
             try {
+                ScreenCapture.release(ctx)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not end screen capture: ${e.message}")
+            }
+            try {
                 (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIFICATION_ID)
             } catch (e: Exception) {
                 Log.w(TAG, "Could not cancel the notification: ${e.message}")

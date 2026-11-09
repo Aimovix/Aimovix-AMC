@@ -229,4 +229,15 @@ class PhoneToolPolicyTest {
         val a = assess(call(PhoneTools.SCREEN_TAP, "target" to "e5"), ctx("com.android.vending", "Play Store", TargetInfo("Open")))
         assertTrue(a.alwaysConfirm)
     }
+
+    @Test
+    fun screenshotsFollowTheSameRulesAsReading() {
+        val maps = assess(call(PhoneTools.SCREEN_CAPTURE), ctx("com.google.android.apps.maps", "Maps"))
+        assertEquals(RiskLevel.MEDIUM, maps.level)
+        assertTrue(maps.reason.contains("AI provider"))
+        assertTrue(assess(call(PhoneTools.SCREEN_CAPTURE), ctx("com.x8bit.bitwarden", "Bitwarden")).isBlocked)
+        assertTrue(assess(call(PhoneTools.SCREEN_CAPTURE), ctx("com.example.notes", locked = true)).isBlocked)
+        assertEquals("read:com.whatsapp", assess(call(PhoneTools.SCREEN_CAPTURE), ctx("com.whatsapp", "WhatsApp")).grantKey)
+        assertTrue(PhoneToolPolicy.requiresApprovalInMode(PhoneTools.SCREEN_CAPTURE, RunMode.REMOTE))
+    }
 }

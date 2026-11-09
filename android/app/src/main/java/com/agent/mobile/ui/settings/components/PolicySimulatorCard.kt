@@ -151,6 +151,7 @@ private val SAMPLES = listOf(
     Sample("Battery", "termux-battery-status"),
     Sample("Destructive", "rm -rf /"),
     Sample("Read the screen", "screen_read @com.android.chrome"),
+    Sample("Screenshot", "screen_capture @com.google.android.apps.maps"),
     Sample("Tap in a shop app", "screen_tap \"Add to list\" @com.example.shop"),
     Sample("Send in WhatsApp", "screen_tap Send @com.whatsapp"),
     Sample("Open WhatsApp", "open_app com.whatsapp"),

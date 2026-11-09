@@ -294,4 +294,36 @@ class PhoneControlEngineTest {
         val tool = e.messages.value.first { it.role == MessageRole.TOOL }
         assertTrue(tool.text.startsWith("[UNTRUSTED_OUTPUT_START]"))
     }
+
+    @Test
+    fun screenshotGoesToTheModelAsAnImageButToTheUserOnlyWhenAsked() = runBlocking {
+        toolCall("c1", PhoneTools.SCREEN_CAPTURE, JSONObject())
+        toolCall("c2", PhoneTools.SCREEN_CAPTURE, JSONObject().put("send_to_user", true))
+        reply("Here it is.")
+        val phone = FakePhone()
+        phone.onExecute = { call ->
+            PhoneActionResult("Screenshot attached.", imageBase64 = "QUJD", sendImageToUser = PhoneTools.isTrue(call.arguments["send_to_user"]))
+        }
+        val sent = CopyOnWriteArrayList<String>()
+        val e = engine(phone)
+        e.approvalHandler = { _, _ -> true }
+        e.attachmentSink = AttachmentSink { name, bytes, _ -> sent += name + ":" + String(bytes); "sent" }
+        e.runHeadless("Telegram", "show me the screen", RunMode.REMOTE)
+        val bodies = requestBodies()
+        assertTrue("the model sees the image", bodies[1].contains("base64,QUJD"))
+        assertEquals("only the explicitly requested screenshot goes to the chat", listOf("screenshot.jpg:ABC"), sent.toList())
+    }
+
+    @Test
+    fun textOnlyModelsAreNotOfferedScreenshots() = runBlocking {
+        reply("Hi")
+        val e = engine(FakePhone())
+        e.setModelConfig(
+            ModelConfig(provider = ProviderType.GROQ, modelName = "llama-3.3-70b-versatile", apiKey = "k", baseUrl = server.url("/v1/chat/completions").toString())
+        )
+        e.runHeadless("t", "hello", RunMode.UNATTENDED)
+        val names = toolNames(requestBodies().first())
+        assertFalse(names.contains(PhoneTools.SCREEN_CAPTURE))
+        assertTrue(names.contains(PhoneTools.SCREEN_READ))
+    }
 }

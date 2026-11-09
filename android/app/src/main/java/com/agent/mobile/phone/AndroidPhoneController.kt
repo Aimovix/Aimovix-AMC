@@ -152,6 +152,7 @@ class AndroidPhoneController(
             }
             PhoneTools.OPEN_APP -> openApp(svc, a["name"].orEmpty(), grants)
             PhoneTools.WAIT_FOR -> waitFor(svc, call, grants)
+            PhoneTools.SCREEN_CAPTURE -> screenshot(svc, call, grants)
             else -> fail("Unknown phone tool '${call.name}'.")
         }
     }
@@ -269,6 +270,22 @@ class AndroidPhoneController(
                 return obs.copy(ok = false)
             }
             delay(500)
+        }
+    }
+
+    private suspend fun screenshot(svc: PhoneControlService, call: ToolCall, grants: Set<String>): PhoneActionResult {
+        if (svc.isKeyguardLocked()) return fail("The phone is locked. AMC takes no screenshots of the lock screen.")
+        val cap = svc.capture(::labelOf, maxChars = 1_500) ?: return fail("The screen content is not available right now.")
+        // Same privacy gate as the element list: no image of a screen the run may not see.
+        gateReason(cap.snapshot, svc.windowClass, grants)?.let { return fail(it) }
+        return when (val shot = ScreenCapture.capture(context, svc)) {
+            is ScreenCapture.Result.Refused -> fail(shot.reason)
+            is ScreenCapture.Result.Image -> PhoneActionResult(
+                text = "Screenshot of ${cap.snapshot.appLabel} (${shot.width}x${shot.height}) attached as an image. " +
+                    "Coordinates in it are scaled; use screen_read for exact element positions.",
+                imageBase64 = shot.base64Jpeg,
+                sendImageToUser = PhoneTools.isTrue(call.arguments["send_to_user"])
+            )
         }
     }
 

@@ -21,10 +21,11 @@ object PhoneTools {
     const val OPEN_APP = "open_app"
     const val APPS_LIST = "apps_list"
     const val WAIT_FOR = "wait_for"
+    const val SCREEN_CAPTURE = "screen_capture"
 
     /** Tools that drive the screen. They show the "AMC is in control" overlay while they run. */
     val SCREEN_TOOLS: Set<String> = setOf(
-        SCREEN_READ, SCREEN_TAP, SCREEN_TYPE, SCREEN_SCROLL, SCREEN_SWIPE, SCREEN_GLOBAL, OPEN_APP, WAIT_FOR
+        SCREEN_READ, SCREEN_TAP, SCREEN_TYPE, SCREEN_SCROLL, SCREEN_SWIPE, SCREEN_GLOBAL, OPEN_APP, WAIT_FOR, SCREEN_CAPTURE
     )
 
     /** Screen tools that change something on the phone (everything except reading and waiting). */
@@ -37,7 +38,7 @@ object PhoneTools {
     val UNTRUSTED_OUTPUT: Set<String> = SCREEN_TOOLS + APPS_LIST
 
     /** Polling and scrolling repeat by nature; the step budget limits them instead of loop protection. */
-    val LOOP_EXEMPT: Set<String> = setOf(SCREEN_READ, SCREEN_SCROLL, SCREEN_GLOBAL, WAIT_FOR)
+    val LOOP_EXEMPT: Set<String> = setOf(SCREEN_READ, SCREEN_SCROLL, SCREEN_GLOBAL, WAIT_FOR, SCREEN_CAPTURE)
 
     fun isPhoneTool(name: String): Boolean = name in ALL_NAMES
 
@@ -113,6 +114,19 @@ object PhoneTools {
                 Param("timeout_seconds", ParamType.INTEGER, "Maximum wait (default 10, max 60).", required = false),
                 Param("gone", ParamType.BOOLEAN, "true to wait until it disappears.", required = false)
             )
+        ),
+        Definition(
+            SCREEN_CAPTURE,
+            "Take a screenshot and look at it (for images, maps, games, charts or layouts the element list cannot " +
+                "describe). Prefer screen_read for text and buttons; it is cheaper and gives element ids. Protected " +
+                "windows (FLAG_SECURE) give no image.",
+            listOf(
+                Param(
+                    "send_to_user", ParamType.BOOLEAN,
+                    "true only when the user explicitly asked to see the screenshot; it is then also sent to them " +
+                        "(app or chat). Default false: only you see it.", required = false
+                )
+            )
         )
     )
 
@@ -143,6 +157,7 @@ object PhoneTools {
             OPEN_APP -> "open_app ${a["name"].orEmpty()}"
             APPS_LIST -> "apps_list" + a["filter"]?.takeIf { it.isNotBlank() }?.let { " \"$it\"" }.orEmpty()
             WAIT_FOR -> "wait_for \"${a["text"].orEmpty().take(80)}\"" + if (flag(a["gone"])) " to disappear" else ""
+            SCREEN_CAPTURE -> "screen_capture" + if (flag(a["send_to_user"])) " (send to user)" else ""
             else -> null
         }
     }

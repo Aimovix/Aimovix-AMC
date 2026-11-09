@@ -590,7 +590,10 @@ class AutonomousAgentEngine(
         }
         // Sub-agents research; they never drive the screen (their approvals would bypass the REMOTE rules).
         val subAgentExcluded = if (mode == RunMode.SUBAGENT) PhoneTools.SCREEN_TOOLS else emptySet()
-        return baseExcludedTools + phoneExcluded + subAgentExcluded
+        // Screenshots only for models that can look at images.
+        val visionExcluded = if (com.agent.mobile.phone.ScreenshotSupport.likelySupportsVision(_modelConfig.value)) emptySet()
+        else setOf(PhoneTools.SCREEN_CAPTURE)
+        return baseExcludedTools + phoneExcluded + subAgentExcluded + visionExcluded
     }
 
     /** Stop button of the phone control overlay or notification. */

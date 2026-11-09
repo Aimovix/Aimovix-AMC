@@ -200,6 +200,7 @@ object PhoneToolPolicy {
         return when (call.name) {
             PhoneTools.APPS_LIST -> low("Lists installed apps")
             PhoneTools.SCREEN_READ, PhoneTools.WAIT_FOR -> assessRead(call, ctx)
+            PhoneTools.SCREEN_CAPTURE -> assessCapture(call, ctx)
             PhoneTools.OPEN_APP -> assessOpenApp(a["name"].orEmpty(), ctx)
             PhoneTools.SCREEN_GLOBAL -> assessGlobal(a["action"].orEmpty().trim().lowercase(), ctx)
             PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL, PhoneTools.SCREEN_SWIPE ->
@@ -235,6 +236,17 @@ object PhoneToolPolicy {
         if (kind in PRIVATE_KINDS) return privateRead(kind, pkg, appName(ctx))
         if (kind == AppKind.SYSTEM_UI) return confirm("Reads the notification shade, which can contain private messages", grantKey = "notifications")
         return low("Reads the screen of ${appName(ctx)}")
+    }
+
+    private fun assessCapture(call: ToolCall, ctx: PhoneRiskContext): SecurityAssessment {
+        if (ctx.keyguardLocked) return blocked("The phone is locked. AMC takes no screenshots of the lock screen.")
+        hardBlock(ctx)?.let { return it }
+        val pkg = ctx.foregroundPackage.orEmpty()
+        val kind = appKind(pkg, ctx.foregroundLabel, ctx.ownPackage)
+        if (kind in PRIVATE_KINDS) return privateRead(kind, pkg, appName(ctx))
+        if (kind == AppKind.SYSTEM_UI) return confirm("Screenshot of the notification shade, which can contain private messages", grantKey = "notifications")
+        val toUser = if (PhoneTools.isTrue(call.arguments["send_to_user"])) " and shown to you" else ""
+        return medium("Screenshot of ${appName(ctx)}, sent to the AI provider$toUser")
     }
 
     private fun assessOpenApp(name: String, ctx: PhoneRiskContext): SecurityAssessment {
