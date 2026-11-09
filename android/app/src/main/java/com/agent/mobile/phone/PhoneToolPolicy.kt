@@ -201,6 +201,7 @@ object PhoneToolPolicy {
             PhoneTools.APPS_LIST -> low("Lists installed apps")
             PhoneTools.SCREEN_READ, PhoneTools.WAIT_FOR -> assessRead(call, ctx)
             PhoneTools.SCREEN_CAPTURE -> assessCapture(call, ctx)
+            in PhoneTools.NOTIFICATION_TOOLS -> assessNotification(call, ctx)
             PhoneTools.OPEN_APP -> assessOpenApp(a["name"].orEmpty(), ctx)
             PhoneTools.SCREEN_GLOBAL -> assessGlobal(a["action"].orEmpty().trim().lowercase(), ctx)
             PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL, PhoneTools.SCREEN_SWIPE ->
@@ -247,6 +248,50 @@ object PhoneToolPolicy {
         if (kind == AppKind.SYSTEM_UI) return confirm("Screenshot of the notification shade, which can contain private messages", grantKey = "notifications")
         val toUser = if (PhoneTools.isTrue(call.arguments["send_to_user"])) " and shown to you" else ""
         return medium("Screenshot of ${appName(ctx)}, sent to the AI provider$toUser")
+    }
+
+    private fun assessNotification(call: ToolCall, ctx: PhoneRiskContext): SecurityAssessment {
+        val a = call.arguments
+        val pkg = ctx.targetPackage
+        val name = ctx.targetLabel?.takeIf { it.isNotBlank() } ?: pkg ?: "an app"
+        fun blockedApp(): SecurityAssessment? = ctx.blocklist.blockReason(pkg, ctx.targetLabel)?.let {
+            blocked("$it. The user can release it in Settings → Phone control.")
+        }
+        return when (call.name) {
+            PhoneTools.NOTIFICATIONS_LIST ->
+                confirm("Reads your notifications, which can contain private messages", grantKey = "notifications")
+            PhoneTools.NOTIFICATION_OPEN -> {
+                if (a["id"].isNullOrBlank()) return blocked("A notification id is required.")
+                if (ctx.keyguardLocked) return blocked("The phone is locked. AMC never operates or bypasses the lock screen; ask the user to unlock it.")
+                blockedApp()?.let { return it }
+                when (val kind = appKind(pkg, ctx.targetLabel, ctx.ownPackage)) {
+                    in PRIVATE_KINDS -> privateRead(kind, pkg.orEmpty(), name)
+                    else -> medium("Opens a notification of $name")
+                }
+            }
+            PhoneTools.NOTIFICATION_REPLY -> {
+                if (a["id"].isNullOrBlank() || a["text"].isNullOrBlank()) return blocked("A notification id and the reply text are required.")
+                blockedApp()?.let { return it }
+                confirm("${ActionCategory.SEND.reason}: replies via $name")
+            }
+            PhoneTools.NOTIFICATION_DISMISS -> {
+                if (a["id"].isNullOrBlank()) return blocked("A notification id is required.")
+                blockedApp()?.let { return it }
+                medium("Dismisses a notification of $name")
+            }
+            else -> when (a["action"].orEmpty().trim().lowercase()) {
+                "list" -> low("Lists notification triggers")
+                "remove" -> if (a["id"].isNullOrBlank()) blocked("A trigger id is required.") else low("Removes a notification trigger")
+                "add" -> when {
+                    a["app"].isNullOrBlank() || a["prompt"].isNullOrBlank() -> blocked("app and prompt are required to add a trigger.")
+                    else -> blockedApp() ?: confirm(
+                        "Starts an unattended background task whenever a notification from $name arrives; " +
+                            "the notification content is untrusted"
+                    )
+                }
+                else -> blocked("action must be add, list or remove.")
+            }
+        }
     }
 
     private fun assessOpenApp(name: String, ctx: PhoneRiskContext): SecurityAssessment {

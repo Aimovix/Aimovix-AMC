@@ -8,5 +8,6 @@
     <string name="phone_control_channel_description">Wird angezeigt, solange AMC dein Handy bedient, mit Stopp-Knopf</string>
     <string name="phone_control_notification_title">AMC bedient dein Handy</string>
     <string name="phone_control_notification_text">Tippe auf Stopp, um sofort abzubrechen.</string>
+    <string name="notification_access_label">AMC-Benachrichtigungen für den Agenten</string>
     <string name="screen_capture_notification_title">AMC kann Screenshots machen, solange es dein Handy bedient</string>
 </resources>

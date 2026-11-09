@@ -240,4 +240,51 @@ class PhoneToolPolicyTest {
         assertEquals("read:com.whatsapp", assess(call(PhoneTools.SCREEN_CAPTURE), ctx("com.whatsapp", "WhatsApp")).grantKey)
         assertTrue(PhoneToolPolicy.requiresApprovalInMode(PhoneTools.SCREEN_CAPTURE, RunMode.REMOTE))
     }
+
+    private fun notif(pkg: String?, label: String? = pkg) = PhoneRiskContext(targetPackage = pkg, targetLabel = label)
+
+    @Test
+    fun readingNotificationsAsksOncePerRun() {
+        val a = assess(call(PhoneTools.NOTIFICATIONS_LIST), PhoneRiskContext())
+        assertTrue(a.alwaysConfirm)
+        assertEquals("notifications", a.grantKey)
+    }
+
+    @Test
+    fun replyingToANotificationIsSendingAndAlwaysAsks() {
+        val a = assess(call(PhoneTools.NOTIFICATION_REPLY, "id" to "n1", "text" to "On my way"), notif("com.whatsapp", "WhatsApp"))
+        assertTrue(a.alwaysConfirm)
+        assertNull(a.grantKey)
+        assertTrue(a.reason.contains("Sends a message"))
+        assertTrue(asksInEveryPreset(a))
+        assertTrue(assess(call(PhoneTools.NOTIFICATION_REPLY, "id" to "n1"), notif("com.whatsapp")).isBlocked)
+    }
+
+    @Test
+    fun blockedAppsNotificationsCannotBeTouched() {
+        val bank = notif("com.starfinanz.smob.android.sfinanzstatus", "Sparkasse")
+        assertTrue(assess(call(PhoneTools.NOTIFICATION_OPEN, "id" to "n2"), bank).isBlocked)
+        assertTrue(assess(call(PhoneTools.NOTIFICATION_REPLY, "id" to "n2", "text" to "x"), bank).isBlocked)
+        assertTrue(assess(call(PhoneTools.NOTIFICATION_DISMISS, "id" to "n2"), bank).isBlocked)
+        assertTrue(assess(call(PhoneTools.NOTIFICATION_TRIGGER, "action" to "add", "app" to "Sparkasse", "prompt" to "x"), bank).isBlocked)
+    }
+
+    @Test
+    fun openingAMessengerNotificationNeedsTheReadGrant() {
+        assertEquals("read:com.whatsapp", assess(call(PhoneTools.NOTIFICATION_OPEN, "id" to "n1"), notif("com.whatsapp", "WhatsApp")).grantKey)
+        assertEquals(RiskLevel.MEDIUM, assess(call(PhoneTools.NOTIFICATION_OPEN, "id" to "n1"), notif("com.spotify.music", "Spotify")).level)
+        assertEquals(RiskLevel.MEDIUM, assess(call(PhoneTools.NOTIFICATION_DISMISS, "id" to "n1"), notif("com.spotify.music", "Spotify")).level)
+        assertTrue(assess(call(PhoneTools.NOTIFICATION_OPEN, "id" to "n1"), notif("com.spotify.music").copy(keyguardLocked = true)).isBlocked)
+    }
+
+    @Test
+    fun notificationTriggersAlwaysAskWhenAdded() {
+        val add = assess(call(PhoneTools.NOTIFICATION_TRIGGER, "action" to "add", "app" to "Gmail", "prompt" to "Summarise it"), notif("com.google.android.gm", "Gmail"))
+        assertTrue(add.alwaysConfirm)
+        assertTrue(add.reason.contains("untrusted"))
+        assertEquals(RiskLevel.LOW, assess(call(PhoneTools.NOTIFICATION_TRIGGER, "action" to "list"), PhoneRiskContext()).level)
+        assertTrue(assess(call(PhoneTools.NOTIFICATION_TRIGGER, "action" to "remove"), PhoneRiskContext()).isBlocked)
+        assertTrue(assess(call(PhoneTools.NOTIFICATION_TRIGGER, "action" to "fire"), PhoneRiskContext()).isBlocked)
+        assertTrue(assess(call(PhoneTools.NOTIFICATION_TRIGGER, "action" to "add", "app" to "Gmail"), PhoneRiskContext()).isBlocked)
+    }
 }

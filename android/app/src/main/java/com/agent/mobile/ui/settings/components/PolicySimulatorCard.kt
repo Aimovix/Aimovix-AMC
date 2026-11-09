@@ -133,6 +133,11 @@ object PolicySimulator {
         PhoneTools.OPEN_APP to "name",
         PhoneTools.APPS_LIST to "filter",
         PhoneTools.WAIT_FOR to "text",
+        PhoneTools.NOTIFICATIONS_LIST to "app",
+        PhoneTools.NOTIFICATION_OPEN to "id",
+        PhoneTools.NOTIFICATION_REPLY to "text",
+        PhoneTools.NOTIFICATION_DISMISS to "id",
+        PhoneTools.NOTIFICATION_TRIGGER to "action",
         AgentTools.READ_FILE to "path",
         AgentTools.WRITE_FILE to "path",
         AgentTools.WEB_FETCH to "url",
@@ -157,7 +162,9 @@ private val SAMPLES = listOf(
     Sample("Open WhatsApp", "open_app com.whatsapp"),
     Sample("Open a banking app", "open_app Sparkasse"),
     Sample("Type a password", "screen_type hunter2 password=true @com.example.shop"),
-    Sample("Change a setting", "screen_tap Wi-Fi @com.android.settings")
+    Sample("Change a setting", "screen_tap Wi-Fi @com.android.settings"),
+    Sample("Read notifications", "notifications_list"),
+    Sample("Reply to a message", "notification_reply \"On my way\" id=n1 @com.whatsapp")
 )
 
 /**

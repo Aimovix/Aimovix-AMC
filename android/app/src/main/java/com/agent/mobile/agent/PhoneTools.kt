@@ -23,6 +23,17 @@ object PhoneTools {
     const val WAIT_FOR = "wait_for"
     const val SCREEN_CAPTURE = "screen_capture"
 
+    // Notifications (notification listener)
+    const val NOTIFICATIONS_LIST = "notifications_list"
+    const val NOTIFICATION_OPEN = "notification_open"
+    const val NOTIFICATION_REPLY = "notification_reply"
+    const val NOTIFICATION_DISMISS = "notification_dismiss"
+    const val NOTIFICATION_TRIGGER = "notification_trigger"
+
+    val NOTIFICATION_TOOLS: Set<String> = setOf(
+        NOTIFICATIONS_LIST, NOTIFICATION_OPEN, NOTIFICATION_REPLY, NOTIFICATION_DISMISS, NOTIFICATION_TRIGGER
+    )
+
     /** Tools that drive the screen. They show the "AMC is in control" overlay while they run. */
     val SCREEN_TOOLS: Set<String> = setOf(
         SCREEN_READ, SCREEN_TAP, SCREEN_TYPE, SCREEN_SCROLL, SCREEN_SWIPE, SCREEN_GLOBAL, OPEN_APP, WAIT_FOR, SCREEN_CAPTURE
@@ -35,7 +46,7 @@ object PhoneTools {
     val ALL_NAMES: Set<String> get() = DEFINITIONS.map { it.name }.toSet()
 
     /** Output that shows third-party content (screens, app names) and must be treated as untrusted. */
-    val UNTRUSTED_OUTPUT: Set<String> = SCREEN_TOOLS + APPS_LIST
+    val UNTRUSTED_OUTPUT: Set<String> = SCREEN_TOOLS + APPS_LIST + NOTIFICATIONS_LIST + NOTIFICATION_OPEN
 
     /** Polling and scrolling repeat by nature; the step budget limits them instead of loop protection. */
     val LOOP_EXEMPT: Set<String> = setOf(SCREEN_READ, SCREEN_SCROLL, SCREEN_GLOBAL, WAIT_FOR, SCREEN_CAPTURE)
@@ -127,6 +138,43 @@ object PhoneTools {
                         "(app or chat). Default false: only you see it.", required = false
                 )
             )
+        ),
+        Definition(
+            NOTIFICATIONS_LIST,
+            "List the phone's current notifications (newest first) with short ids like [n3], app, title, text and " +
+                "whether you can reply or open them. One-time codes are hidden.",
+            listOf(Param("app", ParamType.STRING, "Optional app name or package to filter by.", required = false))
+        ),
+        Definition(
+            NOTIFICATION_OPEN,
+            "Open a notification like a tap (it opens the app at that message). Returns the new screen when phone control is on.",
+            listOf(Param("id", ParamType.STRING, "Notification id from notifications_list, e.g. 'n3'."))
+        ),
+        Definition(
+            NOTIFICATION_REPLY,
+            "Reply to a message notification directly (WhatsApp, Telegram, SMS …) without opening the app.",
+            listOf(
+                Param("id", ParamType.STRING, "Notification id from notifications_list."),
+                Param("text", ParamType.STRING, "The reply to send.")
+            )
+        ),
+        Definition(
+            NOTIFICATION_DISMISS,
+            "Dismiss (clear) a notification.",
+            listOf(Param("id", ParamType.STRING, "Notification id from notifications_list."))
+        ),
+        Definition(
+            NOTIFICATION_TRIGGER,
+            "Automate: when a notification from an app arrives, start a background task. action='add' needs app " +
+                "and prompt (and optionally contains); 'list' shows triggers; 'remove' needs id. Only add triggers " +
+                "the user asked for.",
+            listOf(
+                Param("action", ParamType.STRING, "add | list | remove"),
+                Param("app", ParamType.STRING, "App name or package (for add).", required = false),
+                Param("contains", ParamType.STRING, "Only when the title or text contains this (optional).", required = false),
+                Param("prompt", ParamType.STRING, "Complete instruction for the background run (for add).", required = false),
+                Param("id", ParamType.STRING, "Trigger id (for remove).", required = false)
+            )
         )
     )
 
@@ -158,6 +206,17 @@ object PhoneTools {
             APPS_LIST -> "apps_list" + a["filter"]?.takeIf { it.isNotBlank() }?.let { " \"$it\"" }.orEmpty()
             WAIT_FOR -> "wait_for \"${a["text"].orEmpty().take(80)}\"" + if (flag(a["gone"])) " to disappear" else ""
             SCREEN_CAPTURE -> "screen_capture" + if (flag(a["send_to_user"])) " (send to user)" else ""
+            NOTIFICATIONS_LIST -> "notifications_list" + a["app"]?.takeIf { it.isNotBlank() }?.let { " \"$it\"" }.orEmpty()
+            NOTIFICATION_OPEN -> "notification_open ${a["id"].orEmpty()}"
+            NOTIFICATION_REPLY -> "notification_reply ${a["id"].orEmpty()}: \"${a["text"].orEmpty().replace('\n', ' ').take(200)}\""
+            NOTIFICATION_DISMISS -> "notification_dismiss ${a["id"].orEmpty()}"
+            NOTIFICATION_TRIGGER -> when (a["action"].orEmpty().trim().lowercase()) {
+                "add" -> "notification_trigger add: ${a["app"].orEmpty()}" +
+                    a["contains"]?.takeIf { it.isNotBlank() }?.let { " containing \"$it\"" }.orEmpty() +
+                    " → \"${a["prompt"].orEmpty().replace('\n', ' ').take(120)}\""
+                "remove" -> "notification_trigger remove ${a["id"].orEmpty()}"
+                else -> "notification_trigger ${a["action"].orEmpty()}"
+            }
             else -> null
         }
     }

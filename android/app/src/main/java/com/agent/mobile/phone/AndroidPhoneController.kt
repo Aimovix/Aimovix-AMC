@@ -26,7 +26,9 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class AndroidPhoneController(
     private val context: Context,
-    private val prefs: PreferenceManager
+    private val prefs: PreferenceManager,
+    /** Schedules an unattended agent run (used by notification triggers). */
+    private val scheduleTask: (title: String, prompt: String) -> Unit = { _, _ -> }
 ) : PhoneController {
 
     companion object {
@@ -48,6 +50,12 @@ class AndroidPhoneController(
     @Volatile
     private var appsCache: Pair<Long, List<AppEntry>>? = null
 
+    /** Notifications from the last notifications_list, by short id. */
+    @Volatile
+    private var lastNotifications: Map<String, NotificationInfo> = emptyMap()
+
+    private val triggerLock = Any()
+
     private val pm: PackageManager get() = context.packageManager
 
     // -------------------------------------------------------------------------------------------
@@ -59,6 +67,7 @@ class AndroidPhoneController(
         if (!serviceOn) addAll(PhoneTools.SCREEN_TOOLS)
         if (mode == RunMode.REMOTE && !prefs.loadPhoneControlRemote()) addAll(PhoneTools.SCREEN_TOOLS)
         if (mode == RunMode.UNATTENDED && !prefs.loadPhoneControlBackground()) addAll(PhoneTools.SCREEN_TOOLS)
+        if (AmcNotificationListener.instance == null) addAll(PhoneTools.NOTIFICATION_TOOLS)
     }
 
     override fun beginControl(onStop: () -> Unit): AutoCloseable = PhoneControlSession.begin(context, onStop)
@@ -67,10 +76,18 @@ class AndroidPhoneController(
         val blocklist = prefs.loadPhoneBlocklist()
         val svc = PhoneControlService.instance
         val a = call.arguments
-        val (targetPkg, targetLabel) = if (call.name == PhoneTools.OPEN_APP) {
-            val app = resolveApp(a["name"].orEmpty())
-            app?.packageName to app?.label
-        } else null to null
+        val (targetPkg, targetLabel) = when (call.name) {
+            PhoneTools.OPEN_APP -> resolveApp(a["name"].orEmpty()).let { it?.packageName to it?.label }
+            PhoneTools.NOTIFICATION_TRIGGER -> a["app"]?.takeIf { it.isNotBlank() }
+                ?.let { name -> resolveApp(name)?.let { it.packageName to it.label } ?: (null to name) } ?: (null to null)
+            in PhoneTools.NOTIFICATION_TOOLS -> lastNotifications[a["id"].orEmpty().trim().lowercase()]
+                .let { it?.packageName to it?.appLabel }
+            else -> null to null
+        }
+        if (call.name in PhoneTools.NOTIFICATION_TOOLS) {
+            val locked = svc?.isKeyguardLocked() ?: false
+            return PhoneRiskContext(keyguardLocked = locked, blocklist = blocklist, targetPackage = targetPkg, targetLabel = targetLabel, ownPackage = context.packageName)
+        }
         if (svc == null) {
             return PhoneRiskContext(blocklist = blocklist, targetPackage = targetPkg, targetLabel = targetLabel, ownPackage = context.packageName)
         }
@@ -120,6 +137,7 @@ class AndroidPhoneController(
         if (call.name == PhoneTools.APPS_LIST) {
             return PhoneActionResult(AppMatcher.format(installedApps(), a["filter"], prefs.loadPhoneBlocklist()))
         }
+        if (call.name in PhoneTools.NOTIFICATION_TOOLS) return notificationTool(call, grants)
         val svc = PhoneControlService.instance
             ?: return fail("Phone control is off. Ask the user to enable \"AMC Phone Control\" in AMC → Setup (Android accessibility settings).")
 
@@ -286,6 +304,109 @@ class AndroidPhoneController(
                 imageBase64 = shot.base64Jpeg,
                 sendImageToUser = PhoneTools.isTrue(call.arguments["send_to_user"])
             )
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Notifications
+    // -------------------------------------------------------------------------------------------
+
+    private suspend fun notificationTool(call: ToolCall, grants: Set<String>): PhoneActionResult {
+        val a = call.arguments
+        if (call.name == PhoneTools.NOTIFICATION_TRIGGER) return triggerTool(call)
+        val listener = AmcNotificationListener.instance
+            ?: return fail("Notification access is off. Ask the user to allow it in AMC → Setup.")
+        val blocklist = prefs.loadPhoneBlocklist()
+        if (call.name == PhoneTools.NOTIFICATIONS_LIST) {
+            val items = listener.snapshot(::labelOf)
+            lastNotifications = items.associate { it.second.id to it.second }
+            return PhoneActionResult(NotificationFormatter.format(items.map { it.second }, blocklist, appFilter = a["app"]))
+        }
+        val id = a["id"].orEmpty().trim().lowercase()
+        val info = lastNotifications[id] ?: return fail("Unknown notification id '$id'. Call notifications_list first.")
+        blocklist.blockReason(info.packageName, info.appLabel)?.let { return fail("$it. AMC does not touch its notifications.") }
+        val sbn = listener.find(info.key) ?: return fail("That notification is gone. Call notifications_list again.")
+        return when (call.name) {
+            PhoneTools.NOTIFICATION_OPEN -> {
+                if (!listener.open(sbn)) return fail("This notification cannot be opened.")
+                val svc = PhoneControlService.instance ?: return PhoneActionResult("Opened the notification of ${info.appLabel}.")
+                val deadline = SystemClock.uptimeMillis() + 5_000L
+                while (SystemClock.uptimeMillis() < deadline && svc.activePackage() != info.packageName) delay(200)
+                observe(svc, grants, "Opened the notification of ${info.appLabel}.")
+            }
+            PhoneTools.NOTIFICATION_REPLY -> {
+                val text = a["text"].orEmpty()
+                if (listener.reply(sbn, text)) PhoneActionResult("Reply sent via ${info.appLabel} (${text.length} characters).")
+                else fail("This notification has no reply action. Open it and reply in the app instead.")
+            }
+            PhoneTools.NOTIFICATION_DISMISS -> {
+                listener.dismiss(sbn)
+                PhoneActionResult("Dismissed the notification of ${info.appLabel}.")
+            }
+            else -> fail("Unknown notification tool '${call.name}'.")
+        }
+    }
+
+    private fun triggerTool(call: ToolCall): PhoneActionResult {
+        val a = call.arguments
+        synchronized(triggerLock) {
+            val triggers = prefs.loadNotificationTriggers()
+            return when (a["action"].orEmpty().trim().lowercase()) {
+                "list" -> PhoneActionResult(NotificationTriggers.describe(triggers))
+                "remove" -> {
+                    val id = a["id"].orEmpty().trim()
+                    val rest = triggers.filter { it.id != id }
+                    if (rest.size == triggers.size) fail("No trigger with id '$id'.") else {
+                        prefs.saveNotificationTriggers(rest)
+                        PhoneActionResult("Removed trigger $id.")
+                    }
+                }
+                "add" -> {
+                    if (triggers.size >= NotificationTriggers.MAX_TRIGGERS) return fail("At most ${NotificationTriggers.MAX_TRIGGERS} triggers. Remove one first.")
+                    val app = resolveApp(a["app"].orEmpty()) ?: return fail("No installed app matches \"${a["app"]}\".")
+                    prefs.loadPhoneBlocklist().blockReason(app.packageName, app.label)?.let { return fail("$it.") }
+                    val trigger = NotificationTrigger(
+                        packageName = app.packageName,
+                        appLabel = app.label,
+                        contains = a["contains"]?.trim()?.takeIf { it.isNotEmpty() },
+                        prompt = a["prompt"].orEmpty().trim().take(4_000)
+                    )
+                    prefs.saveNotificationTriggers(triggers + trigger)
+                    PhoneActionResult(
+                        "Trigger ${trigger.id} added: notifications from ${app.label}" +
+                            (trigger.contains?.let { " containing \"$it\"" } ?: "") +
+                            " start a background task (at most once a minute). Notification access must stay on."
+                    )
+                }
+                else -> fail("action must be add, list or remove.")
+            }
+        }
+    }
+
+    /** Called by the notification listener for every new notification: fires matching triggers. */
+    fun onNotificationPosted(packageName: String, title: String, text: String) {
+        val toFire = mutableListOf<NotificationTrigger>()
+        synchronized(triggerLock) {
+            val triggers = prefs.loadNotificationTriggers()
+            if (triggers.isEmpty()) return
+            val blocklist = prefs.loadPhoneBlocklist()
+            val now = System.currentTimeMillis()
+            val updated = triggers.map { t ->
+                if (NotificationTriggers.matches(t, packageName, title, text) && NotificationTriggers.shouldFire(t, now) &&
+                    !blocklist.isBlocked(t.packageName, t.appLabel)
+                ) {
+                    toFire += t
+                    t.copy(lastFiredAt = now)
+                } else t
+            }
+            if (toFire.isNotEmpty()) prefs.saveNotificationTriggers(updated)
+        }
+        toFire.forEach { t ->
+            try {
+                scheduleTask("Notification: ${t.appLabel}", NotificationTriggers.runPrompt(t, title, text))
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not start the trigger task: ${e.message}")
+            }
         }
     }
 

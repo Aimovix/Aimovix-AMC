@@ -72,6 +72,7 @@ class PreferenceManager(
         private const val KEY_PHONE_ALLOWED = "key_phone_allowed"
         private const val KEY_PHONE_REMOTE = "key_phone_control_remote"
         private const val KEY_PHONE_BACKGROUND = "key_phone_control_background"
+        private const val KEY_NOTIFICATION_TRIGGERS = "key_notification_triggers"
 
         const val DEFAULT_MAX_STEPS = 30
         const val MIN_MAX_STEPS = 5
@@ -350,6 +351,13 @@ class PreferenceManager(
 
     fun savePhoneControlBackground(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_PHONE_BACKGROUND, enabled).apply()
+    }
+
+    fun loadNotificationTriggers(): List<com.agent.mobile.phone.NotificationTrigger> =
+        com.agent.mobile.phone.NotificationTriggers.parse(prefs.getString(KEY_NOTIFICATION_TRIGGERS, null))
+
+    fun saveNotificationTriggers(triggers: List<com.agent.mobile.phone.NotificationTrigger>) {
+        prefs.edit().putString(KEY_NOTIFICATION_TRIGGERS, com.agent.mobile.phone.NotificationTriggers.serialize(triggers)).apply()
     }
 
     // --- Legal consent ------------------------------------------------------------------------
