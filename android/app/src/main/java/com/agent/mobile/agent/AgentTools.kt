@@ -184,6 +184,17 @@ object AgentTools {
 
     fun isKnown(name: String): Boolean = byName.containsKey(name)
 
+    /**
+     * Tools offered to on-device models (provider LOCAL). Every tool schema costs prompt
+     * prefill on the phone's CPU (all of them together are several thousand tokens per request),
+     * and small models choose more reliably from a short list.
+     */
+    val LOCAL_PROFILE: Set<String> = setOf(
+        EXECUTE_COMMAND, READ_FILE, WRITE_FILE, REMEMBER, NOTIFY_USER, WEB_SEARCH,
+        PhoneTools.SCREEN_READ, PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL,
+        PhoneTools.SCREEN_GLOBAL, PhoneTools.OPEN_APP
+    )
+
     // ---------------------------------------------------------------------------------------
     // Provider schemas
     // ---------------------------------------------------------------------------------------

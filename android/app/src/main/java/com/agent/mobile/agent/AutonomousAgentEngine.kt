@@ -93,6 +93,9 @@ class AutonomousAgentEngine(
             AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH,
             AgentTools.WEB_SEARCH, AgentTools.SEARCH_HISTORY, AgentTools.DELEGATE_TASK
         ) + PhoneTools.UNTRUSTED_OUTPUT
+        /** Start of a screen reading in a tool result ("Screen: App (pkg) · …"). */
+        private val SCREEN_HEADER = Regex("(^|\\n)Screen: ")
+
         private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS) +
             PhoneTools.LOOP_EXEMPT
     }
@@ -589,7 +592,7 @@ class AutonomousAgentEngine(
 
     /** Tools the model may not use in [mode]. */
     private fun excludedFor(mode: RunMode): Set<String> {
-        val p = phone ?: return baseExcludedTools + PhoneTools.ALL_NAMES
+        val p = phone ?: return baseExcludedTools + PhoneTools.ALL_NAMES + localProfileExcluded()
         val phoneExcluded = try {
             p.excludedTools(mode)
         } catch (e: Exception) {
@@ -601,8 +604,14 @@ class AutonomousAgentEngine(
         // Screenshots only for models that can look at images.
         val visionExcluded = if (com.agent.mobile.phone.ScreenshotSupport.likelySupportsVision(_modelConfig.value)) emptySet()
         else setOf(PhoneTools.SCREEN_CAPTURE)
-        return baseExcludedTools + phoneExcluded + subAgentExcluded + visionExcluded
+        return baseExcludedTools + phoneExcluded + subAgentExcluded + visionExcluded + localProfileExcluded()
     }
+
+    /** On-device models get the compact tool profile (prefill cost, reliability of small models). */
+    private fun localProfileExcluded(): Set<String> =
+        if (_modelConfig.value.provider == ProviderType.LOCAL) {
+            AgentTools.ALL.map { it.name }.filter { it !in AgentTools.LOCAL_PROFILE }.toSet()
+        } else emptySet()
 
     /** Stop button of the phone control overlay or notification. */
     private fun onPhoneControlStop() {
@@ -1584,11 +1593,41 @@ class AutonomousAgentEngine(
             }
         }
 
+        maskSupersededScreens(window)
+
         // Keep images only on the most recent messages.
         val imageIndices = window.indices.filter { window[it].imageBase64 != null }
         val stripImages = imageIndices.dropLast(MAX_IMAGES_IN_CONTEXT).toSet()
         return window.mapIndexed { i, m ->
             if (i in stripImages) m.copy(imageBase64 = null, imageMimeType = null, text = (m.text + "\n[earlier image omitted]").trim()) else m
+        }
+    }
+
+    /**
+     * Screen readings are large and only the latest one matters: every full reading before the
+     * newest full one (and the deltas based on those) is cut to its headline. The newest full
+     * reading and the deltas after it stay, so the prompt prefix up to it stays stable for
+     * prompt caching until the next full reading arrives.
+     */
+    internal fun maskSupersededScreens(window: MutableList<ChatMessage>) {
+        fun isScreen(m: ChatMessage) = m.role == MessageRole.TOOL && m.toolResult?.toolName in PhoneTools.SCREEN_TOOLS
+        fun isFull(m: ChatMessage) = isScreen(m) && SCREEN_HEADER.containsMatchIn(m.text) && !m.text.contains("Δ since your last reading")
+        val lastFull = window.indexOfLast { isFull(it) }
+        if (lastFull <= 0) return
+        for (i in 0 until lastFull) {
+            val m = window[i]
+            if (!isScreen(m)) continue
+            val untrusted = m.text.startsWith("[UNTRUSTED_OUTPUT_START]")
+            val body = m.text.removePrefix("[UNTRUSTED_OUTPUT_START]").removeSuffix("[UNTRUSTED_OUTPUT_END]").trim()
+            val match = SCREEN_HEADER.find(body) ?: continue
+            val headline = body.substring(0, match.range.first).trim()
+            val core = listOf(headline, "[Earlier screen reading omitted; a newer one follows.]").filter { it.isNotEmpty() }.joinToString("\n")
+            val masked = if (untrusted) "[UNTRUSTED_OUTPUT_START]\n$core\n[UNTRUSTED_OUTPUT_END]" else core
+            val result = m.toolResult
+            window[i] = m.copy(
+                text = masked,
+                toolResult = result?.copy(stdout = if (result.stdout.isEmpty()) "" else masked)
+            )
         }
     }
 
