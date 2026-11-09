@@ -1,6 +1,6 @@
 # AMC — AI Mobile Center by Aimovix
 
-AMC is a native Android app that connects an AI assistant to a local Termux environment. Ask it to inspect the device, work with files, run scripts, or use supported Termux:API features. The interface, built-in prompts, logs, examples, and documentation are in English.
+AMC is a native Android app that connects an AI assistant to a local Termux environment. Ask it to inspect the device, work with files, run scripts, or use supported Termux:API features. With **Phone control** it can also operate apps on the screen, look at screenshots and answer notifications, visibly and stoppable. The interface, built-in prompts, logs, examples, and documentation are in English.
 
 **Status: experimental.** AMC can execute commands with Termux's permissions. Its command filter reduces accidental execution; it is not a sandbox or a guarantee against prompt injection. Review commands before granting access to private data or device features.
 
@@ -38,7 +38,7 @@ bash setup-amc.sh
 The installer downloads from `main` by default. To pin a specific release tag or branch:
 
 ```bash
-AMC_REF=v1.6.0 bash setup-amc.sh
+AMC_REF=v1.7.0 bash setup-amc.sh
 ```
 
 To test a development branch with local files, clone that branch and run its local installer:
@@ -75,7 +75,7 @@ Model suggestions are editable examples, not a live availability catalog. Check 
 AMC works like a self-hosted personal agent in the spirit of OpenClaw or OpenCrabs, but entirely on your phone: give it a goal and it plans, acts, checks the results and keeps going until the task is done. You can reach it in the app or, through the optional Telegram channel, from anywhere.
 
 - **Agent loop:** the model calls tools, reads the results, recovers from errors (installing missing packages, trying a different approach) and finishes with a summary. The step budget is configurable (**Settings → Autonomy**, 5–100 steps, default 30). After repeated failures the agent is told to rethink its approach; real loops are stopped.
-- **Tools:** `execute_command` (Termux shell and Termux:API, optional timeout up to 30 minutes), `read_file`, `write_file`, `web_search` (DuckDuckGo, no API key), `web_fetch` (native HTTP, HTML converted to text), `remember` / `forget` (long-term memory), `search_history` (earlier conversations), `delegate_task` (sub-agents), `send_file` (deliver files to you), `update_plan` (live checklist in the chat), `notify_user` (Android notification), and `schedule_task` / `list_scheduled_tasks` / `cancel_scheduled_task`.
+- **Tools:** `execute_command` (Termux shell and Termux:API, optional timeout up to 30 minutes), `read_file`, `write_file`, `web_search` (DuckDuckGo, no API key), `web_fetch` (native HTTP, HTML converted to text), `remember` / `forget` (long-term memory), `search_history` (earlier conversations), `delegate_task` (sub-agents), `send_file` (deliver files to you), `update_plan` (live checklist in the chat), `notify_user` (Android notification), and `schedule_task` / `list_scheduled_tasks` / `cancel_scheduled_task`. With phone control also the screen, notification and system tools described in [Phone control](#phone-control).
 - **Sub-agents:** for research or long multi-file work the agent hands a self-contained sub-task to a sub-agent with a fresh context and gets back its report. The sub-agent's steps appear in the tool card, its approvals are forwarded to you, and it cannot delegate further.
 - **Persona (SOUL.md):** in **Settings → Autonomy → Persona & standing instructions** you describe who the agent should be and how it should work for you (name, tone, language, defaults, things to always or never do). It applies everywhere and never overrides the security and legal rules.
 - **Long-term memory:** the agent saves stable facts about you (name, preferences, devices, recurring tasks) and sees them in every new conversation. View, edit or clear it in **Settings → Autonomy**. Secrets are never meant to be stored there.
@@ -84,6 +84,32 @@ AMC works like a self-hosted personal agent in the spirit of OpenClaw or OpenCra
 - **Skills:** reusable how-to files in `~/.amc/skills/` (created by the installer), either `<name>.md` or `<name>/SKILL.md` with `name:` and `description:` front matter (the Agent Skills format used by OpenClaw). Every run starts with a list of the installed skills and their descriptions; the agent reads a matching skill before following it and writes new ones after solving something it is likely to need again. Treat downloaded skills like scripts: read them before use.
 - **Steering:** you can keep typing while the agent works; the message is queued and picked up before its next step.
 - **Your language:** the agent answers in the language you write in, and voice input uses your device language.
+
+## Phone control
+
+Phone control lets the agent use apps the way you do. It is off until you switch it on in **AMC → Setup → Phone control**; each step has one button that opens the right system page.
+
+1. **Android 13 and later:** AMC comes from GitHub, not from an app store, so Android blocks accessibility and notification access until you allow it. Open **App info → ⋮ (top right) → Allow restricted settings** (the checklist opens App info for you).
+2. **Turn on AMC Phone Control** (accessibility service). AMC first shows what the service reads and does; then switch it on in Android's accessibility settings.
+3. **Allow notification access.**
+4. Optional: **usage access** (screen time) and **Shizuku** (ADB rights without root).
+
+What the agent can then do:
+
+- **Screen:** `screen_read` (the app in front as a compact element list with ids; password fields never show their content), `screen_tap` (by id or text, coordinates as fallback, long press), `screen_type` (optionally with Enter), `screen_scroll`, `screen_swipe`, `screen_global` (Back, Home, Recents, notifications, quick settings), `open_app`, `apps_list` and `wait_for`. Every action returns the new screen so the agent can verify it.
+- **Screenshots:** `screen_capture` for vision models (Android 11+ through the accessibility service, Android 8–10 through screen capture with Android's consent). Protected windows give no image. Offered only when the model accepts images.
+- **Notifications:** `notifications_list`, `notification_open`, `notification_reply`, `notification_dismiss`, and `notification_trigger` ("when a notification from app X arrives, run task Y" in the background). One-time codes are hidden.
+- **System features:** `set_alarm` (alarm or timer), `calendar_add` (prefilled event you save), `share_text`, `open_url`, `open_settings`, `clipboard` and `usage_stats`.
+- **Shizuku (optional):** `privileged_shell` with `input`, `pm`, `settings`, `dumpsys`, `screencap` or `am`, as plain arguments, always high risk.
+
+Safety rules that no security mode changes:
+
+- While the agent operates the phone, an **"AMC is in control"** banner with a **Stop** button and an ongoing notification with **Stop** are visible. Stop ends the task at once.
+- **Always asks:** sending messages (also by tapping "Send" in WhatsApp and similar apps), payments and purchases, installing or uninstalling apps, deleting data, logins and accounts, calls, the camera, and changes in system settings. Reading messaging or contacts apps asks once per app and task.
+- **Blocked by default:** banking and payment apps, password managers, authenticator apps, Google Play payment dialogs and security settings pages (plus apps with such names). Edit the list in **Settings → Phone control**; released apps are your responsibility.
+- **Never:** unlocking or bypassing the lock screen, operating AMC itself, or typing into terminal apps.
+- **Telegram and background tasks:** screen control is off by default (switches in **Settings → Phone control**). In Telegram every screen action then asks with a button, and screenshots are only sent to the chat when you ask.
+- Every action is in the audit log; typed passwords are never stored.
 
 ## Remote control via Telegram
 
@@ -104,7 +130,7 @@ Then just write to your bot, for example *"How full is my storage?"* or *"Take a
 
 - **Chat:** submit a task, attach an image, or tap a quick action or example: it fills the input, so you can change it before you send. Press and hold a message to copy it or send it again. Press and hold a tool's line to copy its command.
 - **Chats drawer:** swipe a chat to the left to delete it. Undo is available for a few seconds.
-- **Try a command:** in **Settings**, type a command or tap an example to see how each security mode would treat it. Nothing runs there.
+- **Try a command:** in **Settings**, type a command or tap an example to see how each security mode would treat it. Phone actions use tool syntax, for example `screen_tap Send @com.whatsapp` or `open_app Sparkasse`. Nothing runs there.
 - **Security presets:** choose between **Autonomous** (default; routine work runs on its own, while SMS, calls, camera, location, clipboard, deleting files and killing processes still ask first), **Supervised** (every action needs approval), **Full machine** (manual review for commands, full device file access), **Turbo mode** (no approval prompts at all; only catastrophic commands stay blocked), and **Custom** (granular control with strict mode, custom allowlists, and blocklists). Background runs can never approve themselves: actions that need approval are skipped and listed in the result notification.
 - **Strict mode:** available in Custom preset; requires approval for every agent command, even operations covered by a custom allowlist.
 - **Emergency stop:** requests cancellation through the active bridge connection. The bridge handles controls while commands run and terminates the command's process group. The UI reports a request rather than claiming immediate completion.
@@ -162,7 +188,7 @@ amc run         # Run in the foreground
 
 On first launch AMC shows its terms of use, disclaimer and privacy notice (English and German); the app can only be used after all three confirmations are ticked, and the texts can be reread in **Settings → Legal & privacy**. Raising `LegalTexts.VERSION` asks every user to accept a changed version.
 
-- Actions that involve other people or cost money (sending SMS, phone calls, reading messages, contacts or call logs, camera photos, microphone recordings) **always** require your confirmation, in every security mode including Turbo and Custom allowlists (in the app, or with buttons in your paired Telegram chat), and are never performed in unattended background runs.
+- Actions that involve other people or cost money (sending SMS or messages in any app, phone calls, reading messages, contacts or call logs, camera photos, microphone recordings, payments) **always** require your confirmation, in every security mode including Turbo and Custom allowlists (in the app, or with buttons in your paired Telegram chat), and are never performed in unattended background runs.
 - The agent's system prompt refuses clearly illegal tasks (spam, harassment, covert surveillance, unauthorized access, piracy) and treats other people's data as personal data.
 - Documents: [terms](docs/legal/TERMS.md) ([German](docs/legal/TERMS.de.md)), [privacy notice](docs/legal/PRIVACY.md) ([German](docs/legal/PRIVACY.de.md)), [third-party notices](docs/legal/THIRD_PARTY_NOTICES.md), and a note on when a German imprint is required.
 - AMC is a private, non-commercial open-source hobby project with no income. It is not affiliated with or endorsed by any AI provider or by Termux. Contact: GitHub issues.
@@ -181,6 +207,7 @@ On first launch AMC shows its terms of use, disclaimer and privacy notice (Engli
 - Android backup is disabled for the app.
 - External provider connections use HTTPS; cleartext connections are limited by the Android network configuration to approved local endpoints.
 - Untrusted tool output (shell, files, web pages, search results, sub-agent reports) is marked for the model. These markers and prompt instructions are precautions, not an isolation mechanism.
+- Phone control: every screen, notification, intent and Shizuku action goes through `PhoneToolPolicy` (the same approval rules as shell commands, shown in the policy simulator). Blocked apps, AMC itself, terminal apps, security settings and the lock screen are never operated, and the screen after an action is only returned when the run may read that app.
 - The Telegram channel only serves Telegram accounts paired with a one-time code, only in private chats. The bot token and paired accounts are stored in encrypted preferences. Approvals from Telegram are bound to the chat they were sent to and ignored from other accounts.
 
 Once a command is approved, it runs with Termux's permissions. Programs may start detached jobs or change their own process groups. Review arbitrary scripts carefully; process cancellation cannot undo an SMS, file change, network request, or other completed effect. See [SECURITY.md](SECURITY.md) for signing and credential recovery.
@@ -227,6 +254,8 @@ android/app/src/main/
   java/com/agent/mobile/
     agent/                     Agent loop, tools, prompts, memory, persona, skills index
     channel/                   Telegram channel gateway, foreground service, boot receiver
+    phone/                     Phone control: accessibility service, screen tree, risk policy,
+                               block list, notifications, screenshots, intents, Shizuku
     data/                      Models, networking, repositories, storage
     security/                  Command assessment and approval policy
     service/                   Foreground service and WorkManager

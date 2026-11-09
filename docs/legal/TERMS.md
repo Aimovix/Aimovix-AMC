@@ -1,10 +1,10 @@
 # AMC terms of use and disclaimer
 
-_Version 2. Shown in the app on first launch (Settings → Legal & privacy). Not legal advice._
+_Version 3. Shown in the app on first launch (Settings → Legal & privacy). Not legal advice._
 
 ## 1. What AMC is
 
-AMC is a private, non-commercial open-source hobby project (no company, no income). It is experimental software that lets an AI model operate your phone through Termux: it can run commands, read and write files, open websites, send notifications and schedule its own background tasks. AI models make mistakes. The agent can misunderstand you, act on wrong assumptions or be manipulated by content it reads (prompt injection). Do not use AMC for medical, legal, financial or safety-critical decisions, and never as a replacement for emergency services.
+AMC is a private, non-commercial open-source hobby project (no company, no income). It is experimental software that lets an AI model operate your phone through Termux: it can run commands, read and write files, open websites, send notifications and schedule its own background tasks. If you turn on Phone control, it can also read the screen and operate apps, and read, open and answer notifications (see section 7). AI models make mistakes. The agent can misunderstand you, act on wrong assumptions or be manipulated by content it reads (prompt injection). Do not use AMC for medical, legal, financial or safety-critical decisions, and never as a replacement for emergency services.
 
 ## 2. Your responsibility
 
@@ -24,8 +24,12 @@ AMC is provided free of charge "as is", without any warranty that it is error-fr
 
 ## 6. Privacy notice (summary)
 
-The developers do not collect any data: AMC has no servers of its own and contains no analytics, advertising or tracking. Chats, the audit log and the agent's memory are stored only on your device; API keys are encrypted with the Android Keystore; app backups are disabled. When you use a cloud AI provider, your messages, attached images, the agent's memory and the output of the tools it runs (which can include file contents, messages, contacts or location if the agent reads them) are sent to that provider and processed under its privacy policy, possibly outside the EU. Websites the agent opens receive normal web requests from your phone; web searches send the query to DuckDuckGo. If you enable the Telegram channel, your messages to the agent, its replies, approval requests and files it sends you pass through Telegram's servers under Telegram's privacy policy. Use a local model to keep everything on your device. You can delete chats and memory in the app at any time; uninstalling AMC removes all of its local data. The full privacy notice is in docs/legal/PRIVACY.md of the project.
+The developers do not collect any data: AMC has no servers of its own and contains no analytics, advertising or tracking. Chats, the audit log and the agent's memory are stored only on your device; API keys are encrypted with the Android Keystore; app backups are disabled. When you use a cloud AI provider, your messages, attached images, the agent's memory and the output of the tools it runs (which can include file contents, messages, contacts or location if the agent reads them, and, with Phone control, the text of the screen, screenshots and notifications) are sent to that provider and processed under its privacy policy, possibly outside the EU. Websites the agent opens receive normal web requests from your phone; web searches send the query to DuckDuckGo. If you enable the Telegram channel, your messages to the agent, its replies, approval requests and files it sends you pass through Telegram's servers under Telegram's privacy policy. Use a local model to keep everything on your device. You can delete chats and memory in the app at any time; uninstalling AMC removes all of its local data. The full privacy notice is in docs/legal/PRIVACY.md of the project.
 
-## 7. Changes
+## 7. Phone control (screen and notifications)
+
+Phone control is off until you switch it on in Setup. The accessibility service "AMC Phone Control" lets the agent read the text and buttons of the app in front (never the content of password fields) and tap, type, scroll and swipe; on request it takes screenshots. Notification access lets it read, open, answer and dismiss notifications and start tasks you set up when certain notifications arrive. It only acts on tasks you give it, while an "AMC is in control" banner with a Stop button is visible. Sending messages (also in apps such as WhatsApp), payments and purchases, installing or removing apps, deleting data, logins, calls, photos and changes to system settings always need your confirmation, in every mode. Banking, payment, password manager and authenticator apps and security settings are blocked by default; you can release single apps in Settings, at your own risk. AMC never unlocks or bypasses the lock screen. In Telegram conversations and background tasks screen control is off unless you switch it on. Screen content, screenshots and notifications can contain other people's messages and personal data. They are processed like other tool output (see section 6). Only let the agent read them for your own purposes; the rules of section 3 apply. You can switch Phone control off at any time in Android's accessibility and notification settings.
+
+## 8. Changes
 
 If these terms change materially, AMC asks you to accept the new version before you continue.

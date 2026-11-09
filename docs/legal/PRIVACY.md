@@ -1,6 +1,6 @@
 # AMC privacy notice
 
-_Version 2. This document is not legal advice._
+_Version 3. This document is not legal advice._
 
 ## 1. Who is responsible
 
@@ -19,24 +19,28 @@ The developers do not receive any of your data: AMC has no servers of its own. F
 | Skill files (`~/.amc/skills`) | Reusable instructions | Termux home directory | Delete the files in Termux |
 | Persona (`SOUL.md`) | Your standing instructions for the agent | Private app storage | Settings → Autonomy → Persona (empty and save), or uninstall |
 | Telegram bot token, paired accounts, chat-to-session mapping | Optional Telegram channel | Encrypted preferences | Settings → Channels (remove accounts, switch off), or uninstall |
+| Phone control settings: blocked and released apps, notification triggers, Telegram/background switches | Optional phone control | Encrypted preferences | Settings → Phone control, or uninstall |
+
+Phone control does not store screen contents, screenshots or notifications by itself. They become part of the chat (and, shortened, of the audit log) only when a tool returns them to the agent. Password fields are never read, and typed passwords are not stored in the chat or audit log. One-time codes in notifications are hidden before the agent sees them.
 
 Android app backups are disabled for AMC (`allowBackup=false`). AMC contains no analytics, crash reporting, advertising or tracking SDKs.
 
 ## 3. Data sent to third parties
 
-- **AI provider you configure** (e.g. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter): your messages, attached images, the agent's memory, the system prompt and the output of tools the agent runs. Tool output can contain file contents and, if the agent reads them with your confirmation, messages, contacts, call logs, photos or your location. Processing is governed by the provider's terms and privacy policy and may take place outside the EU/EEA. Using a **local model** keeps this data on your device.
+- **AI provider you configure** (e.g. Google Gemini, OpenAI, Anthropic, Groq, OpenRouter): your messages, attached images, the agent's memory, the system prompt and the output of tools the agent runs. Tool output can contain file contents and, if the agent reads them with your confirmation, messages, contacts, call logs, photos or your location. With **Phone control** it can also contain the text of the screen, screenshots and notifications. Processing is governed by the provider's terms and privacy policy and may take place outside the EU/EEA. Using a **local model** keeps this data on your device.
 - **Websites** the agent opens with `web_fetch` or `curl` receive ordinary requests from your phone, including your IP address.
 - **DuckDuckGo** receives the search terms of the `web_search` tool and your IP address.
+- **Apps you let the agent operate** receive taps and typed text as if you entered them. Replies sent through notifications go to the app that showed the notification.
 - **Telegram** (only if you enable the Telegram channel): messages you send to your bot, the agent's replies, approval requests and files the agent sends you are transmitted through Telegram's servers and processed under Telegram's privacy policy, possibly outside the EU/EEA. Only Telegram accounts you pair with a one-time code can talk to the agent.
 - **Termux bridge**: runs only on your phone (`127.0.0.1`) and requires a token. No data leaves the device through it.
 
 ## 4. Other people's data
 
-Messages, contacts, call logs, photos and recordings contain personal data of other people. AMC always asks for your confirmation before reading or creating such data, in every security mode (in the app, or through buttons in your paired Telegram chat), and never does so in unattended background runs. You are responsible for having a legal basis (for example their consent) when you process it beyond purely personal or household purposes.
+Messages, contacts, call logs, photos and recordings contain personal data of other people; so can the screen of a messaging app and your notifications. AMC always asks for your confirmation before reading or creating such data (for messaging and contacts apps once per app and task, for sending every time), in every security mode (in the app, or through buttons in your paired Telegram chat), and never does so in unattended background runs. You are responsible for having a legal basis (for example their consent) when you process it beyond purely personal or household purposes.
 
 ## 5. Permissions
 
-Internet (AI provider, websites), notifications (results and approval requests), microphone (only for voice input, when you start it), foreground service and wake lock (keep the agent running while it works, and keep the optional Telegram channel connected), start after boot (restart the Telegram channel if you enabled it), battery optimization request (reliable background operation). Termux and Termux:API hold their own Android permissions, which you grant separately.
+Internet (AI provider, websites), notifications (results and approval requests), microphone (only for voice input, when you start it), foreground service and wake lock (keep the agent running while it works, and keep the optional Telegram channel connected), start after boot (restart the Telegram channel if you enabled it), battery optimization request (reliable background operation). Optional, only when you enable them: accessibility service "AMC Phone Control" (read the screen and operate apps, screenshots on Android 11+), notification access (read, open, answer and dismiss notifications), usage access (screen time), screen capture on Android 8–10 (Android asks each time), Shizuku (ADB-level commands). Always declared: seeing installed apps (to open apps by name) and setting alarms. Termux and Termux:API hold their own Android permissions, which you grant separately.
 
 ## 6. Your rights
 
