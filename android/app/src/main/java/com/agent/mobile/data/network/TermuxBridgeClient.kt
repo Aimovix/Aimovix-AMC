@@ -51,7 +51,7 @@ class TermuxBridgeClient(
         const val WRITE_CHUNK_CHARS = 256 * 1024
         const val MAX_WRITE_BYTES = 64L * 1024 * 1024
         const val WRITE_APPEND_CAPABILITY = "write_append"
-        val LLM_ACTIONS = setOf("llm_status", "llm_install", "llm_start", "llm_stop")
+        val LLM_ACTIONS = setOf("llm_status", "llm_install", "llm_start", "llm_stop", "llm_cancel", "llm_delete")
 
         /** Splits [content] into transfer chunks without cutting a surrogate pair. */
         fun chunkForTransfer(content: String, chunkChars: Int = WRITE_CHUNK_CHARS): List<String> {

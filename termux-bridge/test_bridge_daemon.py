@@ -185,6 +185,17 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bridge.parse_llm_status("noise\nstatus.running=1\nstatus.port=8080\n"),
                          {"running": "1", "port": "8080"})
 
+    async def test_llm_cancel_delete_and_size_are_accepted(self):
+        self.assertEqual(bridge.llm_command_args("llm_cancel", {})[2], "cancel")
+        args = bridge.llm_command_args("llm_delete", {"model": "m.gguf"})
+        self.assertEqual(args[2:], ["delete", "--model", "m.gguf"])
+        args = bridge.llm_command_args("llm_install", {"model": "m.gguf", "url": "https://h.example/m.gguf", "size": 2740000000})
+        self.assertIn("--size", args)
+        with self.assertRaises(ValueError):
+            bridge.llm_command_args("llm_install", {"model": "m.gguf", "size": "12; rm"})
+        with self.assertRaises(ValueError):
+            bridge.llm_command_args("llm__download", {"model": "m.gguf"})
+
     async def test_connection_state_and_interrupts_are_isolated(self):
         first, second = await self.connect(), await self.connect()
         directory = Path(TEST_HOME.name) / "subdir"
