@@ -238,6 +238,42 @@ class HeadlessAgentRunTest {
     }
 
     @Test
+    fun aReplyWithOpenPlanStepsIsNudgedAndBlockedIsNoSuccess() = runBlocking {
+        toolCall("call_p", "update_plan", JSONObject().put("plan", "- [x] read config\n- [ ] upload backup"))
+        reply("Config read.")                                  // would have ended the run before
+        reply("BLOCKED: the upload server refuses the login.")  // after the nudge
+
+        val e = engine()
+        val result = e.runHeadless(title = "t", prompt = "back up my config", mode = RunMode.UNATTENDED)
+
+        assertEquals("BLOCKED: the upload server refuses the login.", result.summary)
+        assertFalse("A blocked task is not reported as success", result.success)
+        val bodies = requestBodies()
+        assertEquals(3, bodies.size)
+        assertTrue(bodies[2].toString().contains("upload backup"))
+    }
+
+    @Test
+    fun longRunsGetAPinnedProgressSummary() = runBlocking {
+        // 15 steps = 30 messages after the task: the next step first summarizes the older ones.
+        for (i in 1..15) toolCall("call_$i", "update_plan", JSONObject().put("plan", "- [x] step $i"))
+        reply("Steps 1-6 done; the config lives in ~/app/config.yml.")   // the summary call
+        reply("All done.")
+
+        val e = engine()
+        val result = e.runHeadless(title = "t", prompt = "a long task", mode = RunMode.UNATTENDED)
+
+        assertEquals("All done.", result.summary)
+        val bodies = requestBodies()
+        assertEquals(17, bodies.size)
+        assertTrue("The summary call has its own instructions", systemPrompt(bodies[15]).contains("working memory of an autonomous agent"))
+        assertTrue(bodies[15].toString().contains("a long task"))
+        val note = e.messages.value.single { it.text.startsWith(AutonomousAgentEngine.SUMMARY_PREFIX) }
+        assertTrue(note.text.contains("~/app/config.yml"))
+        assertTrue("The next step sees the summary", bodies[16].toString().contains("config.yml"))
+    }
+
+    @Test
     fun afterTheErrorWarningADifferentApproachStillRuns() = runBlocking {
         // Five failures in a row (unknown tools), then the loop warning for the next call ...
         for (i in 1..5) toolCall("call_e$i", "no_such_tool_$i", JSONObject())

@@ -396,4 +396,51 @@ class AutonomousAgentEngineTest {
         assertEquals("Queued input is not shown before the agent picks it up", 1, busyEngine.messages.value.count { it.role == MessageRole.USER })
         busyEngine.close()
     }
+
+    @Test
+    fun testFinishNudgeOnlyWhenTheReplyDoesNotLookLikeAnEnd() {
+        val open = listOf(
+            com.agent.mobile.data.model.PlanStep("download", PlanStepStatus.DONE),
+            com.agent.mobile.data.model.PlanStep("verify checksums", PlanStepStatus.PENDING)
+        )
+        val done = open.map { it.copy(status = PlanStepStatus.DONE) }
+        // Announcement without a tool call.
+        assertNotNull(engine.finishNudge("Downloaded.\n\nLet me now verify the checksums.", done, RunMode.INTERACTIVE, 0))
+        assertNotNull(engine.finishNudge("Ich werde jetzt die Datei prüfen", emptyList(), RunMode.UNATTENDED, 0))
+        // Open plan steps.
+        val nudge = engine.finishNudge("Downloaded the photos.", open, RunMode.UNATTENDED, 0)
+        assertTrue(nudge!!.contains("verify checksums"))
+        // A question in a background run.
+        assertNotNull(engine.finishNudge("Which folder should I use?", emptyList(), RunMode.UNATTENDED, 0))
+        // Legitimate ends.
+        assertNull(engine.finishNudge("All photos are backed up and verified.", done, RunMode.UNATTENDED, 0))
+        assertNull(engine.finishNudge("Which folder should I use?", open, RunMode.INTERACTIVE, 0))
+        assertNull(engine.finishNudge("BLOCKED: the SD card is not mounted.", open, RunMode.UNATTENDED, 0))
+        assertNull("At most two nudges per run", engine.finishNudge("Let me check.", open, RunMode.UNATTENDED, 2))
+        assertNull("Sub-agents report back as they are", engine.finishNudge("Let me check.", open, RunMode.SUBAGENT, 0))
+    }
+
+    @Test
+    fun testTheLatestSummaryIsPinnedBehindTheTask() {
+        val task = ChatMessage(role = MessageRole.USER, text = "Migrate the database")
+        val old = ChatMessage(role = MessageRole.USER, text = AutonomousAgentEngine.SUMMARY_PREFIX + " (…):\nfirst summary")
+        val latest = ChatMessage(role = MessageRole.USER, text = AutonomousAgentEngine.SUMMARY_PREFIX + " (…):\nschema v2 applied")
+        val msgs = listOf(task) + (1..10).flatMap { step(it) } + old + (11..25).flatMap { step(it) } + latest + (26..50).flatMap { step(it) }
+        val window = engine.prepareContextMessages(msgs)
+        assertEquals(task.text, window[0].text)
+        assertEquals(latest.text, window[1].text)
+        assertFalse(window.any { it.text == old.text })
+        assertTrue(window.size <= 40)
+        assertTrue(window.any { it.toolResult?.toolCallId == "c50" })
+        assertEquals("Pairs stay valid after the pinned notes", MessageRole.ASSISTANT, window[2].role)
+    }
+
+    @Test
+    fun testSummaryRequestContainsTaskPreviousSummaryAndSteps() {
+        val req = engine.buildSummaryRequest("Back up photos", "copied 10 files", step(1) + step(2))
+        assertTrue(req.contains("TASK:\nBack up photos"))
+        assertTrue(req.contains("SUMMARY SO FAR:\ncopied 10 files"))
+        assertTrue(req.contains("call: echo 1"))
+        assertTrue(req.contains("result: 2"))
+    }
 }

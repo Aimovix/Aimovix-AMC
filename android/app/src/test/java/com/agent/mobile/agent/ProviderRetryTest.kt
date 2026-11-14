@@ -125,7 +125,7 @@ class ProviderRetryTest {
                     "delta", JSONObject().put(
                         "tool_calls", JSONArray().put(
                             JSONObject().put("index", 0).put("id", "c1").put(
-                                "function", JSONObject().put("name", "update_plan").put("arguments", JSONObject().put("plan", "- [ ] a").toString())
+                                "function", JSONObject().put("name", "update_plan").put("arguments", JSONObject().put("plan", "- [x] a").toString())
                             )
                         )
                     )
