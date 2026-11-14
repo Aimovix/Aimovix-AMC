@@ -32,11 +32,14 @@ class PolicySimulatorTest {
     }
 
     @Test
-    fun deletingAFileRunsOnlyInTurbo() {
+    fun deletingASingleHomeFileRunsInAutonomousButARecursiveDeleteAsks() {
         val v = verdicts("rm ~/old-notes.txt")
-        assertEquals(PolicyVerdict.ASKS, v[SecurityPreset.AUTONOMOUS])
+        assertEquals(PolicyVerdict.RUNS, v[SecurityPreset.AUTONOMOUS])
         assertEquals(PolicyVerdict.ASKS, v[SecurityPreset.DEFAULT])
         assertEquals(PolicyVerdict.RUNS, v[SecurityPreset.TURBO])
+        val r = verdicts("rm -r ~/old-project")
+        assertEquals(PolicyVerdict.ASKS, r[SecurityPreset.AUTONOMOUS])
+        assertEquals(PolicyVerdict.ASKS, verdicts("rm ~/storage/shared/DCIM/a.jpg")[SecurityPreset.AUTONOMOUS])
     }
 
     @Test
