@@ -23,6 +23,32 @@ jobs:
       - name: Multi-tier E2E and adversarial test suite
         run: python tests/e2e/runner.py --all
 
+  model-catalog:
+    name: Local model catalog (Hugging Face check)
+    runs-on: ubuntu-latest
+    # Fills missing SHA-256 checksums from the Hub on feature branches and commits them back.
+    # On main and in pull requests it only checks (any mismatch fails the run).
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fill missing checksums (feature branches)
+        if: github.event_name == 'push' && github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master'
+        run: |
+          python scripts/verify_model_catalog.py --write
+          if ! git diff --quiet -- android/app/src/main/assets/model_catalog.json termux-bridge/model_catalog.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add android/app/src/main/assets/model_catalog.json termux-bridge/model_catalog.json
+            git commit -m "chore(catalog): fill model checksums from Hugging Face"
+            git push
+          fi
+      - name: Check the catalog against the Hub
+        run: python scripts/verify_model_catalog.py
+
   test-and-build:
     name: Android unit tests and debug APK
     runs-on: ubuntu-latest
