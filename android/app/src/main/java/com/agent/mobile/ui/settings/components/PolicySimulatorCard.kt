@@ -146,6 +146,7 @@ object PolicySimulator {
         PhoneTools.PRIVILEGED_SHELL to "command",
         AgentTools.READ_FILE to "path",
         AgentTools.WRITE_FILE to "path",
+        AgentTools.EDIT_FILE to "path",
         AgentTools.WEB_FETCH to "url",
         AgentTools.WEB_SEARCH to "query",
         AgentTools.SEND_FILE to "path"

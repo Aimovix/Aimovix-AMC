@@ -20,6 +20,7 @@ object AgentTools {
     const val EXECUTE_COMMAND = "execute_command"
     const val READ_FILE = "read_file"
     const val WRITE_FILE = "write_file"
+    const val EDIT_FILE = "edit_file"
     const val WEB_FETCH = "web_fetch"
     const val REMEMBER = "remember"
     const val FORGET = "forget"
@@ -69,8 +70,13 @@ object AgentTools {
         ),
         Definition(
             READ_FILE,
-            "Read a UTF-8 text file from the Termux home directory or shared storage (max 5 MiB).",
-            listOf(Param("path", ParamType.STRING, "Absolute path or path relative to the Termux home directory."))
+            "Read a UTF-8 text file from the Termux home directory or shared storage (max 5 MiB). Long files come " +
+                "in windows of about ${TextWindow.WINDOW_CHARS} characters with a header that names the next offset.",
+            listOf(
+                Param("path", ParamType.STRING, "Absolute path or path relative to the Termux home directory."),
+                Param("offset", ParamType.INTEGER, "First line to read (1-based, default 1).", required = false),
+                Param("limit", ParamType.INTEGER, "Number of lines to read (default: as many as fit into one window).", required = false)
+            )
         ),
         Definition(
             WRITE_FILE,
@@ -83,9 +89,25 @@ object AgentTools {
             )
         ),
         Definition(
+            EDIT_FILE,
+            "Change part of a text file: replaces old_text with new_text. old_text must match the file exactly " +
+                "(spaces, indentation, line breaks) and occur once, unless replace_all is true. Use it instead of " +
+                "rewriting a whole file with write_file.",
+            listOf(
+                Param("path", ParamType.STRING, "Absolute path or path relative to the Termux home directory."),
+                Param("old_text", ParamType.STRING, "The exact text to replace, with enough context to be unique."),
+                Param("new_text", ParamType.STRING, "The replacement text (empty to delete old_text)."),
+                Param("replace_all", ParamType.BOOLEAN, "Replace every occurrence (default false).", required = false)
+            )
+        ),
+        Definition(
             WEB_FETCH,
-            "Download a web page or API response over HTTP(S) and return it as readable text (HTML is converted to text).",
-            listOf(Param("url", ParamType.STRING, "The http:// or https:// URL to fetch."))
+            "Download a web page or API response over HTTP(S) and return it as readable text (HTML is converted to text). " +
+                "Long pages come in windows of about ${TextWindow.WINDOW_CHARS} characters; the header names the next offset.",
+            listOf(
+                Param("url", ParamType.STRING, "The http:// or https:// URL to fetch."),
+                Param("offset", ParamType.INTEGER, "Character offset to continue reading a long page (default 0).", required = false)
+            )
         ),
         Definition(
             WEB_SEARCH,
@@ -271,12 +293,15 @@ object AgentTools {
         PhoneTools.describe(call, redact)?.let { return it }
         return when (call.name) {
             EXECUTE_COMMAND -> a["command"]?.trim().orEmpty()
-            READ_FILE -> "read_file ${a["path"].orEmpty()}"
+            READ_FILE -> "read_file ${a["path"].orEmpty()}" +
+                (a["offset"]?.takeIf { it.isNotBlank() }?.let { " (from line $it)" } ?: "")
+            EDIT_FILE -> "edit_file ${a["path"].orEmpty()} [${a["old_text"]?.length ?: 0} → ${a["new_text"]?.length ?: 0} chars]"
             WRITE_FILE -> {
                 val mode = if (a["mode"].equals("append", ignoreCase = true)) " (append)" else ""
                 "write_file ${a["path"].orEmpty()}$mode [${a["content"]?.length ?: 0} chars]"
             }
-            WEB_FETCH -> "web_fetch ${a["url"].orEmpty()}"
+            WEB_FETCH -> "web_fetch ${a["url"].orEmpty()}" +
+                (a["offset"]?.takeIf { it.isNotBlank() && it.trim() != "0" }?.let { " (from character $it)" } ?: "")
             REMEMBER -> "remember: ${a["note"].orEmpty().take(120)}"
             FORGET -> "forget: ${a["text"].orEmpty().take(120)}"
             UPDATE_PLAN -> "update_plan"
@@ -311,6 +336,8 @@ object AgentTools {
                     if (content.length > 1500) append("\n… (${content.length - 1500} more characters)")
                 }
             }
+            EDIT_FILE -> describe(call) + "\n--- replace:\n" + a["old_text"].orEmpty().take(700) +
+                "\n--- with:\n" + a["new_text"].orEmpty().take(700)
             SCHEDULE_TASK -> describe(call) + "\n---\n" + a["prompt"].orEmpty().take(1500)
             DELEGATE_TASK -> "delegate_task\n---\n" + a["task"].orEmpty().take(1500) +
                 a["context"]?.takeIf { it.isNotBlank() }?.let { "\n\nContext: " + it.take(800) }.orEmpty()
@@ -356,7 +383,7 @@ object AgentTools {
                     else -> SecurityAssessment(RiskLevel.LOW, "Read-only file access")
                 }
             }
-            WRITE_FILE -> {
+            WRITE_FILE, EDIT_FILE -> {
                 val path = a["path"].orEmpty()
                 when {
                     path.isBlank() -> SecurityAssessment(RiskLevel.BLOCKED, "A file path is required.")

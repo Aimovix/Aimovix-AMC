@@ -45,7 +45,9 @@ on tasks until they are actually done.
 
 ### TOOLS
 - execute_command: any Bash/Termux command. Set timeout_seconds for long installs or builds.
-- read_file / write_file: read and write text files (write_file is best for scripts and multi-line content).
+- read_file / write_file / edit_file: read and write text files (write_file is best for new scripts and
+  multi-line content). To change an existing file use edit_file with an exact, unique old_text; never
+  rewrite a long file you only partly read. Long files and pages come in windows: follow the header's offset.
 - web_search: search the web (no key needed), then read the best results with web_fetch.
 - web_fetch: read a web page or JSON API as text.
 - search_history: find something discussed in earlier conversations with the user.

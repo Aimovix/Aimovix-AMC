@@ -1085,7 +1085,7 @@ class LlmClient(
                 val why = when {
                     truncated -> "Your tool call was cut off at the output token limit, so its arguments are incomplete " +
                         "(${raw.length} characters arrived). Nothing was executed. Split the work into smaller calls, " +
-                        "e.g. write a large file in parts (first part with write_file, the rest appended with a command)."
+                        "e.g. write a large file in parts (first part with write_file, the rest with write_file mode=append)."
                     runCatching { JSONObject(raw.trim()) }.isSuccess -> "The 'command' argument was empty. Nothing was executed."
                     else -> "The tool call arguments were not valid JSON (${raw.length} characters). Nothing was executed. " +
                         "Send the call again with a valid JSON object; keep large contents smaller."
