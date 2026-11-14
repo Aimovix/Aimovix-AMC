@@ -272,6 +272,32 @@ class LlmClientTest {
     }
 
     @Test
+    fun testStreamCutAfterSomeTextIsARetryableErrorNotAnAnswer() = runBlocking {
+        // The connection drops after the first tokens (network switch): no [DONE].
+        mockServer.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody("data: {\"choices\":[{\"delta\":{\"content\":\"I will now install\"}}]}\n\n")
+        )
+        val config = ModelConfig(
+            provider = ProviderType.OPENAI,
+            modelName = "gpt-4o",
+            apiKey = "test-key",
+            baseUrl = mockServer.url("/v1/chat/completions").toString()
+        )
+        val events = llmClient.streamRequest(
+            config = config,
+            systemPrompt = "System",
+            messages = listOf(ChatMessage(role = MessageRole.USER, text = "Hello"))
+        ).toList()
+
+        assertTrue(events.none { it is LlmClient.LlmStreamEvent.Completed })
+        val error = events.filterIsInstance<LlmClient.LlmStreamEvent.Error>().single()
+        assertTrue("A half answer must be retried", error.isRetryable)
+    }
+
+    @Test
     fun testClaudeRequestCachesSystemPromptAndSendsAllTools() = runBlocking {
         mockServer.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
             "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n" +

@@ -77,6 +77,27 @@ class AutonomousAgentEngineTest {
     }
 
     @Test
+    fun testRepeatWithChangingResultsIsNotALoop() {
+        val history = listOf("termux-battery-status", "termux-battery-status")
+        assertFalse(
+            "Polling a status whose output changes is progress, not a loop",
+            engine.isRunawayOrLoopDetected("termux-battery-status", history, 0, results = listOf(1, 2))
+        )
+        assertTrue(
+            "The same command returning the same output each time is a loop",
+            engine.isRunawayOrLoopDetected("termux-battery-status", history, 0, results = listOf(7, 7))
+        )
+    }
+
+    @Test
+    fun testPingPongWithChangingResultsIsNotALoop() {
+        // test -> fix -> test, and the model wants to fix again: the test output changed.
+        val history = listOf("pytest", "edit main.py", "pytest")
+        assertFalse(engine.isRunawayOrLoopDetected("edit main.py", history, 0, results = listOf(1, 5, 2)))
+        assertTrue(engine.isRunawayOrLoopDetected("edit main.py", history, 0, results = listOf(1, 5, 1)))
+    }
+
+    @Test
     fun testNormalCommandProgressionIsNotDetectedAsLoop() {
         val history = listOf("mkdir project", "cd project", "touch main.py")
         val isLoop = engine.isRunawayOrLoopDetected(
@@ -181,6 +202,67 @@ class AutonomousAgentEngineTest {
         assertFalse("Task should not run while engine is stopping", testEngine.isBusy.value)
         testDispatcher.scheduler.advanceUntilIdle()
         assertFalse("Engine should no longer be stopping after cancellation finishes", testEngine.isStopping.value)
+    }
+
+    /** One agent step: assistant tool call plus its result. */
+    private fun step(n: Int): List<ChatMessage> {
+        val call = ToolCall(id = "c$n", name = AgentTools.EXECUTE_COMMAND, arguments = mapOf("command" to "echo $n"))
+        return listOf(
+            ChatMessage(role = MessageRole.ASSISTANT, text = "", toolCall = call),
+            ChatMessage(
+                role = MessageRole.TOOL, text = "$n",
+                toolResult = ToolResult(toolCallId = "c$n", command = "echo $n", toolName = AgentTools.EXECUTE_COMMAND, stdout = "$n")
+            )
+        )
+    }
+
+    @Test
+    fun testTaskStaysPinnedAfterABackgroundContinuation() {
+        val task = ChatMessage(role = MessageRole.USER, text = "Back up all photos to ~/backup and verify the checksums")
+        val msgs = listOf(task) + (1..25).flatMap { step(it) } +
+            ChatMessage(role = MessageRole.USER, text = ResumeRequest.CONTINUE_NOTE) + (26..29).flatMap { step(it) }
+        val window = engine.prepareContextMessages(msgs)
+        assertEquals("The original task must be the first message", task.text, window.first().text)
+        assertTrue(window.size <= 40)
+        assertTrue("Recent progress is kept", window.any { it.toolResult?.toolCallId == "c29" })
+        assertEquals(MessageRole.ASSISTANT, window[1].role)
+    }
+
+    @Test
+    fun testTaskStaysPinnedWhenAScreenshotOrContinueStartsTheWindow() {
+        val task = ChatMessage(role = MessageRole.USER, text = "Order my usual pizza")
+        val screenshot = ChatMessage(role = MessageRole.USER, text = "📱 Screenshot of the phone screen (screen_capture):", imageBase64 = "AAAA")
+        val viaScreenshot = listOf(task) + (1..21).flatMap { step(it) } + screenshot + (22..30).flatMap { step(it) }
+        assertEquals(task.text, engine.prepareContextMessages(viaScreenshot).first().text)
+
+        // Step limit reached, the user types "continue": still the same task.
+        val viaContinue = listOf(task) + (1..30).flatMap { step(it) } +
+            ChatMessage(role = MessageRole.USER, text = "continue") + (31..33).flatMap { step(it) }
+        val window = engine.prepareContextMessages(viaContinue)
+        assertEquals(task.text, window.first().text)
+        assertTrue(window.any { it.text == "continue" })
+    }
+
+    @Test
+    fun testANewTaskAfterAFinalAnswerIsTheRoot() {
+        val first = ChatMessage(role = MessageRole.USER, text = "first task")
+        val second = ChatMessage(role = MessageRole.USER, text = "second task")
+        val msgs = listOf(first) + (1..10).flatMap { step(it) } +
+            ChatMessage(role = MessageRole.ASSISTANT, text = "First task done.") + second + (11..30).flatMap { step(it) }
+        assertEquals(msgs.indexOf(second), engine.taskRootIndex(msgs))
+        val window = engine.prepareContextMessages(msgs)
+        assertEquals(second.text, window.first().text)
+        assertFalse(window.any { it.text == first.text })
+    }
+
+    @Test
+    fun testCharBudgetKeepsTheTaskWhenNotesFollow() {
+        val task = ChatMessage(role = MessageRole.USER, text = "Analyse the logs")
+        val big = "x".repeat(20_000)
+        val msgs = listOf(task) + (1..3).flatMap { step(it) }.map { if (it.role == MessageRole.TOOL) it.copy(text = big, toolResult = it.toolResult!!.copy(stdout = big)) else it } +
+            ChatMessage(role = MessageRole.USER, text = ResumeRequest.CONTINUE_NOTE) + (4..5).flatMap { step(it) }
+        val window = engine.prepareContextMessages(msgs, maxCharBudget = 30_000)
+        assertEquals("The [AMC] note is no turn boundary: the task stays", task.text, window.first().text)
     }
 
     @Test

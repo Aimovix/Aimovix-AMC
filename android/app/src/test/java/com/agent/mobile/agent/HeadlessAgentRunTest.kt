@@ -205,6 +205,62 @@ class HeadlessAgentRunTest {
     }
 
     @Test
+    fun cutOffToolArgumentsBecomeAToolErrorTheModelCanFix() = runBlocking {
+        // write_file whose argument JSON stops mid-string at the output limit.
+        val chunk = JSONObject().put(
+            "choices", org.json.JSONArray().put(
+                JSONObject().put("finish_reason", "length").put(
+                    "delta", JSONObject().put(
+                        "tool_calls", org.json.JSONArray().put(
+                            JSONObject().put("index", 0).put("id", "call_cut").put(
+                                "function", JSONObject().put("name", "write_file")
+                                    .put("arguments", "{\"path\":\"~/big.txt\",\"content\":\"line 1\\nline 2")
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody("data: $chunk\n\ndata: [DONE]\n\n"))
+        reply("I will write it in smaller parts.")
+
+        val e = engine()
+        val result = e.runHeadless(title = "t", prompt = "write a big file", mode = RunMode.UNATTENDED)
+
+        assertEquals("I will write it in smaller parts.", result.summary)
+        val tool = e.messages.value.first { it.role == MessageRole.TOOL }
+        assertEquals("call_cut", tool.toolResult!!.toolCallId)
+        assertTrue(tool.toolResult!!.isError)
+        assertTrue(tool.toolResult!!.stderr.contains("cut off at the output token limit"))
+        val bodies = requestBodies()
+        assertEquals(2, bodies.size)
+        assertTrue("The model sees the tool error", bodies[1].toString().contains("cut off at the output token limit"))
+    }
+
+    @Test
+    fun afterTheErrorWarningADifferentApproachStillRuns() = runBlocking {
+        // Five failures in a row (unknown tools), then the loop warning for the next call ...
+        for (i in 1..5) toolCall("call_e$i", "no_such_tool_$i", JSONObject())
+        toolCall("call_w", "execute_command", JSONObject().put("command", "echo warned"))
+        // ... and a clearly different approach afterwards must be executed, not end the run.
+        toolCall("call_n", "execute_command", JSONObject().put("command", "echo different"))
+        reply("Done with a different approach.")
+
+        val e = engine()
+        val result = e.runHeadless(title = "t", prompt = "do it", mode = RunMode.UNATTENDED)
+
+        assertEquals("Done with a different approach.", result.summary)
+        val texts = e.messages.value.map { it.text + (it.toolResult?.stderr ?: "") }
+        assertTrue(texts.any { it.contains("Loop protection: this action was NOT executed") })
+        assertFalse(texts.any { it.contains("Loop protection stopped execution") })
+        val different = e.messages.value.first { it.role == MessageRole.TOOL && it.toolResult?.command == "echo different" }
+        assertFalse(
+            "The different command was dispatched (it fails only because the test has no bridge)",
+            different.toolResult!!.stderr.contains("Loop protection")
+        )
+    }
+
+    @Test
     fun sendFileWithoutBridgeFailsGracefully() = runBlocking {
         toolCall("call_1", "send_file", JSONObject().put("path", "~/report.pdf"))
         reply("Could not send the file.")

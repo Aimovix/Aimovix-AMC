@@ -50,6 +50,9 @@ class AutonomousAgentEngine(
     companion object {
         private const val TAG = "AgentEngine"
 
+        /** Start of notes the app adds to the conversation as USER messages (not the user's own words). */
+        const val AGENT_NOTE_PREFIX = "[AMC]"
+
         /** Upper bound for unattended runs so a background job always finishes in time. */
         const val UNATTENDED_MAX_STEPS = 25
         const val UNATTENDED_TIMEOUT_MS = 9 * 60_000L
@@ -85,6 +88,8 @@ class AutonomousAgentEngine(
 
         /** Attempts per provider (first try + retries) for errors that may go away (429, 5xx, network). */
         const val MAX_ATTEMPTS_PER_PROVIDER = 3
+        /** How long a run stays on the fallback provider after the primary failed. */
+        const val FALLBACK_STICKY_MS = 10 * 60_000L
         private const val MAX_RETRY_DELAY_MS = 30_000L
         /** A provider that asks to wait longer than this is not waited for (fallback or stop instead). */
         private const val MAX_RETRY_AFTER_MS = 60_000L
@@ -117,6 +122,9 @@ class AutonomousAgentEngine(
             AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH,
             AgentTools.WEB_SEARCH, AgentTools.SEARCH_HISTORY, AgentTools.DELEGATE_TASK
         ) + PhoneTools.UNTRUSTED_OUTPUT
+        /** Texts of image messages the app adds as USER turns (screenshots, photos). */
+        private val SYNTHETIC_IMAGE_PREFIXES = listOf("📱 Screenshot", "📸 Photo captured")
+
         /** Start of a screen reading in a tool result ("Screen: App (pkg) · …"). */
         private val SCREEN_HEADER = Regex("(^|\\n)Screen: ")
 
@@ -732,6 +740,8 @@ class AutonomousAgentEngine(
         /** Identifies this run towards the phone controller (screen lease, element ids per turn). */
         val runId: String = UUID.randomUUID().toString()
         val history = mutableListOf<String>()
+        /** Result hash per [history] entry (null until the action has run). */
+        val resultHistory = mutableListOf<Int?>()
         var consecutiveErrors = 0
         var loopWarnings = 0
         var stopRequested = false
@@ -754,6 +764,20 @@ class AutonomousAgentEngine(
         /** Hashes of (action, result) pairs seen in this run, and how many repeats came in a row. */
         val seenResults = HashSet<Int>()
         var noProgress = 0
+        /** A reply cut off at the output limit was already continued once in this run. */
+        var continuedAfterCutOff = false
+        /** Until then the steps of this run go to the fallback provider directly (the primary failed). */
+        var fallbackUntil: Long = 0L
+    }
+
+    private fun fallbackConfigOf(primary: ModelConfig): ModelConfig {
+        val fallback = primary.fallbackProvider ?: return primary
+        return ModelConfig(
+            provider = fallback,
+            modelName = primary.fallbackModelName.ifEmpty { fallback.defaultModel },
+            apiKey = primary.fallbackApiKey,
+            baseUrl = primary.fallbackBaseUrl.ifEmpty { fallback.defaultBaseUrl }
+        )
     }
 
     /** Tools the model may not use in [mode]. */
@@ -903,6 +927,14 @@ class AutonomousAgentEngine(
         val primaryConfig = _modelConfig.value
         var activeConfig = primaryConfig
         var isUsingFallback = false
+        // The primary failed recently in this run: stay on the fallback instead of losing a minute
+        // of retries on every step; afterwards the primary is tried again.
+        var startedOnFallback = false
+        if (primaryConfig.fallbackProvider != null && System.currentTimeMillis() < state.fallbackUntil) {
+            activeConfig = fallbackConfigOf(primaryConfig)
+            isUsingFallback = true
+            startedOnFallback = true
+        }
 
         val assistantMsgId = UUID.randomUUID().toString()
         _messages.value = _messages.value + ChatMessage(
@@ -915,6 +947,7 @@ class AutonomousAgentEngine(
         var streamCompleted = false
         var detectedTools: List<ToolCall> = emptyList()
         var detectedThought = ""
+        var textCutOff = false
         var errorEvent: LlmClient.LlmStreamEvent.Error? = null
         val textBuilder = StringBuilder()
 
@@ -941,6 +974,7 @@ class AutonomousAgentEngine(
                             streamCompleted = true
                         }
                         is LlmClient.LlmStreamEvent.Completed -> {
+                            textCutOff = event.truncated
                             val full = event.fullText.ifEmpty { textBuilder.toString() }
                             updateMessageText(assistantMsgId, full, MessageStatus.COMPLETED)
                             recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd, executionSessionId)
@@ -972,23 +1006,30 @@ class AutonomousAgentEngine(
                     errorEvent = null
                     continue
                 }
-                // 2. Then the fallback provider (once per step; the next step tries the primary again).
+                // 2. Then the fallback provider, kept for the next steps of this run for a while.
                 val fallback = primaryConfig.fallbackProvider
                 if (fallback != null && !isUsingFallback) {
                     isUsingFallback = true
                     attemptOnProvider = 0
-                    val fallbackModel = primaryConfig.fallbackModelName.ifEmpty { fallback.defaultModel }
-                    activeConfig = ModelConfig(
-                        provider = fallback,
-                        modelName = fallbackModel,
-                        apiKey = primaryConfig.fallbackApiKey,
-                        baseUrl = primaryConfig.fallbackBaseUrl.ifEmpty { fallback.defaultBaseUrl }
-                    )
+                    activeConfig = fallbackConfigOf(primaryConfig)
+                    val fallbackModel = activeConfig.modelName
+                    state.fallbackUntil = System.currentTimeMillis() + FALLBACK_STICKY_MS
                     appendSystemMessage(
                         "⚠️ Primary provider ${primaryConfig.provider.displayName} failed (${errorEvent!!.message}). " +
                             "Switching to fallback: ${fallback.displayName} ($fallbackModel)...",
                         executionSessionId
                     )
+                    textBuilder.clear()
+                    errorEvent = null
+                    continue
+                }
+                // 3. The step started on the kept fallback and that failed too: the primary may be back.
+                if (startedOnFallback) {
+                    startedOnFallback = false
+                    isUsingFallback = false
+                    state.fallbackUntil = 0L
+                    attemptOnProvider = 0
+                    activeConfig = primaryConfig
                     textBuilder.clear()
                     errorEvent = null
                     continue
@@ -1009,6 +1050,19 @@ class AutonomousAgentEngine(
 
         if (detectedTools.isEmpty()) {
             _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
+            if (textCutOff && !state.continuedAfterCutOff) {
+                // The reply hit the output limit mid-way: let the model finish it once instead of ending here.
+                state.continuedAfterCutOff = true
+                val note = ChatMessage(
+                    role = MessageRole.USER,
+                    text = "$AGENT_NOTE_PREFIX Your previous reply was cut off at the output token limit. Continue exactly " +
+                        "where it stopped; if you were about to act, call the tool now.",
+                    status = MessageStatus.COMPLETED
+                )
+                _messages.value = _messages.value + note
+                chatRepository?.saveMessage(executionSessionId, note)
+                return StepOutcome.CONTINUE
+            }
             return StepOutcome.FINISHED
         }
 
@@ -1062,6 +1116,16 @@ class AutonomousAgentEngine(
         skippedApprovals: MutableList<String>,
         pendingVision: MutableList<ChatMessage>
     ) {
+        val invalidArgs = toolCall.arguments[LlmClient.INVALID_ARGUMENTS_KEY]
+        if (invalidArgs != null) {
+            // Malformed or cut-off arguments: a fixable mistake of the model, not the end of the run.
+            val safeCall = toolCall.copy(arguments = emptyMap(), rawJson = "")
+            tools[index] = safeCall
+            updateMessageToolCalls(assistantMsgId, tools.toList(), MessageStatus.EXECUTING_TOOL)
+            appendToolMessage(sessionId, safeCall, toolCall.name, "${toolCall.name} (invalid arguments)", "", invalidArgs, -1, isError = true)
+            state.consecutiveErrors++
+            return
+        }
         if (!AgentTools.isKnown(toolCall.name) || toolCall.name in excludedTools) {
             val safeCall = if (PhoneTools.isPhoneTool(toolCall.name)) PhoneTools.redacted(toolCall) else toolCall
             tools[index] = safeCall
@@ -1090,18 +1154,21 @@ class AutonomousAgentEngine(
                 null
             }
         } else null
-        val assessment = AgentTools.assess(toolCall, phoneContext)
+        val assessment = withScriptChecks(toolCall, AgentTools.assess(toolCall, phoneContext))
         val description = AgentTools.describe(toolCall, redact = assessment.redact)
         // What is shown, stored and sent back to the model; the real arguments are only used to execute.
         val displayCall = if (assessment.redact) PhoneTools.redacted(toolCall) else toolCall
 
         // 1. Loop protection: warn once, then stop.
         if (toolCall.name !in LOOP_EXEMPT_TOOLS &&
-            isRunawayOrLoopDetected(description, state.history, state.consecutiveErrors)
+            isRunawayOrLoopDetected(description, state.history, state.consecutiveErrors, results = state.resultHistory)
         ) {
             releasePhoneCall(toolCall)
             if (state.loopWarnings == 0) {
                 state.loopWarnings++
+                // The warning is the rethink: the next, different action gets a fresh error budget.
+                // Only reaching the threshold again without a success in between stops the run.
+                state.consecutiveErrors = 0
                 appendToolMessage(
                     sessionId, toolCall, toolCall.name, description, "",
                     "Loop protection: this action was NOT executed because you are repeating yourself or failing " +
@@ -1118,6 +1185,7 @@ class AutonomousAgentEngine(
             return
         }
         state.history.add(description)
+        state.resultHistory.add(null)
 
         // 2. Risk assessment (computed above).
         val securedToolCall = displayCall.copy(riskLevel = assessment.level.name, riskReason = assessment.reason)
@@ -1180,7 +1248,13 @@ class AutonomousAgentEngine(
         val raw = try {
             dispatchTool(executableCall, assistantMsgId, pendingVision, mode, skippedApprovals, state)
         } catch (e: CancellationException) {
-            throw e
+            // Only a cancelled run ends here. A timeout inside a tool (TimeoutCancellationException
+            // while this job is still active) is a failed tool call the model can react to.
+            if (!currentCoroutineContext().isActive) throw e
+            ToolResult(
+                toolCallId = securedToolCall.id, command = description,
+                stderr = "Timed out: ${e.message ?: "the tool did not answer in time"}", exitCode = -1, isError = true
+            )
         } catch (e: Exception) {
             ToolResult(toolCallId = securedToolCall.id, command = description, stderr = e.localizedMessage ?: e.toString(), exitCode = -1, isError = true)
         }
@@ -1189,9 +1263,17 @@ class AutonomousAgentEngine(
         val transient = failed && raw.exitCode == TRANSIENT_EXIT_CODE && PhoneTools.isPhoneTool(toolCall.name)
         when {
             // Display off or screen busy: waiting is right, repeating it is not a loop.
-            transient -> state.history.removeLastOrNull()
+            transient -> {
+                state.history.removeLastOrNull()
+                state.resultHistory.removeLastOrNull()
+            }
             failed -> state.consecutiveErrors++
             else -> state.consecutiveErrors = 0
+        }
+        if (!transient && state.resultHistory.isNotEmpty()) {
+            // What this action returned: a repeat with a different result (polling, test-fix-test) is no loop.
+            state.resultHistory[state.resultHistory.lastIndex] =
+                (raw.exitCode.toString() + "\u0000" + raw.stdout + "\u0000" + raw.stderr).hashCode()
         }
 
         recordAudit(sessionId, description, assessment.level.name, assessment.reason, raw, duration, approved = true)
@@ -1228,6 +1310,8 @@ class AutonomousAgentEngine(
             status = status
         )
         val progressHint = trackProgress(toolCall.name, description, observation, state)
+        // A successful step with a new result ends the warned phase: a later loop gets its own warning.
+        if (!failed && state.noProgress == 0) state.loopWarnings = 0
         // Providers read the tool result fields, so the hint goes into stderr (like the reflection hint).
         val finalToolMsg = if (progressHint != null) {
             toolMsg.copy(
@@ -1596,6 +1680,31 @@ class AutonomousAgentEngine(
         return result(r.text, r.ok)
     }
 
+    /**
+     * A command that runs a script file is judged by the script's content too: otherwise writing
+     * `termux-sms-send …` into run.sh and calling `bash run.sh` would skip the checks the same
+     * command gets when typed directly. Unreadable scripts keep the command's own assessment.
+     */
+    private suspend fun withScriptChecks(call: ToolCall, base: SecurityAssessment): SecurityAssessment {
+        if (call.name != AgentTools.EXECUTE_COMMAND || base.isBlocked) return base
+        val scripts = CommandSecurityFilter.scriptFiles(call.arguments["command"].orEmpty())
+        if (scripts.isEmpty() || bridgeClient.connectionStatus.value !is ConnectionStatus.Connected) return base
+        var result = base
+        for (path in scripts) {
+            val content = try {
+                withTimeoutOrNull(6_000L) { bridgeClient.readFile(path, timeoutMs = 5_000L) }
+            } catch (e: CancellationException) {
+                if (!currentCoroutineContext().isActive) throw e
+                null
+            } catch (e: Exception) {
+                null
+            } ?: continue
+            result = CommandSecurityFilter.withScriptContent(result, path, content)
+            if (result.isBlocked) break
+        }
+        return result
+    }
+
     /** Brings the bridge back before a bridge tool runs, when it dropped during the run. */
     private suspend fun ensureBridge() {
         if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) return
@@ -1860,16 +1969,27 @@ class AutonomousAgentEngine(
         val nonSystem = repairToolPairs(allMessages.filter { it.role != MessageRole.SYSTEM })
         if (nonSystem.isEmpty()) return emptyList()
 
-        var window = nonSystem.takeLast(maxMessages).toMutableList()
-        trimToUserStart(window)
-        if (window.isEmpty()) {
-            // The latest user request is older than the window (long autonomous run): keep it and
-            // the most recent progress after it.
-            val latestUserIdx = nonSystem.indexOfLast { it.role == MessageRole.USER }
-            if (latestUserIdx < 0) return emptyList()
-            val tail = nonSystem.subList(latestUserIdx + 1, nonSystem.size).takeLast(maxMessages - 1).toMutableList()
+        // The request the current work serves. Continuation notes, screenshots, steering messages and
+        // "continue" after a step limit belong to it, so it must never fall out of the window.
+        val root = taskRootIndex(nonSystem)
+        val windowStart = (nonSystem.size - maxMessages).coerceAtLeast(0)
+        var window: MutableList<ChatMessage>
+        if (root in 0 until windowStart) {
+            // Long run: keep the task and the most recent progress after it.
+            val tail = nonSystem.subList(maxOf(root + 1, nonSystem.size - (maxMessages - 1)), nonSystem.size).toMutableList()
             dropLeadingOrphans(tail)
-            window = (listOf(nonSystem[latestUserIdx]) + tail).toMutableList()
+            window = (listOf(nonSystem[root]) + tail).toMutableList()
+        } else {
+            window = nonSystem.subList(windowStart, nonSystem.size).toMutableList()
+            trimToUserStart(window)
+            if (window.isEmpty()) {
+                // No user message in the window at all: keep the latest one and the progress after it.
+                val latestUserIdx = nonSystem.indexOfLast { it.role == MessageRole.USER }
+                if (latestUserIdx < 0) return emptyList()
+                val tail = nonSystem.subList(latestUserIdx + 1, nonSystem.size).takeLast(maxMessages - 1).toMutableList()
+                dropLeadingOrphans(tail)
+                window = (listOf(nonSystem[latestUserIdx]) + tail).toMutableList()
+            }
         }
 
         fun weight(m: ChatMessage): Int =
@@ -1878,7 +1998,9 @@ class AutonomousAgentEngine(
                 (if (m.imageBase64 != null) IMAGE_CHAR_WEIGHT else 0)
 
         while (window.size > 2 && window.sumOf { weight(it) } > maxCharBudget) {
-            val nextUser = (1 until window.size).firstOrNull { window[it].role == MessageRole.USER && window[it].toolResult == null }
+            // Only a new task (a real user request after a finished answer) ends an older exchange;
+            // notes, screenshots and steering inside the current task do not.
+            val nextUser = (1 until window.size).firstOrNull { isTaskStart(window, it) }
             if (nextUser != null && nextUser < window.size - 1) {
                 // Drop the whole oldest exchange.
                 repeat(nextUser) { window.removeAt(0) }
@@ -1929,7 +2051,51 @@ class AutonomousAgentEngine(
     }
 
     private fun trimToUserStart(window: MutableList<ChatMessage>) {
-        while (window.isNotEmpty() && window.first().role != MessageRole.USER) window.removeAt(0)
+        // Prefer starting at a real user request; fall back to any user message.
+        val firstReal = window.indexOfFirst { isRealUserMessage(it) }
+        val firstUser = if (firstReal >= 0) firstReal else window.indexOfFirst { it.role == MessageRole.USER }
+        if (firstUser < 0) {
+            window.clear()
+            return
+        }
+        repeat(firstUser) { window.removeAt(0) }
+    }
+
+    /** USER-role messages the app wrote itself: [AMC] notes, screenshots and photos, tool results. */
+    internal fun isSyntheticUserMessage(m: ChatMessage): Boolean =
+        m.role == MessageRole.USER && (
+            m.toolResult != null ||
+                m.text.trimStart().startsWith(AGENT_NOTE_PREFIX) ||
+                (m.imageBase64 != null && SYNTHETIC_IMAGE_PREFIXES.any { m.text.startsWith(it) })
+            )
+
+    private fun isRealUserMessage(m: ChatMessage): Boolean = m.role == MessageRole.USER && !isSyntheticUserMessage(m)
+
+    /** An assistant reply that ended a turn (text, no tool calls, not failed). */
+    private fun isFinalAnswer(m: ChatMessage): Boolean =
+        m.role == MessageRole.ASSISTANT && m.toolCalls.isEmpty() && m.toolCall == null &&
+            m.text.isNotBlank() && m.status != MessageStatus.ERROR
+
+    /**
+     * True when [list][i] is a real user request that starts a new task: nothing came before it, or
+     * the previous turn ended with a final answer. A message sent while the agent was still working
+     * (steering, "continue" after the step limit, a retry after an error) continues the earlier task.
+     */
+    private fun isTaskStart(list: List<ChatMessage>, i: Int): Boolean {
+        if (!isRealUserMessage(list[i])) return false
+        var p = i - 1
+        while (p >= 0 && isSyntheticUserMessage(list[p])) p--
+        return p < 0 || isFinalAnswer(list[p])
+    }
+
+    /** Index of the request the latest work belongs to (see [isTaskStart]), or -1. */
+    internal fun taskRootIndex(list: List<ChatMessage>): Int {
+        var i = list.indexOfLast { isRealUserMessage(it) }
+        while (i > 0 && !isTaskStart(list, i)) {
+            val previous = (i - 1 downTo 0).firstOrNull { isRealUserMessage(list[it]) } ?: return i
+            i = previous
+        }
+        return i
     }
 
     /** Removes TOOL results at the start of [list] whose assistant tool call is gone. */
@@ -2005,17 +2171,33 @@ class AutonomousAgentEngine(
         cmd: String,
         history: List<String>,
         consecutiveErrors: Int,
-        maxConsecutiveErrors: Int = MAX_CONSECUTIVE_ERRORS
+        maxConsecutiveErrors: Int = MAX_CONSECUTIVE_ERRORS,
+        /**
+         * Result hash per [history] entry (same size, null = unknown). When given, a repetition only
+         * counts as a loop if it also returned the same result, so polling a status or alternating
+         * test and fix while the output changes is allowed. Without it every repetition counts.
+         */
+        results: List<Int?>? = null
     ): Boolean {
         if (consecutiveErrors >= maxConsecutiveErrors) return true
-        // Same action three times in a row.
-        if (history.size >= 2 && history.takeLast(2).all { it.equals(cmd, ignoreCase = true) }) return true
-        // Ping-pong: A -> B -> A -> B
-        if (history.size >= 3) {
+        val res = results?.takeIf { it.size == history.size }
+        fun sameResult(i: Int, j: Int): Boolean {
+            if (res == null) return true
+            val a = res[i] ?: return true
+            val b = res[j] ?: return true
+            return a == b
+        }
+        val n = history.size
+        // Same action three times in a row (with the same result each time).
+        if (n >= 2 && history.takeLast(2).all { it.equals(cmd, ignoreCase = true) } && sameResult(n - 1, n - 2)) return true
+        // Ping-pong: A -> B -> A -> B (B returned the same both times).
+        if (n >= 3) {
             val last = history.last()
-            val secondLast = history[history.size - 2]
-            val thirdLast = history[history.size - 3]
-            if (cmd.equals(secondLast, ignoreCase = true) && last.equals(thirdLast, ignoreCase = true) && !cmd.equals(last, ignoreCase = true)) {
+            val secondLast = history[n - 2]
+            val thirdLast = history[n - 3]
+            if (cmd.equals(secondLast, ignoreCase = true) && last.equals(thirdLast, ignoreCase = true) &&
+                !cmd.equals(last, ignoreCase = true) && sameResult(n - 1, n - 3)
+            ) {
                 return true
             }
         }

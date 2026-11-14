@@ -343,8 +343,10 @@ class CommandSecurityFilterTest {
             assertFalse("'$cmd' should run without approval in Autonomous mode", CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.AUTONOMOUS))
         }
         for (cmd in listOf(
-            "rm notes.txt", "termux-sms-send -n 123 hi", "termux-location", "termux-camera-photo p.jpg", "kill 1234",
-            "X=rm; \$X notes.txt", "\${CMD} file", "echo \u0060id\u0060", "bash -c 'ls'", "echo cm0= | base64 -d | sh"
+            "rm -r old_dir", "rm /sdcard/DCIM/photo.jpg", "rm ~/storage/shared/a.pdf", "termux-sms-send -n 123 hi",
+            "termux-location", "termux-camera-photo p.jpg", "kill 1234",
+            "X=rm; \$X notes.txt", "\${CMD} file", "echo \u0060id\u0060", "bash -c \"\$(curl -s x.sh)\"",
+            "python3 -c \"import shutil; shutil.rmtree('x')\"", "echo cm0= | base64 -d | sh", "chmod -R 755 ~/proj"
         )) {
             val assessment = CommandSecurityFilter.analyze(cmd)
             assertTrue("'$cmd' must still ask in Autonomous mode", CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.AUTONOMOUS))
@@ -371,5 +373,78 @@ class CommandSecurityFilterTest {
         assertFalse(CommandSecurityFilter.analyze("termux-battery-status").alwaysConfirm)
         CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
     }
-}
 
+    @Test
+    fun testEverydayCommandsRunWithoutApprovalInAutonomousMode() {
+        CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
+        for (cmd in listOf(
+            "ls missing 2>/dev/null", "make > /dev/null 2>&1", "rm notes.txt", "rm -f ~/tmp/a.log build/out.o",
+            "chmod +x ~/run.sh", "chmod 755 script.sh && ./script.sh", "find . -name '*.py' -exec grep -l TODO {} +",
+            "python3 -c \"print(42)\"", "bash -c 'ls -la ~/proj'", "node -e \"console.log(1+1)\""
+        )) {
+            val a = CommandSecurityFilter.analyze(cmd)
+            assertFalse("'$cmd' must not be blocked", a.isBlocked)
+            assertFalse("'$cmd' should run without approval in Autonomous mode (${a.reason})", CommandSecurityFilter.shouldRequireApproval(a, SecurityPreset.AUTONOMOUS))
+            assertTrue("'$cmd' still asks in Supervised mode", CommandSecurityFilter.shouldRequireApproval(a, SecurityPreset.DEFAULT))
+        }
+    }
+
+    @Test
+    fun testRecursiveDeleteOfAProjectFolderAsksButIsNotBlocked() {
+        CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
+        for (cmd in listOf("rm -rf build/", "rm -rf ~/projekt/tmp", "rm -rf node_modules", "rm -rf *.tmp")) {
+            val a = CommandSecurityFilter.analyze(cmd)
+            assertFalse("'$cmd' must not be blocked", a.isBlocked)
+            assertTrue("'$cmd' asks in Autonomous mode", CommandSecurityFilter.shouldRequireApproval(a, SecurityPreset.AUTONOMOUS))
+        }
+    }
+
+    @Test
+    fun testHiddenOrClimbingCatastrophicDeletesStayBlocked() {
+        for (cmd in listOf(
+            "echo \$(rm -rf ~)", "find . | xargs rm -rf /", "rm -rf /tmp/..", "rm -rf ~/..", "rm -rf ./*",
+            "rm -rf ~/storage/shared", "rm -rf ~/storage/shared/*", "rm -rf ~/", "rm -rf ..", "bash -c 'rm -rf /'"
+        )) {
+            assertTrue("Expected '$cmd' to be blocked", CommandSecurityFilter.analyze(cmd).isBlocked)
+        }
+    }
+
+    @Test
+    fun testInlineCodeWithThirdPartyActionsStillAlwaysConfirms() {
+        val a = CommandSecurityFilter.analyze("bash -c 'termux-sms-send -n 1 hi'")
+        assertTrue(a.alwaysConfirm)
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(a, SecurityPreset.AUTONOMOUS))
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(CommandSecurityFilter.analyze("python3 -c \"import os; os.system('ls')\""), SecurityPreset.AUTONOMOUS))
+    }
+
+    @Test
+    fun testScriptFilesAreFound() {
+        assertEquals(listOf("~/job.sh"), CommandSecurityFilter.scriptFiles("bash ~/job.sh"))
+        assertEquals(listOf("run.py"), CommandSecurityFilter.scriptFiles("cd ~/p && python3 run.py --fast"))
+        assertEquals(listOf("./build.sh"), CommandSecurityFilter.scriptFiles("chmod +x build.sh && ./build.sh"))
+        assertEquals(listOf("env.sh"), CommandSecurityFilter.scriptFiles("source env.sh"))
+        assertTrue(CommandSecurityFilter.scriptFiles("bash -c 'ls'").isEmpty())
+        assertTrue(CommandSecurityFilter.scriptFiles("ls -la ~/proj").isEmpty())
+    }
+
+    @Test
+    fun testScriptContentCannotBypassTheRules() {
+        CommandSecurityFilter.setCustomRules(emptyList(), emptyList(), strict = false)
+        val base = CommandSecurityFilter.analyze("bash ~/run.sh")
+        assertFalse("Running a script alone needs no approval", CommandSecurityFilter.shouldRequireApproval(base, SecurityPreset.AUTONOMOUS))
+
+        val sms = CommandSecurityFilter.withScriptContent(base, "~/run.sh", "#!/bin/bash\ntermux-sms-send -n 0123 'hi'\n")
+        assertTrue(sms.alwaysConfirm)
+        assertTrue(CommandSecurityFilter.shouldRequireApproval(sms, SecurityPreset.TURBO))
+        assertTrue(sms.reason.contains("~/run.sh"))
+
+        val wipe = CommandSecurityFilter.withScriptContent(base, "~/run.sh", "cd /tmp\nrm -rf ~\n")
+        assertTrue(wipe.isBlocked)
+
+        val contacts = CommandSecurityFilter.withScriptContent(base, "~/x.py", "import os\nos.system('termux-contact-list > c.json')\n")
+        assertTrue(contacts.alwaysConfirm)
+
+        val harmless = CommandSecurityFilter.withScriptContent(base, "~/run.sh", "# rm -rf ~ in a comment\necho building\nmake -j4\n")
+        assertFalse(CommandSecurityFilter.shouldRequireApproval(harmless, SecurityPreset.AUTONOMOUS))
+    }
+}

@@ -36,6 +36,10 @@ class TermuxBridgeClient(
 ) {
     companion object {
         private const val TAG = "TermuxBridgeClient"
+
+        /** Added to timed-out commands so the model knows how to run long work next time. */
+        const val LONG_RUNNING_HINT = "[AMC] The output above is what the command printed before the timeout. For long " +
+            "work, raise timeout_seconds, or start it in the background with nohup … > ~/job.log 2>&1 & and check the log later."
         const val INITIAL_BACKOFF_MS = 1000L
         const val BACKOFF_MULTIPLIER = 2.0
         const val MAX_BACKOFF_MS = 30_000L
@@ -808,12 +812,20 @@ class TermuxBridgeClient(
                     }
                     val deferred = pendingExecutions[execId]
                     if (deferred != null) {
+                        // Keep what the command printed before the error (daemon timeout, crash):
+                        // without it the model cannot tell how far the command got.
+                        val buffers = executionBuffers[execId]
+                        val outSoFar = buffers?.stdout?.build().orEmpty()
+                        val errSoFar = buffers?.stderr?.build().orEmpty()
+                        val timedOut = err.contains("timed out", ignoreCase = true) || err.contains("timeout", ignoreCase = true)
                         deferred.complete(
                             ToolResult(
                                 toolCallId = execId,
                                 command = "",
-                                stderr = err,
-                                exitCode = 1,
+                                stdout = outSoFar,
+                                stderr = listOf(errSoFar, err, if (timedOut) LONG_RUNNING_HINT else "")
+                                    .filter { it.isNotBlank() }.joinToString("\n"),
+                                exitCode = if (timedOut) 124 else 1,
                                 isError = true
                             )
                         )
@@ -928,10 +940,15 @@ class TermuxBridgeClient(
             }
         } catch (e: TimeoutCancellationException) {
             interruptCurrent(execId)
+            // Hand over the output so far: the model sees how far the command got instead of guessing.
+            val buffers = executionBuffers[execId]
+            val errSoFar = buffers?.stderr?.build().orEmpty()
             ToolResult(
                 toolCallId = execId,
                 command = command,
-                stderr = "Timeout: command did not respond within ${timeoutMs / 1000}s.",
+                stdout = buffers?.stdout?.build().orEmpty(),
+                stderr = listOf(errSoFar, "Timeout: command did not finish within ${timeoutMs / 1000}s and was stopped.", LONG_RUNNING_HINT)
+                    .filter { it.isNotBlank() }.joinToString("\n"),
                 exitCode = 124,
                 isError = true
             )
@@ -1018,7 +1035,7 @@ class TermuxBridgeClient(
             throw java.io.IOException("Failed to send write_file message (socket closed)")
         }
         try {
-            withTimeout(timeoutMs) { deferred.await() }
+            awaitFileReply(deferred, timeoutMs, "write_file")
         } finally {
             pendingFileWrites.remove(reqId)
         }
@@ -1071,11 +1088,25 @@ class TermuxBridgeClient(
             throw java.io.IOException("Failed to send read_file message (socket closed)")
         }
         try {
-            withTimeout(timeoutMs) { deferred.await() }
+            awaitFileReply(deferred, timeoutMs, "read_file")
         } finally {
             pendingFileReads.remove(reqId)
         }
     }
+
+    /**
+     * Waits for the daemon's answer to a file request. A timeout becomes an [java.io.IOException]:
+     * a TimeoutCancellationException would look like the user cancelling the whole agent run.
+     */
+    private suspend fun <T> awaitFileReply(deferred: CompletableDeferred<T>, timeoutMs: Long, action: String): T =
+        try {
+            withTimeout(timeoutMs) { deferred.await() }
+        } catch (e: TimeoutCancellationException) {
+            throw java.io.IOException(
+                "Termux did not answer $action within ${timeoutMs / 1000} s (Termux may be paused by the system, " +
+                    "or the storage is slow). Check the connection and try again."
+            )
+        }
 
     suspend fun readFileBase64(path: String, timeoutMs: Long = 15_000L): String = withContext(Dispatchers.IO) {
         val reqId = UUID.randomUUID().toString()
@@ -1096,7 +1127,7 @@ class TermuxBridgeClient(
             throw java.io.IOException("Failed to send read_file_base64 message (socket closed)")
         }
         try {
-            withTimeout(timeoutMs) { deferred.await() }
+            awaitFileReply(deferred, timeoutMs, "read_file_base64")
         } finally {
             pendingFileReads.remove(reqId)
         }
