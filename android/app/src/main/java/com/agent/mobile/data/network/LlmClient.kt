@@ -42,6 +42,22 @@ class LlmClient(
 ) {
     companion object {
         private const val TAG = "LlmClient"
+
+        /**
+         * Argument key of a tool call whose argument JSON could not be parsed (malformed, or cut off
+         * at the output token limit). The engine answers such a call with a tool error the model can
+         * fix instead of ending the run; the value explains what went wrong.
+         */
+        const val INVALID_ARGUMENTS_KEY = "__amc_invalid_arguments__"
+
+        /**
+         * Errors reported inside an open stream that go away by themselves: rate limits, overload,
+         * server errors. Everything else (invalid request, auth) is final.
+         */
+        internal fun isRetryableStreamError(type: String, message: String): Boolean =
+            type in setOf("rate_limit_error", "overloaded_error", "api_error", "server_error", "service_unavailable", "timeout_error") ||
+                Regex("overloaded|temporarily unavailable|try again|server error|internal error|timed? ?out|capacity", RegexOption.IGNORE_CASE)
+                    .containsMatchIn(message)
         const val CLOUD_IDLE_TIMEOUT_S = 60L
         const val CLOUD_STEP_TIMEOUT_S = 6 * 60L
         /** On-device models: prompt prefill of a long context can take minutes before the first token. */
@@ -111,7 +127,9 @@ class LlmClient(
             val fullText: String,
             val promptTokens: Int = 0,
             val completionTokens: Int = 0,
-            val estimatedCostUsd: Double = 0.0
+            val estimatedCostUsd: Double = 0.0,
+            /** The reply stopped at the output token limit, not because the model was done. */
+            val truncated: Boolean = false
         ) : LlmStreamEvent()
         data class Error(
             val message: String,
@@ -385,6 +403,7 @@ class LlmClient(
             var promptTokens = 0
             var completionTokens = 0
             var streamDone = false
+            var finishReason = ""
 
             var line: String?
             while (reader.readLine().also { line = it } != null) {
@@ -404,7 +423,7 @@ class LlmClient(
                         if (json.has("error")) {
                             val errObj = json.getJSONObject("error")
                             val errMsg = errObj.optString("message", "OpenAI stream error")
-                            val isRetryable = errObj.optString("type") == "rate_limit_error"
+                            val isRetryable = isRetryableStreamError(errObj.optString("type"), errMsg)
                             emit(LlmStreamEvent.Error("OpenAI stream error: $errMsg", 0, isRetryable))
                             return@executeCancellableCall
                         }
@@ -419,6 +438,8 @@ class LlmClient(
                         if (choices.length() == 0) continue
 
                         val choice = choices.getJSONObject(0)
+                        val reason = choice.optString("finish_reason", "")
+                        if (reason.isNotEmpty() && reason != "null") finishReason = reason
                         val delta = choice.optJSONObject("delta") ?: continue
 
                         // Text streaming chunk
@@ -469,36 +490,18 @@ class LlmClient(
             val cost = calculateEstimatedCost(config.provider, config.modelName, promptTokens, completionTokens)
 
             if (toolCallsMap.isNotEmpty()) {
-                val detectedTools = mutableListOf<ToolCall>()
-                var hasInvalidArgs = false
-
-                for ((_, acc) in toolCallsMap) {
-                    if (acc.name.isNotEmpty()) {
-                        val parsed = parseArgumentsJson(acc.arguments.toString())
-                        if (parsed != null) {
-                            val idStr = acc.id.ifEmpty { UUID.randomUUID().toString() }
-                            detectedTools.add(ToolCall(id = idStr, name = acc.name, arguments = parsed, rawJson = acc.arguments.toString()))
-                        } else {
-                            hasInvalidArgs = true
-                        }
-                    }
-                }
-
+                val detectedTools = buildToolCalls(toolCallsMap.values, truncated = finishReason == "length")
                 if (detectedTools.isNotEmpty()) {
-                    val primaryTool = detectedTools.first()
                     emit(
                         LlmStreamEvent.ToolCallDetected(
                             thought = fullText,
-                            toolCall = primaryTool,
+                            toolCall = detectedTools.first(),
                             toolCalls = detectedTools,
                             promptTokens = promptTokens,
                             completionTokens = completionTokens,
                             estimatedCostUsd = cost
                         )
                     )
-                    return@executeCancellableCall
-                } else if (hasInvalidArgs) {
-                    emit(LlmStreamEvent.Error("Received malformed JSON arguments for tool call from model", 0, false))
                     return@executeCancellableCall
                 }
             }
@@ -523,7 +526,7 @@ class LlmClient(
                 return@executeCancellableCall
             }
 
-            emit(LlmStreamEvent.Completed(fullText = fullText, promptTokens = promptTokens, completionTokens = completionTokens, estimatedCostUsd = cost))
+            emit(LlmStreamEvent.Completed(fullText = fullText, promptTokens = promptTokens, completionTokens = completionTokens, estimatedCostUsd = cost, truncated = finishReason == "length"))
         }
     }
 
@@ -962,7 +965,7 @@ class LlmClient(
                         "error" -> {
                             val err = json.optJSONObject("error")
                             val errMsg = err?.optString("message", "Claude stream error") ?: "Claude stream error"
-                            val isRetryable = err?.optString("type") == "rate_limit_error"
+                            val isRetryable = isRetryableStreamError(err?.optString("type").orEmpty(), errMsg)
                             emit(LlmStreamEvent.Error(errMsg, 0, isRetryable))
                             return@executeCancellableCall
                         }
@@ -1032,21 +1035,7 @@ class LlmClient(
             val cost = calculateEstimatedCost(config.provider, config.modelName, promptTokens, completionTokens)
 
             if (toolCallsMap.isNotEmpty()) {
-                val detectedTools = mutableListOf<ToolCall>()
-                var hasInvalidArgs = false
-
-                for ((_, acc) in toolCallsMap) {
-                    if (acc.name.isNotEmpty()) {
-                        val parsed = parseArgumentsJson(acc.arguments.toString())
-                        if (parsed != null) {
-                            val idStr = acc.id.ifEmpty { UUID.randomUUID().toString() }
-                            detectedTools.add(ToolCall(id = idStr, name = acc.name, arguments = parsed, rawJson = acc.arguments.toString()))
-                        } else {
-                            hasInvalidArgs = true
-                        }
-                    }
-                }
-
+                val detectedTools = buildToolCalls(toolCallsMap.toSortedMap().values, truncated = stopReason == "max_tokens")
                 if (detectedTools.isNotEmpty()) {
                     emit(
                         LlmStreamEvent.ToolCallDetected(
@@ -1058,9 +1047,6 @@ class LlmClient(
                             estimatedCostUsd = cost
                         )
                     )
-                    return@executeCancellableCall
-                } else if (hasInvalidArgs) {
-                    emit(LlmStreamEvent.Error("Received malformed JSON arguments for tool call from Claude", 0, false))
                     return@executeCancellableCall
                 }
             }
@@ -1079,9 +1065,34 @@ class LlmClient(
                 return@executeCancellableCall
             }
 
-            emit(LlmStreamEvent.Completed(fullText = fullText, promptTokens = promptTokens, completionTokens = completionTokens, estimatedCostUsd = cost))
+            emit(LlmStreamEvent.Completed(fullText = fullText, promptTokens = promptTokens, completionTokens = completionTokens, estimatedCostUsd = cost, truncated = stopReason == "max_tokens"))
         }
     }
+
+    /**
+     * Turns the accumulated tool calls into [ToolCall]s. A call whose arguments do not parse is kept
+     * with [INVALID_ARGUMENTS_KEY] so the model gets a fixable tool error (one bad call must neither
+     * end the run nor silently drop the call).
+     */
+    private fun buildToolCalls(accumulators: Collection<ToolCallAccumulator>, truncated: Boolean): List<ToolCall> =
+        accumulators.filter { it.name.isNotEmpty() }.map { acc ->
+            val raw = acc.arguments.toString()
+            val idStr = acc.id.ifEmpty { UUID.randomUUID().toString() }
+            val parsed = parseArgumentsJson(raw)
+            if (parsed != null) {
+                ToolCall(id = idStr, name = acc.name, arguments = parsed, rawJson = raw)
+            } else {
+                val why = when {
+                    truncated -> "Your tool call was cut off at the output token limit, so its arguments are incomplete " +
+                        "(${raw.length} characters arrived). Nothing was executed. Split the work into smaller calls, " +
+                        "e.g. write a large file in parts (first part with write_file, the rest appended with a command)."
+                    runCatching { JSONObject(raw.trim()) }.isSuccess -> "The 'command' argument was empty. Nothing was executed."
+                    else -> "The tool call arguments were not valid JSON (${raw.length} characters). Nothing was executed. " +
+                        "Send the call again with a valid JSON object; keep large contents smaller."
+                }
+                ToolCall(id = idStr, name = acc.name, arguments = mapOf(INVALID_ARGUMENTS_KEY to why), rawJson = "")
+            }
+        }
 
     private fun parseArgumentsJson(rawJson: String): Map<String, String>? {
         val trimmed = rawJson.trim()
