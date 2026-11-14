@@ -64,6 +64,7 @@ class TelegramChannelManager(private val runtime: AgentRuntime) {
             onPaired = ::onPaired,
             onTurnActive = ::onTurnActive
         )
+        g.onParkedDecision = { id, approved -> runtime.approvalQueue.decide(id, approved) }
         gateway = g
         statusJob = scope.launch { g.status.collect { _status.value = it; refreshState() } }
         g.start()
@@ -85,6 +86,25 @@ class TelegramChannelManager(private val runtime: AgentRuntime) {
     fun restart() {
         stop()
         start()
+    }
+
+    /**
+     * Sends a background result or agent notification to the paired accounts, when the channel
+     * runs and "Send results to Telegram" is on.
+     */
+    fun deliver(title: String, message: String) {
+        val g = gateway ?: return
+        if (!prefs.loadTelegramDelivery()) return
+        scope.launch {
+            g.notifyOwners("🔔 ${title.take(120)}\n\n${message.take(3_500)}")
+        }
+    }
+
+    /** Offers a parked approval as Approve / Reject buttons (same conditions as [deliver]). */
+    suspend fun askParkedApproval(entity: com.agent.mobile.data.storage.db.entity.PendingApprovalEntity) {
+        val g = gateway ?: return
+        if (!prefs.loadTelegramDelivery()) return
+        g.askParkedApproval(entity.id, com.agent.mobile.service.approval.ApprovalQueueManager.notificationText(entity))
     }
 
     /** Creates a fresh one-time pairing code (valid 15 minutes). */

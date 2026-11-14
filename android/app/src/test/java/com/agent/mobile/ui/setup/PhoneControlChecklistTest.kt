@@ -11,7 +11,7 @@ class PhoneControlChecklistTest {
 
     @Test
     fun termuxChecklistIsUnchangedByPhoneControl() {
-        assertEquals(5, setupItems(termuxDone).size)
+        assertEquals(6, setupItems(termuxDone).size)
         assertNull(nextSetupStep(setupItems(termuxDone)))
     }
 
@@ -34,6 +34,21 @@ class PhoneControlChecklistTest {
         // Done as soon as one of the permissions behind it works (the op itself is not always readable).
         assertEquals(SetupStep.NOTIFICATIONS, nextPhoneControlStep(phoneControlItems(facts.copy(accessibilityEnabled = true))))
         assertEquals(SetupStep.ACCESSIBILITY, nextPhoneControlStep(phoneControlItems(facts.copy(restrictedSettingsAllowed = true))))
+    }
+
+    @Test
+    fun phantomKillerStepIsOptionalAndOnlyWhereItApplies() {
+        assertFalse(phoneControlItems(termuxDone).any { it.step == SetupStep.PHANTOM_KILLER })
+        val facts = termuxDone.copy(accessibilityEnabled = true, notificationAccess = true, phantomKillerApplies = true)
+        val item = phoneControlItems(facts).single { it.step == SetupStep.PHANTOM_KILLER }
+        assertTrue(item.optional)
+        assertFalse(item.done)
+        assertTrue(phoneControlReady(phoneControlItems(facts)))
+        assertTrue(phoneControlItems(facts.copy(phantomKillerHandled = true)).single { it.step == SetupStep.PHANTOM_KILLER }.done)
+        val killer = com.agent.mobile.core.termux.PhantomProcessKiller
+        assertTrue(killer.ADB_COMMAND.contains("max_phantom_processes 2147483647"))
+        assertFalse(killer.applies(30))
+        assertTrue(killer.applies(31))
     }
 
     @Test

@@ -13,7 +13,6 @@ import com.agent.mobile.data.model.ToolCall
 import com.agent.mobile.data.network.TermuxBridgeClient
 import com.agent.mobile.data.storage.db.entity.AgentRunEntity
 import com.agent.mobile.data.storage.db.entity.PendingApprovalEntity
-import com.agent.mobile.service.AgentNotifier
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -137,7 +136,7 @@ class AgentTaskWorker(
             Log.e(TAG, "Background agent run failed: ${e.message}", e)
             if (runAttemptCount < 2) Result.retry() else {
                 runs.setRunStatus(runKey, AgentRunEntity.STATUS_FAILED, System.currentTimeMillis())
-                AgentNotifier.notify(appContext, "⚠️ ${plan.title}", e.localizedMessage ?: "Background run failed")
+                runtime.platform.notifyUser("⚠️ ${plan.title}", e.localizedMessage ?: "Background run failed")
                 Result.failure()
             }
         } finally {
@@ -230,6 +229,7 @@ class AgentTaskWorker(
             }
         }
         val title = if (result.success) plan.title else "⚠️ ${plan.title}"
-        AgentNotifier.notify(appContext, title, body)
+        // Notification, plus the paired Telegram accounts when that is switched on.
+        runtime.platform.notifyUser(title, body)
     }
 }

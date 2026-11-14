@@ -10,13 +10,17 @@ class SetupChecklistTest {
         termuxApiInstalled = false,
         runCommandGranted = false,
         batteryUnrestricted = false,
-        bridgeConnected = false
+        bridgeConnected = false,
+        amcBatteryUnrestricted = false
     )
 
     @Test
     fun stepsFollowTheJourneyInOrder() {
         assertEquals(
-            listOf(SetupStep.TERMUX, SetupStep.TERMUX_API, SetupStep.RUN_COMMAND, SetupStep.BACKGROUND, SetupStep.PAIRED),
+            listOf(
+                SetupStep.TERMUX, SetupStep.TERMUX_API, SetupStep.RUN_COMMAND, SetupStep.BACKGROUND,
+                SetupStep.AMC_BACKGROUND, SetupStep.PAIRED
+            ),
             setupItems(nothing).map { it.step }
         )
     }
@@ -28,8 +32,17 @@ class SetupChecklistTest {
 
     @Test
     fun pairingIsNextWhenEverythingElseIsDone() {
-        val facts = nothing.copy(termuxInstalled = true, termuxApiInstalled = true, runCommandGranted = true, batteryUnrestricted = true)
+        val facts = nothing.copy(
+            termuxInstalled = true, termuxApiInstalled = true, runCommandGranted = true, batteryUnrestricted = true,
+            amcBatteryUnrestricted = true
+        )
         assertEquals(SetupStep.PAIRED, nextSetupStep(setupItems(facts)))
+    }
+
+    @Test
+    fun amcItselfMustBeAllowedToRunInTheBackground() {
+        val facts = nothing.copy(termuxInstalled = true, termuxApiInstalled = true, runCommandGranted = true, batteryUnrestricted = true)
+        assertEquals(SetupStep.AMC_BACKGROUND, nextSetupStep(setupItems(facts)))
     }
 
     @Test

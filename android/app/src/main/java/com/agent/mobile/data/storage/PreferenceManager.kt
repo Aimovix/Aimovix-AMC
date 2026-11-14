@@ -67,6 +67,7 @@ class PreferenceManager(
         private const val KEY_ACCEPTED_LEGAL_AT = "key_accepted_legal_at"
         private const val KEY_TELEGRAM_BOT_TOKEN = "key_telegram_bot_token"
         private const val KEY_TELEGRAM_ENABLED = "key_telegram_enabled"
+        private const val KEY_TELEGRAM_DELIVERY = "telegram_delivery"
         private const val KEY_TELEGRAM_STATE = "key_telegram_state"
         private const val KEY_PHONE_BLOCKLIST = "key_phone_blocklist"
         private const val KEY_PHONE_ALLOWED = "key_phone_allowed"
@@ -315,6 +316,16 @@ class PreferenceManager(
     }
 
     fun loadTelegramEnabled(): Boolean = prefs.getBoolean(KEY_TELEGRAM_ENABLED, false)
+
+    /**
+     * Also send background results, agent notifications and approval questions of background runs
+     * to the paired Telegram accounts (off by default: content then passes through Telegram).
+     */
+    fun saveTelegramDelivery(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_TELEGRAM_DELIVERY, enabled).apply()
+    }
+
+    fun loadTelegramDelivery(): Boolean = prefs.getBoolean(KEY_TELEGRAM_DELIVERY, false)
 
     /** Paired accounts, sessions and update offset of the Telegram channel, as JSON. */
     fun saveTelegramState(json: String) {

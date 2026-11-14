@@ -180,6 +180,25 @@ fun ChannelsCard(
                 "Tip: set Android Settings → Apps → AMC → Battery to Unrestricted so messages arrive while the phone sleeps.",
                 style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 10.5.sp)
             )
+            var delivery by remember { mutableStateOf(preferenceManager.loadTelegramDelivery()) }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Send results to Telegram", style = MaterialTheme.typography.bodyMedium.copy(color = TextWhite))
+                    Text(
+                        "Results of background tasks, agent notifications and approval questions of background tasks " +
+                            "also go to your paired accounts. Their content then passes through Telegram's servers.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 10.5.sp)
+                    )
+                }
+                Switch(
+                    checked = delivery,
+                    onCheckedChange = {
+                        delivery = it
+                        preferenceManager.saveTelegramDelivery(it)
+                    },
+                    colors = SwitchDefaults.colors(checkedThumbColor = Color.Black, checkedTrackColor = AccentPrimary)
+                )
+            }
 
             HorizontalDivider(color = BorderSubtle)
 
