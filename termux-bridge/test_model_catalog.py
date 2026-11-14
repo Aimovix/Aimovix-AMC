@@ -30,34 +30,42 @@ class CatalogTests(unittest.TestCase):
             self.assertIn(m["tier"], ("primary", "speed", "small", "experimental"))
 
     def fake_hub(self, sizes=None, shas=None):
-        def fetch(owner, repo):
-            files = {}
-            for m in self.catalog["models"]:
-                o, r, f = verify.URL_PATTERN.match(m["url"]).groups()
-                if (o, r) == (owner, repo):
-                    files[f] = {"size": (sizes or {}).get(f, m["size_bytes"]), "sha256": (shas or {}).get(f, "a" * 64)}
-            return files
-        return fetch
+        """A Hub that matches the catalog as it is now (later edits to the catalog do not change it)."""
+        repos = {}
+        for m in self.catalog["models"]:
+            o, r, f = verify.URL_PATTERN.match(m["url"]).groups()
+            repos.setdefault((o, r), {})[f] = {
+                "size": (sizes or {}).get(f, m["size_bytes"]),
+                "sha256": (shas or {}).get(f, m["sha256"] or "a" * 64),
+            }
+        return lambda owner, repo: repos.get((owner, repo), {})
 
     def test_check_passes_with_matching_hub_and_write_fills_checksums(self):
         self.assertEqual(verify.check(self.catalog, fetch=self.fake_hub()), [])
-        verify.check(self.catalog, fetch=self.fake_hub(), write=True)
-        self.assertTrue(all(m["sha256"] == "a" * 64 for m in self.catalog["models"]))
+        for m in self.catalog["models"]:
+            m["sha256"] = ""
+        hub = self.fake_hub(shas={m["file"]: "c" * 64 for m in self.catalog["models"]})
+        verify.check(self.catalog, fetch=hub, write=True)
+        self.assertTrue(all(m["sha256"] == "c" * 64 for m in self.catalog["models"]))
+
+    def test_shipped_entries_are_verified(self):
+        for m in self.catalog["models"]:
+            self.assertRegex(m["sha256"], r"^[0-9a-f]{64}$", f"{m['id']} has no checksum")
 
     def test_wrong_size_missing_file_and_bad_checksum_are_reported(self):
         first = self.catalog["models"][0]
+        hub = self.fake_hub()
         problems = verify.check(self.catalog, fetch=self.fake_hub(sizes={first["file"]: 1}))
         self.assertTrue(any("size_bytes" in p for p in problems))
         first["sha256"] = "b" * 64
-        problems = verify.check(self.catalog, fetch=self.fake_hub())
-        self.assertTrue(any("sha256 does not match" in p for p in problems))
+        self.assertTrue(any("sha256 does not match" in p for p in verify.check(self.catalog, fetch=hub)))
         first["file"] = "other.gguf"
-        self.assertTrue(any("does not match the URL" in p for p in verify.check(self.catalog, fetch=self.fake_hub())))
+        self.assertTrue(any("does not match the URL" in p for p in verify.check(self.catalog, fetch=hub)))
 
     def test_non_hub_urls_are_rejected(self):
+        hub = self.fake_hub()
         self.catalog["models"][0]["url"] = "https://example.com/x.gguf"
-        self.assertTrue(any("URL must be" in p for p in verify.check(self.catalog, fetch=self.fake_hub())))
-
+        self.assertTrue(any("URL must be" in p for p in verify.check(self.catalog, fetch=hub)))
 
 if __name__ == "__main__":
     unittest.main()

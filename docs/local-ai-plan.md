@@ -123,7 +123,7 @@ Nicht auf einem echten Gerät getestet.
 | L3 Worker | ✅ | `service/scheduler/LocalModelSetupWorker.kt` (Foreground `dataSync`, Notification mit Balken und Cancel, `ensureConnected`, Retry bei Netz/Bridge). Kein eigener Worker-Test (`TestListenableWorkerBuilder` fehlt in den Abhängigkeiten). |
 | L4 Karte mit Balken | ✅ | `ui/settings/components/LocalModelCard.kt` (Zustand aus WorkManager und gespeichertem Zustand) |
 | L5 Wiederaufnahme | ✅ | `BootReceiver`, `MainActivity` (`resumeIfUnfinished`) |
-| M1 Katalog prüfen | ✅ | `scripts/verify_model_catalog.py` + CI-Job `model-catalog` (füllt fehlende SHA-256 auf Feature-Branches per Commit, prüft sonst); Größen per Hugging-Face-Verbindung bestätigt; Gemma auf die QAT-Datei (4,2 GB) korrigiert; `test_model_catalog.py` |
+| M1 Katalog prüfen | ✅ | `scripts/verify_model_catalog.py` + CI-Job `model-catalog` (füllt fehlende SHA-256 auf Feature-Branches per Commit, prüft sonst); Größen per Hugging-Face-Verbindung bestätigt; alle vier SHA-256 von der CI eingetragen; Gemma auf die QAT-Datei (4,2 GB) korrigiert; `test_model_catalog.py` |
 | M2, M3, A1–A5, D1, D2 | ⬜ | offen |
 
 Wichtig: Die Einrichtung verlangt jetzt eine Bridge mit `llm_background_install`. Nutzer mit altem Termux-Setup bekommen den Fix „Update bridge“ (startet den Installer per RUN_COMMAND; `amc update` gibt es nicht). Der Installer lädt von `main`, wirkt also erst nach dem Merge.
