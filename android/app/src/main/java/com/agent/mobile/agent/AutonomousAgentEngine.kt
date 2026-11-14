@@ -273,6 +273,13 @@ class AutonomousAgentEngine(
         scope.cancel()
     }
 
+    /** [close] and wait (up to [timeoutMs]) until the engine's coroutines have finished; for tests. */
+    internal fun closeAndAwait(timeoutMs: Long = 5_000L) {
+        close()
+        val job = scope.coroutineContext[Job] ?: return
+        runBlocking { withTimeoutOrNull(timeoutMs) { job.join() } }
+    }
+
     // -------------------------------------------------------------------------------------------
     // Sessions
     // -------------------------------------------------------------------------------------------

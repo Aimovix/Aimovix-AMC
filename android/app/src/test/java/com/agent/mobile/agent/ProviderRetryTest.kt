@@ -50,7 +50,7 @@ class ProviderRetryTest {
 
     @After
     fun tearDown() {
-        engines.forEach { it.close() }
+        engines.forEach { it.closeAndAwait() }
         server.shutdown()
         fallbackServer.shutdown()
         Dispatchers.resetMain()

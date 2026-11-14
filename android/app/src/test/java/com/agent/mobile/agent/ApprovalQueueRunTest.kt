@@ -84,7 +84,7 @@ class ApprovalQueueRunTest {
 
     @After
     fun tearDown() {
-        engines.forEach { it.close() }
+        engines.forEach { it.closeAndAwait() }
         server.shutdown()
         db.close()
         Dispatchers.resetMain()
