@@ -47,8 +47,12 @@ data class ResumeRequest(
     val chain: Int = 0
 ) {
     companion object {
-        /** Upper bound of runs per task (first run + resumes + continuations). */
-        const val MAX_CHAIN = 6
+        /**
+         * Upper bound of automatic runs per task (first run + continuations + restarts), about
+         * 12 x 25 steps. Resumes after the user answered an approval do not count: the user
+         * started them, and parking needs a user answer every time.
+         */
+        const val MAX_CHAIN = 12
 
         fun approvedNote(description: String) =
             "[AMC] The user approved the paused action `${description.take(300)}`."

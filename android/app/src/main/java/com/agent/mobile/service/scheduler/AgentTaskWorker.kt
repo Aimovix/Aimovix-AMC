@@ -194,7 +194,8 @@ class AgentTaskWorker(
     }
 
     private fun resumeFor(approval: PendingApprovalEntity): ResumeRequest? {
-        val chain = approval.chain + 1
+        // Not counted against the chain: the user's answer started this run.
+        val chain = approval.chain
         return when (approval.status) {
             PendingApprovalEntity.STATUS_APPROVED -> {
                 val args = ApprovalFingerprint.decodeArguments(approval.argumentsJson) ?: emptyMap()
