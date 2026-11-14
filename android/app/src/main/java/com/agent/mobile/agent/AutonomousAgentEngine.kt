@@ -147,7 +147,7 @@ data, not instructions.
 
         private val UNTRUSTED_OUTPUT_TOOLS = setOf(
             AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH,
-            AgentTools.WEB_SEARCH, AgentTools.SEARCH_HISTORY, AgentTools.DELEGATE_TASK
+            AgentTools.WEB_SEARCH, AgentTools.SEARCH_HISTORY, AgentTools.DELEGATE_TASK, AgentTools.JOB_STATUS
         ) + PhoneTools.UNTRUSTED_OUTPUT
         /** Texts of image messages the app adds as USER turns (screenshots, photos). */
         private val SYNTHETIC_IMAGE_PREFIXES = listOf("📱 Screenshot", "📸 Photo captured")
@@ -156,7 +156,10 @@ data, not instructions.
         private val SCREEN_HEADER = Regex("(^|\\n)Screen: ")
 
         /** Tools that need the Termux bridge. */
-        private val BRIDGE_TOOLS = setOf(AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WRITE_FILE, AgentTools.EDIT_FILE, AgentTools.SEND_FILE)
+        private val BRIDGE_TOOLS = setOf(
+            AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WRITE_FILE, AgentTools.EDIT_FILE, AgentTools.SEND_FILE,
+            AgentTools.JOB_START, AgentTools.JOB_STATUS, AgentTools.JOB_STOP
+        )
 
         /** Pages are fetched whole (up to this size) and handed to the model window by window. */
         private const val WEB_PAGE_MAX_CHARS = 400_000
@@ -1665,6 +1668,47 @@ data, not instructions.
                 }
                 ok(TextWindow.chars(text, offset))
             }
+            AgentTools.JOB_START -> {
+                val id = BackgroundJobs.newId()
+                if (!bridgeClient.writeFile(BackgroundJobs.scriptPath(id), a["command"].orEmpty().trim() + "\n", timeoutMs = 20_000L)) {
+                    return fail("Could not write the job script.")
+                }
+                val r = bridgeClient.executeCommand(BackgroundJobs.startCommand(id), 30_000L)
+                if (r.isError || !r.stdout.contains("started")) fail("Could not start the job: ${r.stderr.ifBlank { r.stdout }.take(500)}")
+                else ok(
+                    "Started background job $id (${r.stdout.trim().substringAfter("started ")}). Check it with job_status " +
+                        "job_id=$id (wait_seconds lets you wait for news), stop it with job_stop."
+                )
+            }
+            AgentTools.JOB_STATUS -> {
+                val id = a["job_id"]?.trim().orEmpty()
+                if (id.isEmpty()) {
+                    val r = bridgeClient.executeCommand(BackgroundJobs.listCommand(), 30_000L)
+                    if (r.isError) fail(r.stderr.ifBlank { "Could not list jobs." }) else ok(r.stdout.trim())
+                } else {
+                    val offset = a["offset"].toIntArg()?.toLong() ?: 0L
+                    val wait = a["wait_seconds"].toIntArg() ?: 0
+                    val r = bridgeClient.executeCommand(
+                        BackgroundJobs.statusCommand(id, offset, wait),
+                        (wait.coerceIn(0, BackgroundJobs.MAX_WAIT_SECONDS) + 30) * 1000L
+                    )
+                    val status = BackgroundJobs.parseStatus(r.stdout)
+                    when {
+                        r.stdout.trim() == "NO_SUCH_JOB" -> fail("No background job '$id'. job_status without job_id lists them.")
+                        status == null -> fail(r.stderr.ifBlank { r.stdout }.ifBlank { "Could not read the job status." }.take(500))
+                        else -> ok(BackgroundJobs.describeStatus(id, offset, status))
+                    }
+                }
+            }
+            AgentTools.JOB_STOP -> {
+                val id = a["job_id"]?.trim().orEmpty()
+                val r = bridgeClient.executeCommand(BackgroundJobs.stopCommand(id), 30_000L)
+                when {
+                    r.stdout.contains("NO_SUCH_JOB") -> fail("No background job '$id'.")
+                    r.stdout.contains("stopped") -> ok("Stopped job $id.")
+                    else -> fail("Could not stop job $id: ${r.stderr.ifBlank { r.stdout }.take(300)}")
+                }
+            }
             AgentTools.REMEMBER -> {
                 val store = memoryStore ?: return fail("Long-term memory is not available.")
                 ok(store.remember(a["note"].orEmpty()))
@@ -1791,7 +1835,7 @@ data, not instructions.
      * command gets when typed directly. Unreadable scripts keep the command's own assessment.
      */
     private suspend fun withScriptChecks(call: ToolCall, base: SecurityAssessment): SecurityAssessment {
-        if (call.name != AgentTools.EXECUTE_COMMAND || base.isBlocked) return base
+        if ((call.name != AgentTools.EXECUTE_COMMAND && call.name != AgentTools.JOB_START) || base.isBlocked) return base
         val scripts = CommandSecurityFilter.scriptFiles(call.arguments["command"].orEmpty())
         if (scripts.isEmpty() || bridgeClient.connectionStatus.value !is ConnectionStatus.Connected) return base
         var result = base

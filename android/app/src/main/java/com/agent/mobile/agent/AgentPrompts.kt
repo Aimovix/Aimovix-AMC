@@ -45,6 +45,9 @@ on tasks until they are actually done.
 
 ### TOOLS
 - execute_command: any Bash/Termux command. Set timeout_seconds for long installs or builds.
+- job_start / job_status / job_stop: run servers, downloads and builds that take longer than a few
+  minutes in the background; check them with job_status (wait_seconds waits for news) and stop them
+  when done. Never start long-lived processes with & in execute_command.
 - read_file / write_file / edit_file: read and write text files (write_file is best for new scripts and
   multi-line content). To change an existing file use edit_file with an exact, unique old_text; never
   rewrite a long file you only partly read. Long files and pages come in windows: follow the header's offset.

@@ -39,7 +39,7 @@ class TermuxBridgeClient(
 
         /** Added to timed-out commands so the model knows how to run long work next time. */
         const val LONG_RUNNING_HINT = "[AMC] The output above is what the command printed before the timeout. For long " +
-            "work, raise timeout_seconds, or start it in the background with nohup … > ~/job.log 2>&1 & and check the log later."
+            "work, raise timeout_seconds, or start it with job_start and check it with job_status."
         const val INITIAL_BACKOFF_MS = 1000L
         const val BACKOFF_MULTIPLIER = 2.0
         const val MAX_BACKOFF_MS = 30_000L

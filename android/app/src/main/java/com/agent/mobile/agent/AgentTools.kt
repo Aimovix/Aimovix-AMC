@@ -33,6 +33,9 @@ object AgentTools {
     const val DELEGATE_TASK = "delegate_task"
     const val SEARCH_HISTORY = "search_history"
     const val SEND_FILE = "send_file"
+    const val JOB_START = "job_start"
+    const val JOB_STATUS = "job_status"
+    const val JOB_STOP = "job_stop"
 
     enum class ParamType(val jsonType: String, val geminiType: String) {
         STRING("string", "STRING"),
@@ -188,6 +191,28 @@ object AgentTools {
             )
         ),
         Definition(
+            JOB_START,
+            "Start a long-running command in the background (server, download, build, anything over a few minutes). " +
+                "It keeps running across reconnects and continuations; output goes to a log. Returns a job id. " +
+                "Same security rules as execute_command.",
+            listOf(Param("command", ParamType.STRING, "The Bash command to run in the background."))
+        ),
+        Definition(
+            JOB_STATUS,
+            "Check a background job: running or finished (exit code), and its new output from a byte offset. " +
+                "Without job_id it lists all jobs. wait_seconds waits until the job ends or prints something new.",
+            listOf(
+                Param("job_id", ParamType.STRING, "The id from job_start (omit to list all jobs).", required = false),
+                Param("offset", ParamType.INTEGER, "Byte offset in the log to read from (default 0; use the offset from the last answer).", required = false),
+                Param("wait_seconds", ParamType.INTEGER, "Wait up to this long for news (0-${BackgroundJobs.MAX_WAIT_SECONDS}, default 0).", required = false)
+            )
+        ),
+        Definition(
+            JOB_STOP,
+            "Stop a background job and everything it started.",
+            listOf(Param("job_id", ParamType.STRING, "The id from job_start."))
+        ),
+        Definition(
             LIST_SCHEDULED_TASKS,
             "List the background tasks you have scheduled, with their ids and states.",
             emptyList()
@@ -320,6 +345,10 @@ object AgentTools {
             DELEGATE_TASK -> "delegate_task: ${a["task"].orEmpty().replace('\n', ' ').take(160)}"
             SEARCH_HISTORY -> "search_history: ${a["query"].orEmpty().take(120)}"
             SEND_FILE -> "send_file ${a["path"].orEmpty()}"
+            JOB_START -> "job_start: ${a["command"]?.trim().orEmpty()}"
+            JOB_STATUS -> "job_status ${a["job_id"].orEmpty()}".trim() +
+                (a["offset"]?.takeIf { it.isNotBlank() && it.trim() != "0" }?.let { " (from byte $it)" } ?: "")
+            JOB_STOP -> "job_stop ${a["job_id"].orEmpty()}"
             else -> "${call.name} ${JSONObject(a as Map<*, *>)}"
         }
     }
@@ -428,6 +457,22 @@ object AgentTools {
                 }
             }
             CANCEL_SCHEDULED_TASK -> SecurityAssessment(RiskLevel.LOW, "Cancelling a background task")
+            // A background job runs a shell command: exactly the rules of execute_command.
+            JOB_START -> {
+                val cmd = a["command"]?.trim().orEmpty()
+                if (cmd.isEmpty()) SecurityAssessment(RiskLevel.BLOCKED, "Empty command.")
+                else CommandSecurityFilter.analyze(cmd)
+            }
+            JOB_STATUS -> {
+                val id = a["job_id"]?.trim().orEmpty()
+                if (id.isNotEmpty() && !BackgroundJobs.isValidId(id)) SecurityAssessment(RiskLevel.BLOCKED, "Invalid job id.")
+                else SecurityAssessment(RiskLevel.LOW, "Checking a background job")
+            }
+            JOB_STOP -> {
+                val id = a["job_id"]?.trim().orEmpty()
+                if (!BackgroundJobs.isValidId(id)) SecurityAssessment(RiskLevel.BLOCKED, "Invalid job id.")
+                else SecurityAssessment(RiskLevel.MEDIUM, "Stopping a background job the agent started", sensitive = false)
+            }
             SCHEDULE_TASK -> {
                 if (a["prompt"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A prompt is required.")
                 else SecurityAssessment(RiskLevel.MEDIUM, "Scheduling unattended background work")
