@@ -86,6 +86,83 @@ class BridgeReconnectRegressionTest {
         assertNotNull("Client must not stay stuck in Connecting (was ${c.connectionStatus.value})", connected)
     }
 
+    /** Accepts "good", streams "step 1 done" for every command and then optionally reports a daemon timeout. */
+    private fun slowCommandServer(daemonTimeout: Boolean) = object : WebSocketListener() {
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            val json = JSONObject(text)
+            when (json.optString("action")) {
+                "auth" -> webSocket.send(JSONObject().put("type", "auth_ok").put("cwd", "~").toString())
+                "execute" -> {
+                    val id = json.optString("execution_id")
+                    webSocket.send(JSONObject().put("type", "stdout").put("execution_id", id).put("data", "step 1 done\n").toString())
+                    if (daemonTimeout) {
+                        webSocket.send(
+                            JSONObject().put("type", "error").put("execution_id", id)
+                                .put("error", "Command timed out and was stopped.").toString()
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun aTimedOutCommandKeepsTheOutputItPrinted() = runBlocking {
+        server = MockWebServer().apply {
+            enqueue(MockResponse().withWebSocketUpgrade(slowCommandServer(daemonTimeout = false)))
+            start()
+        }
+        val c = client(server!!.port, "good")
+        c.connect("good")
+        assertNotNull(withTimeoutOrNull(5_000) { c.connectionStatus.first { it is ConnectionStatus.Connected } })
+
+        val result = c.executeCommand("make all", timeoutMs = 1_500)
+        assertEquals(124, result.exitCode)
+        assertTrue(result.isError)
+        assertTrue("Output before the timeout is kept (was '${result.stdout}')", result.stdout.contains("step 1 done"))
+        assertTrue(result.stderr.contains("Timeout"))
+    }
+
+    @Test
+    fun aDaemonTimeoutErrorKeepsTheOutputItPrinted() = runBlocking {
+        server = MockWebServer().apply {
+            enqueue(MockResponse().withWebSocketUpgrade(slowCommandServer(daemonTimeout = true)))
+            start()
+        }
+        val c = client(server!!.port, "good")
+        c.connect("good")
+        assertNotNull(withTimeoutOrNull(5_000) { c.connectionStatus.first { it is ConnectionStatus.Connected } })
+
+        val result = c.executeCommand("make all", timeoutMs = 10_000)
+        assertEquals(124, result.exitCode)
+        assertTrue(result.stdout.contains("step 1 done"))
+        assertTrue(result.stderr.contains("Command timed out and was stopped."))
+    }
+
+    @Test
+    fun aFileRequestWithoutAnswerFailsAsIoErrorNotAsCancellation() = runBlocking {
+        // The daemon accepts the connection but never answers read_file (Termux frozen by the system).
+        server = MockWebServer().apply {
+            enqueue(MockResponse().withWebSocketUpgrade(authServer("good")))
+            start()
+        }
+        val c = client(server!!.port, "good")
+        c.connect("good")
+        assertNotNull(withTimeoutOrNull(5_000) { c.connectionStatus.first { it is ConnectionStatus.Connected } })
+
+        val error = try {
+            c.readFile("~/notes.txt", timeoutMs = 300)
+            null
+        } catch (e: Throwable) {
+            e
+        }
+        assertTrue(
+            "A timeout must be a normal I/O error, not a cancellation of the agent run (was $error)",
+            error is java.io.IOException && error !is kotlinx.coroutines.CancellationException
+        )
+        assertTrue(error!!.message!!.contains("did not answer read_file"))
+    }
+
     @Test
     fun reconnectIfDisconnectedRecoversAfterAFailure() = runBlocking {
         val port = freePort()
