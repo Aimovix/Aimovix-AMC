@@ -27,13 +27,21 @@ class AgentRuntime private constructor(context: Context) {
     /** The user's persona and standing instructions for the agent (like OpenClaw's SOUL.md). */
     val personaStore = TextFileStore(File(appContext.filesDir, "agent/SOUL.md"))
     val scheduler = SchedulerManager(appContext)
-    val platform: AgentPlatform = AndroidAgentPlatform(appContext, scheduler)
+    val platform: AgentPlatform = AndroidAgentPlatform(appContext, scheduler) { title, message ->
+        telegram.deliver(title, message)
+    }
     /** Phone control layer (screen, notifications, intents, Shizuku) shared by every engine. */
     val phoneController: com.agent.mobile.agent.PhoneController =
         com.agent.mobile.phone.AndroidPhoneController(appContext, preferenceManager) { title, prompt ->
             scheduler.scheduleAgentTask(title, prompt, delayMinutes = 0, repeatEveryMinutes = 0)
         }
     val telegram: TelegramChannelManager by lazy { TelegramChannelManager(this) }
+    /** Background-run approvals waiting for the user; answering one resumes its task. */
+    val approvalQueue = com.agent.mobile.service.approval.ApprovalQueueManager(
+        appContext, database.agentQueueDao()
+    ) { approvalId -> scheduler.enqueueResume(approvalId) }.also { queue ->
+        queue.remoteAsker = { entity -> telegram.askParkedApproval(entity) }
+    }
     /** Starts the Termux bridge through RUN_COMMAND when it is not reachable. */
     val bridgeStarter = com.agent.mobile.core.termux.BridgeStarter(appContext)
 
@@ -50,10 +58,17 @@ class AgentRuntime private constructor(context: Context) {
 
 class AndroidAgentPlatform(
     private val context: Context,
-    private val scheduler: SchedulerManager
+    private val scheduler: SchedulerManager,
+    /** Second place for agent messages (paired Telegram accounts, when switched on). */
+    private val alsoDeliver: (title: String, message: String) -> Unit = { _, _ -> }
 ) : AgentPlatform {
     override fun notifyUser(title: String, message: String) {
         AgentNotifier.notify(context, title, message)
+        try {
+            alsoDeliver(title, message)
+        } catch (e: Exception) {
+            android.util.Log.w("AgentPlatform", "Extra delivery failed: ${e.message}")
+        }
     }
 
     override fun notifyApprovalNeeded(callId: String, description: String) {

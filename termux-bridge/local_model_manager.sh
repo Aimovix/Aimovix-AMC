@@ -4,9 +4,12 @@
 #
 # Non-interactive, so the AMC bridge can drive it (stdin is /dev/null there):
 #   local_model_manager.sh status
-#   local_model_manager.sh install --model NAME.gguf --url https://... [--sha256 HEX]
+#   local_model_manager.sh install --model NAME.gguf --url https://... [--sha256 HEX] [--size BYTES]
+#       Starts the download in the background and returns at once; "status" reports progress.
 #   local_model_manager.sh start   --model NAME.gguf [--ctx 8192] [--threads N] [--port 8080]
 #   local_model_manager.sh stop
+#   local_model_manager.sh cancel                  (stops a running download; the .part file is kept)
+#   local_model_manager.sh delete  --model NAME.gguf
 #
 # Without arguments in a terminal it asks interactively (catalog from model_catalog.json).
 #
@@ -22,13 +25,17 @@ RUN_DIR="$AGENT_DIR/llm"
 PID_FILE="$RUN_DIR/llama-server.pid"
 LOG_FILE="$RUN_DIR/llama-server.log"
 CONF_FILE="$RUN_DIR/server.conf"
+# Background download: its pid, its state (KEY=VALUE, rewritten atomically) and its log.
+DL_PID_FILE="$RUN_DIR/download.pid"
+DL_STATE_FILE="$RUN_DIR/install.state"
+DL_LOG_FILE="$RUN_DIR/download.log"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG="$SCRIPT_DIR/model_catalog.json"
 mkdir -p "$MODELS_DIR" "$RUN_DIR"
 
 DEFAULT_PORT=8080
 DEFAULT_CTX=8192
-MIN_GGUF_BYTES=104857600
+MIN_GGUF_BYTES="${AMC_MIN_GGUF_BYTES:-104857600}"
 
 log() { echo "$*" >&2; }
 die() { log "❌ $*"; echo "status.error=$*"; exit 1; }
@@ -38,7 +45,7 @@ die() { log "❌ $*"; echo "status.error=$*"; exit 1; }
 # ------------------------------------------------------------------------------
 CMD="${1:-}"
 [ $# -gt 0 ] && shift
-MODEL=""; URL=""; SHA256=""; CTX="$DEFAULT_CTX"; THREADS=""; PORT="$DEFAULT_PORT"
+MODEL=""; URL=""; SHA256=""; CTX="$DEFAULT_CTX"; THREADS=""; PORT="$DEFAULT_PORT"; SIZE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --model) MODEL="${2:-}"; shift 2 ;;
@@ -47,6 +54,7 @@ while [ $# -gt 0 ]; do
         --ctx) CTX="${2:-}"; shift 2 ;;
         --threads) THREADS="${2:-}"; shift 2 ;;
         --port) PORT="${2:-}"; shift 2 ;;
+        --size) SIZE="${2:-}"; shift 2 ;;
         *) die "Unknown argument: $1" ;;
     esac
 done
@@ -57,6 +65,7 @@ esac
 [[ "$CTX" =~ ^[0-9]+$ ]] || die "ctx must be a number."
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "port must be a number."
 [ -z "$THREADS" ] || [[ "$THREADS" =~ ^[0-9]+$ ]] || die "threads must be a number."
+[ -z "$SIZE" ] || [[ "$SIZE" =~ ^[0-9]+$ ]] || die "size must be a number."
 
 # ------------------------------------------------------------------------------
 # Helpers
@@ -119,6 +128,8 @@ cmd_status() {
     echo "status.llama_installed=$(command -v llama-server >/dev/null 2>&1 && echo 1 || echo 0)"
     echo "status.models=$(cd "$MODELS_DIR" && ls -1 *.gguf 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
     echo "status.perf_cores=$(perf_cores)"
+    echo "status.free_mb=$(df -Pk "$MODELS_DIR" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')"
+    cmd_install_status
     if pid=$(server_pid); then
         [ -f "$CONF_FILE" ] && . "$CONF_FILE"
         port="${SERVER_PORT:-$DEFAULT_PORT}"
@@ -132,14 +143,75 @@ cmd_status() {
     fi
 }
 
+file_size() { stat -c %s "$1" 2>/dev/null || echo 0; }
+
+download_pid() {
+    local pid
+    [ -f "$DL_PID_FILE" ] || return 1
+    pid=$(cat "$DL_PID_FILE" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+}
+
+# Writes the download state atomically: phase model total error.
+write_state() {
+    local tmp="$DL_STATE_FILE.tmp"
+    printf 'PHASE=%s\nMODEL=%s\nTOTAL=%s\nERROR=%s\nUPDATED=%s\n' "$1" "$2" "${3:-0}" "${4:-}" "$(date +%s)" > "$tmp"
+    mv -f "$tmp" "$DL_STATE_FILE"
+}
+
+# Expected size: the server's Content-Length (after redirects), else the size the app passed.
+remote_size() {
+    local len
+    len=$(curl -sIL --max-time 20 "$URL" 2>/dev/null | tr -d '\r' | grep -i '^content-length:' | tail -1 | awk '{print $2}')
+    if [[ "$len" =~ ^[0-9]+$ ]] && [ "$len" -gt 0 ]; then echo "$len"; else echo "${SIZE:-0}"; fi
+}
+
+# Runs detached from the bridge call (see cmd_install). Phases: runtime → download → verify → done | error.
+cmd_download_worker() {
+    local path="$MODELS_DIR/$MODEL" part="$MODELS_DIR/$MODEL.part" total=0
+    write_state runtime "$MODEL" 0
+    ensure_llama || { write_state error "$MODEL" 0 runtime; die "llama.cpp could not be installed (pkg install llama-cpp)."; }
+    total=$(remote_size)
+    write_state download "$MODEL" "$total"
+    log "⬇️ Downloading $MODEL (resumes a partial download)..."
+    # -C - resumes the .part file after an interruption.
+    if ! curl --fail --show-error --location --retry 5 --retry-delay 5 -C - "$URL" -o "$part" >&2; then
+        write_state error "$MODEL" "$total" network
+        die "Download failed (the partial file is kept and resumed next time)."
+    fi
+    write_state verify "$MODEL" "$total"
+    if ! is_valid_gguf "$part"; then
+        rm -f "$part"; write_state error "$MODEL" "$total" format
+        die "The download is not a GGUF model."
+    fi
+    if [ -n "$SHA256" ]; then
+        if ! echo "$SHA256  $part" | sha256sum -c --status; then
+            rm -f "$part"; write_state error "$MODEL" "$total" checksum
+            die "SHA-256 mismatch."
+        fi
+    else
+        log "⚠️ No SHA-256 given; only the GGUF header was checked."
+    fi
+    mv -f "$part" "$path"
+    write_state done "$MODEL" "$(file_size "$path")"
+    log "✅ Installed $MODEL"
+}
+
 cmd_install() {
     [ -n "$MODEL" ] || die "--model is required."
-    ensure_llama || die "llama.cpp could not be installed (pkg install llama-cpp)."
-    local path="$MODELS_DIR/$MODEL" part="$MODELS_DIR/$MODEL.part"
+    local path="$MODELS_DIR/$MODEL"
+    if download_pid >/dev/null; then
+        # A download is running already: report it instead of starting a second one.
+        log "⏳ A download is already running."
+        cmd_install_status
+        return 0
+    fi
     if is_valid_gguf "$path"; then
         if [ -z "$SHA256" ] || echo "$SHA256  $path" | sha256sum -c --status 2>/dev/null; then
             log "✅ Model already present: $MODEL"
+            write_state done "$MODEL" "$(file_size "$path")"
             echo "status.installed=$MODEL"
+            cmd_install_status
             return 0
         fi
         log "⚠️ Existing file does not match the checksum; downloading again."
@@ -147,19 +219,75 @@ cmd_install() {
     fi
     [ -n "$URL" ] || die "--url is required to download $MODEL."
     case "$URL" in https://*) ;; *) die "Only https URLs are allowed." ;; esac
-    log "⬇️ Downloading $MODEL (resumes a partial download)..."
-    # -C - resumes the .part file after an interruption.
-    curl --fail --show-error --location --retry 5 --retry-delay 5 -C - "$URL" -o "$part" >&2 \
-        || die "Download failed (the partial file is kept and resumed next time)."
-    is_valid_gguf "$part" || { rm -f "$part"; die "The download is not a GGUF model."; }
-    if [ -n "$SHA256" ]; then
-        echo "$SHA256  $part" | sha256sum -c --status || { rm -f "$part"; die "SHA-256 mismatch."; }
-    else
-        log "⚠️ No SHA-256 given; only the GGUF header was checked."
+    local self="${BASH_SOURCE[0]}"
+    local args=(_download --model "$MODEL" --url "$URL")
+    [ -n "$SHA256" ] && args+=(--sha256 "$SHA256")
+    [ -n "$SIZE" ] && args+=(--size "$SIZE")
+    write_state runtime "$MODEL" "${SIZE:-0}"
+    # setsid + nohup: the download survives the bridge call, the app and the terminal.
+    setsid nohup bash "$self" "${args[@]}" >"$DL_LOG_FILE" 2>&1 < /dev/null &
+    echo $! > "$DL_PID_FILE"
+    log "⬇️ Download started in the background."
+    cmd_install_status
+}
+
+# status.install_* lines: what the download is doing right now.
+cmd_install_status() {
+    local PHASE="idle" MODEL_S="" TOTAL=0 ERROR="" running=0 bytes=0
+    if [ -f "$DL_STATE_FILE" ]; then
+        PHASE=$(sed -n 's/^PHASE=//p' "$DL_STATE_FILE")
+        MODEL_S=$(sed -n 's/^MODEL=//p' "$DL_STATE_FILE")
+        TOTAL=$(sed -n 's/^TOTAL=//p' "$DL_STATE_FILE")
+        ERROR=$(sed -n 's/^ERROR=//p' "$DL_STATE_FILE")
     fi
-    mv -f "$part" "$path"
-    log "✅ Installed $MODEL"
-    echo "status.installed=$MODEL"
+    download_pid >/dev/null && running=1
+    # The worker died mid-way (killed, phone restarted): report it so the app resumes it.
+    if [ "$running" = 0 ] && { [ "$PHASE" = runtime ] || [ "$PHASE" = download ] || [ "$PHASE" = verify ]; }; then
+        PHASE=interrupted
+    fi
+    if [ -n "$MODEL_S" ]; then
+        if [ -f "$MODELS_DIR/$MODEL_S.part" ]; then bytes=$(file_size "$MODELS_DIR/$MODEL_S.part")
+        elif [ -f "$MODELS_DIR/$MODEL_S" ]; then bytes=$(file_size "$MODELS_DIR/$MODEL_S"); fi
+    fi
+    echo "status.install_phase=${PHASE:-idle}"
+    echo "status.install_model=$MODEL_S"
+    echo "status.install_bytes=$bytes"
+    echo "status.install_total=${TOTAL:-0}"
+    echo "status.install_error=$ERROR"
+    echo "status.install_running=$running"
+}
+
+cmd_cancel() {
+    local pid state_model=""
+    [ -f "$DL_STATE_FILE" ] && state_model=$(sed -n 's/^MODEL=//p' "$DL_STATE_FILE")
+    if pid=$(download_pid); then
+        # The worker runs in its own session: stop curl with it.
+        kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.3
+        done
+        kill -9 -- "-$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+        log "🛑 Download stopped; the partial file is kept."
+    fi
+    rm -f "$DL_PID_FILE"
+    [ -n "$state_model" ] && write_state cancelled "$state_model" 0
+    cmd_install_status
+}
+
+cmd_delete() {
+    [ -n "$MODEL" ] || die "--model is required."
+    local state_model=""
+    [ -f "$DL_STATE_FILE" ] && state_model=$(sed -n 's/^MODEL=//p' "$DL_STATE_FILE")
+    if [ "$state_model" = "$MODEL" ] && download_pid >/dev/null; then cmd_cancel >/dev/null; fi
+    if server_pid >/dev/null; then
+        [ -f "$CONF_FILE" ] && . "$CONF_FILE"
+        [ "${SERVER_MODEL:-}" = "$MODEL" ] && cmd_stop >/dev/null
+    fi
+    rm -f "$MODELS_DIR/$MODEL" "$MODELS_DIR/$MODEL.part"
+    [ "$state_model" = "$MODEL" ] && rm -f "$DL_STATE_FILE"
+    log "🗑️ Deleted $MODEL"
+    echo "status.deleted=$MODEL"
 }
 
 cmd_stop() {
@@ -240,15 +368,18 @@ for m in json.load(open(sys.argv[1]))["models"]:
     [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#entries[@]} ] || choice=1
     e="${entries[$((choice - 1))]}"
     MODEL=$(echo "$e" | cut -f1); URL=$(echo "$e" | cut -f2); SHA256=$(echo "$e" | cut -f3); CTX=$(echo "$e" | cut -f4)
-    cmd_install && cmd_start
+    cmd_download_worker && cmd_start
     echo "In AMC Settings select 'Local' with http://127.0.0.1:$PORT/v1"
 }
 
 case "$CMD" in
     status) cmd_status ;;
     install) cmd_install ;;
+    _download) cmd_download_worker ;;
     start) cmd_start ;;
     stop) cmd_stop ;;
+    cancel) cmd_cancel ;;
+    delete) cmd_delete ;;
     "") cmd_interactive ;;
-    *) die "Unknown command '$CMD' (status|install|start|stop)." ;;
+    *) die "Unknown command '$CMD' (status|install|start|stop|cancel|delete)." ;;
 esac

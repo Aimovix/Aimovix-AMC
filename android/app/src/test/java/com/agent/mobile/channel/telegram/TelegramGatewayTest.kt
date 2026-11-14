@@ -131,6 +131,41 @@ class TelegramGatewayTest {
         withTimeout(timeoutMs) { while (!condition()) delay(20) }
     }
 
+    private fun callback(from: Long, data: String) = TelegramBotApi.Update(
+        updateId = nextMessageId.incrementAndGet(),
+        callback = TelegramBotApi.CallbackQuery(id = "cb", fromId = from, chatId = from, messageId = 7, data = data)
+    )
+
+    @Test
+    fun ownersGetBackgroundResultsAndStrangersNothing() = runBlocking {
+        pairOwner()
+        gateway.notifyOwners("🔔 Task done")
+        assertEquals(listOf("🔔 Task done"), sentTexts(owner))
+        assertTrue(sentTexts(stranger).isEmpty())
+    }
+
+    @Test
+    fun parkedApprovalButtonsReachTheQueueOnlyFromPairedAccounts() = runBlocking {
+        pairOwner()
+        val decisions = CopyOnWriteArrayList<Pair<String, Boolean>>()
+        gateway.onParkedDecision = { id, approved -> decisions += id to approved; decisions.size == 1 }
+        gateway.askParkedApproval("abc-123", "Background: send SMS")
+        val ask = calls.last { it.method == "sendMessage" }
+        assertEquals(owner.toString(), ask.params["chat_id"])
+        assertTrue(ask.params["reply_markup"].orEmpty().contains("pk:abc-123:y"))
+
+        gateway.handleUpdate(callback(stranger, "pk:abc-123:y"))
+        assertTrue("Strangers cannot decide", decisions.isEmpty())
+
+        gateway.handleUpdate(callback(owner, "pk:abc-123:n"))
+        assertEquals(listOf("abc-123" to false), decisions.toList())
+        gateway.handleUpdate(callback(owner, "pk:abc-123:y"))
+        assertEquals("A later answer is passed on but loses", 2, decisions.size)
+        val answers = calls.filter { it.method == "answerCallbackQuery" }.map { it.params["text"] }
+        assertTrue(answers.contains("Rejected"))
+        assertTrue(answers.contains("Already decided."))
+    }
+
     @Test
     fun stateRoundTripsThroughJson() {
         val state = TelegramState(

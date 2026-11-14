@@ -123,8 +123,49 @@ fun SetupWizardScreen(
                     notice = SetupNotice("Open Android settings, then Apps, Termux, Battery, and choose Unrestricted.")
                 }
             }
+            SetupStep.AMC_BACKGROUND -> {
+                val ask = android.content.Intent(
+                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    android.net.Uri.parse("package:${context.packageName}")
+                )
+                val list = android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                if (!com.agent.mobile.phone.PhoneControlSetup.startFirst(context, listOf(ask, list))) {
+                    notice = SetupNotice("Open Android settings, then Apps, AMC, Battery, and choose Unrestricted.")
+                }
+            }
             SetupStep.PAIRED -> startPairing()
             else -> Unit // phone control steps are handled by onPhoneStepAction
+        }
+    }
+
+    /** Runs the commands through Shizuku when it is ready; otherwise shows the ADB command to copy. */
+    fun switchOffPhantomKiller() {
+        val killer = com.agent.mobile.core.termux.PhantomProcessKiller
+        if (facts.shizuku != com.agent.mobile.phone.ShizukuShell.Status.READY) {
+            phoneNotice = SetupNotice(
+                "Run this once on a computer with ADB (USB or wireless debugging), or set up Shizuku first:",
+                command = killer.ADB_COMMAND
+            )
+            return
+        }
+        coroutineScope.launch {
+            val failed = killer.COMMANDS.mapNotNull { args ->
+                val r = try {
+                    com.agent.mobile.phone.ShizukuShell.run(context, args, 10_000L)
+                } catch (e: Exception) {
+                    null
+                }
+                if (r == null || r.exitCode != 0) args.joinToString(" ") else null
+            }
+            // The settings key does not exist before Android 14; the device_config lines are what matter.
+            val essentialFailed = failed.any { it.contains("device_config") }
+            if (essentialFailed) {
+                phoneNotice = SetupNotice("Shizuku could not change it. Run this on a computer with ADB:", command = killer.ADB_COMMAND)
+            } else {
+                killer.markHandled(context)
+                phoneNotice = SetupNotice("Done. Android no longer stops Termux's background processes.")
+            }
+            facts = readSetupFacts(context, connectionStatus is ConnectionStatus.Connected)
         }
     }
 
@@ -157,6 +198,7 @@ fun SetupWizardScreen(
                 }
                 com.agent.mobile.phone.ShizukuShell.Status.READY -> Unit
             }
+            SetupStep.PHANTOM_KILLER -> switchOffPhantomKiller()
             else -> Unit
         }
         facts = readSetupFacts(context, connectionStatus is ConnectionStatus.Connected)

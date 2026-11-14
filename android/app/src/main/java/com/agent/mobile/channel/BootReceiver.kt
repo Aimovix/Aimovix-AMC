@@ -16,6 +16,8 @@ class BootReceiver : BroadcastReceiver() {
             if (prefs.loadTelegramEnabled() && prefs.loadAcceptedLegalVersion() >= LegalTexts.VERSION) {
                 ChannelGatewayService.start(context)
             }
+            // A local model setup that was under way continues (the download resumes).
+            com.agent.mobile.service.scheduler.LocalModelSetupWorker.resumeIfUnfinished(context)
         } catch (e: Exception) {
             Log.w("AmcBootReceiver", "Not starting channels: ${e.message}")
         }

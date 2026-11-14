@@ -61,6 +61,14 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
             personaStore = runtime.personaStore,
             phone = runtime.phoneController
         )
+        // A finished local model setup changes the model; also continue a setup that stopped half-way.
+        viewModelScope.launch {
+            com.agent.mobile.service.scheduler.LocalModelSetupWorker.activated.collect { agentEngine.reloadSettings() }
+        }
+        com.agent.mobile.service.scheduler.LocalModelSetupWorker.resumeIfUnfinished(context)
+        agentEngine.bridgeRecovery = {
+            runtime.bridgeStarter.ensureConnected(bridgeClient, preferenceManager.loadAuthToken(), 20_000L)
+        }
         bridgeClient.connect(savedToken)
         // When the bridge is down, let AMC start it in Termux (if allowed) and reconnect at once.
         viewModelScope.launch {

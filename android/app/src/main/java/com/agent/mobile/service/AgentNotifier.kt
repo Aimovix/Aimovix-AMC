@@ -12,6 +12,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.agent.mobile.MainActivity
+import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Posts agent notifications (results of background runs, reminders, approval requests). */
@@ -139,6 +140,22 @@ class ApprovalActionReceiver : android.content.BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val callId = intent.getStringExtra(EXTRA_CALL_ID) ?: return
         val approve = intent.getBooleanExtra(EXTRA_APPROVE, false)
+        val parkedId = com.agent.mobile.service.approval.ApprovalQueueManager.parkedIdOf(callId)
+        if (parkedId != null) {
+            // A background run parked this action and has ended; record the answer and resume the task.
+            val pending = goAsync()
+            val appContext = context.applicationContext
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    com.agent.mobile.AgentRuntime.get(appContext).approvalQueue.decide(parkedId, approve)
+                } catch (e: Exception) {
+                    Log.w("ApprovalAction", "Could not record the decision for $parkedId: ${e.message}")
+                } finally {
+                    pending.finish()
+                }
+            }
+            return
+        }
         if (!com.agent.mobile.agent.ApprovalActions.decide(callId, approve)) {
             Log.i("ApprovalAction", "Approval $callId was already decided")
         }

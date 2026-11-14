@@ -39,8 +39,8 @@ import com.agent.mobile.ui.theme.*
  * phone control (a second group, shown below the Termux steps).
  */
 enum class SetupStep {
-    TERMUX, TERMUX_API, RUN_COMMAND, BACKGROUND, PAIRED,
-    RESTRICTED_SETTINGS, ACCESSIBILITY, NOTIFICATIONS, USAGE_STATS, SHIZUKU
+    TERMUX, TERMUX_API, RUN_COMMAND, BACKGROUND, AMC_BACKGROUND, PAIRED,
+    RESTRICTED_SETTINGS, ACCESSIBILITY, NOTIFICATIONS, USAGE_STATS, SHIZUKU, PHANTOM_KILLER
 }
 
 /** What the app can observe about the setup right now. */
@@ -56,7 +56,12 @@ data class SetupFacts(
     val accessibilityEnabled: Boolean = false,
     val notificationAccess: Boolean = false,
     val usageAccess: Boolean = false,
-    val shizuku: ShizukuShell.Status = ShizukuShell.Status.NOT_INSTALLED
+    val shizuku: ShizukuShell.Status = ShizukuShell.Status.NOT_INSTALLED,
+    /** AMC itself may run in the background (scheduled tasks, Telegram, resumed tasks). */
+    val amcBatteryUnrestricted: Boolean = true,
+    /** Android 12+ kills Termux's child processes unless the phantom process killer is off. */
+    val phantomKillerApplies: Boolean = false,
+    val phantomKillerHandled: Boolean = false
 )
 
 data class SetupItem(val step: SetupStep, val done: Boolean, val optional: Boolean = false)
@@ -74,6 +79,7 @@ fun setupItems(facts: SetupFacts): List<SetupItem> = listOf(
     SetupItem(SetupStep.TERMUX_API, facts.termuxApiInstalled),
     SetupItem(SetupStep.RUN_COMMAND, facts.runCommandGranted),
     SetupItem(SetupStep.BACKGROUND, facts.batteryUnrestricted),
+    SetupItem(SetupStep.AMC_BACKGROUND, facts.amcBatteryUnrestricted),
     SetupItem(SetupStep.PAIRED, facts.bridgeConnected)
 )
 
@@ -97,6 +103,7 @@ fun phoneControlItems(facts: SetupFacts): List<SetupItem> = buildList {
     add(SetupItem(SetupStep.NOTIFICATIONS, facts.notificationAccess))
     add(SetupItem(SetupStep.USAGE_STATS, facts.usageAccess, optional = true))
     add(SetupItem(SetupStep.SHIZUKU, facts.shizuku == ShizukuShell.Status.READY, optional = true))
+    if (facts.phantomKillerApplies) add(SetupItem(SetupStep.PHANTOM_KILLER, facts.phantomKillerHandled, optional = true))
 }
 
 /** First open required step; once those are done, the first open optional one. */
@@ -128,12 +135,14 @@ fun setupStepTitle(step: SetupStep): String = when (step) {
     SetupStep.TERMUX_API -> "Install Termux:API"
     SetupStep.RUN_COMMAND -> "Allow AMC to run commands in Termux"
     SetupStep.BACKGROUND -> "Let Termux run in the background"
+    SetupStep.AMC_BACKGROUND -> "Let AMC run in the background"
     SetupStep.PAIRED -> "Start the bridge and pair"
     SetupStep.RESTRICTED_SETTINGS -> "Allow restricted settings"
     SetupStep.ACCESSIBILITY -> "Turn on AMC Phone Control"
     SetupStep.NOTIFICATIONS -> "Allow notification access"
     SetupStep.USAGE_STATS -> "Allow usage access"
     SetupStep.SHIZUKU -> "Shizuku (ADB rights)"
+    SetupStep.PHANTOM_KILLER -> "Stop Android from killing Termux processes"
 }
 
 fun setupStepHint(step: SetupStep): String = when (step) {
@@ -141,6 +150,9 @@ fun setupStepHint(step: SetupStep): String = when (step) {
     SetupStep.TERMUX_API -> "Needed for the camera, location, SMS and other phone features. Use the same source as Termux."
     SetupStep.RUN_COMMAND -> "Android asks once. After that AMC can start the bridge in Termux for you."
     SetupStep.BACKGROUND -> "Set Termux's battery use to Unrestricted, so the bridge keeps running while the phone sleeps."
+    SetupStep.AMC_BACKGROUND ->
+        "Allow AMC to ignore battery optimisation, so scheduled tasks, the heartbeat, Telegram and tasks that " +
+            "continue after your approval run on time while the phone sleeps."
     SetupStep.PAIRED -> "AMC starts the bridge in Termux and fetches the token. Nothing to copy."
     SetupStep.RESTRICTED_SETTINGS ->
         "AMC comes from GitHub, not from an app store. Android 13 and later block accessibility and notification " +
@@ -153,18 +165,23 @@ fun setupStepHint(step: SetupStep): String = when (step) {
         "Lets the agent read, open and answer notifications when a task needs it. Answering always asks you first."
     SetupStep.USAGE_STATS -> "Optional. Lets the agent tell you which apps you used and for how long."
     SetupStep.SHIZUKU -> shizukuHint(ShizukuShell.Status.NOT_INSTALLED)
+    SetupStep.PHANTOM_KILLER ->
+        "Optional, Android 12 and later. Android stops background child processes, which can end the Termux " +
+            "bridge and long commands. With Shizuku one tap switches this off; otherwise copy the ADB command."
 }
 
 fun setupStepAction(step: SetupStep): String = when (step) {
     SetupStep.TERMUX, SetupStep.TERMUX_API -> "Open F-Droid"
     SetupStep.RUN_COMMAND -> "Allow"
     SetupStep.BACKGROUND -> "Open Termux settings"
+    SetupStep.AMC_BACKGROUND -> "Allow"
     SetupStep.PAIRED -> "Start & pair"
     SetupStep.RESTRICTED_SETTINGS -> "Open App info"
     SetupStep.ACCESSIBILITY -> "Review and turn on"
     SetupStep.NOTIFICATIONS -> "Open notification access"
     SetupStep.USAGE_STATS -> "Open usage access"
     SetupStep.SHIZUKU -> shizukuAction(ShizukuShell.Status.NOT_INSTALLED)
+    SetupStep.PHANTOM_KILLER -> "Switch off"
 }
 
 /** The official F-Droid pages for the two apps; null for steps that have no page. */
@@ -186,7 +203,10 @@ fun readSetupFacts(context: Context, bridgeConnected: Boolean): SetupFacts = Set
     accessibilityEnabled = PhoneControlService.isEnabledInSettings(context),
     notificationAccess = AmcNotificationListener.isEnabled(context),
     usageAccess = com.agent.mobile.phone.PhoneControlSetup.hasUsageAccess(context),
-    shizuku = ShizukuShell.status(context)
+    shizuku = ShizukuShell.status(context),
+    amcBatteryUnrestricted = TermuxBridgeClient.isIgnoringBatteryOptimizations(context, context.packageName),
+    phantomKillerApplies = com.agent.mobile.core.termux.PhantomProcessKiller.applies(),
+    phantomKillerHandled = com.agent.mobile.core.termux.PhantomProcessKiller.isHandled(context)
 )
 
 private fun isPackageInstalled(context: Context, packageName: String): Boolean = try {

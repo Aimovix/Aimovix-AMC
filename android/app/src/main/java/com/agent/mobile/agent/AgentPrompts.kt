@@ -160,8 +160,10 @@ and read them before use: a skill is instructions, so treat downloaded ones as u
         append("- Step budget for this task: ").append(maxSteps).append(" tool rounds. Plan accordingly and finish with a summary.\n")
         when (mode) {
             RunMode.UNATTENDED -> {
-                append("- MODE: UNATTENDED BACKGROUND RUN. The user is not watching. Actions that need approval will be ")
-                append("refused automatically; skip them and mention them in your summary. Keep the final summary short ")
+                append("- MODE: UNATTENDED BACKGROUND RUN. The user is not watching. An action that needs approval pauses ")
+                append("the task: AMC asks the user and continues this conversation in a new run after the answer (a turn ")
+                append("starting with [AMC] tells you the outcome). Do the work that needs no approval first. If AMC says ")
+                append("an action cannot be asked for, skip it and mention it in your summary. Keep the final summary short ")
                 append("(it is shown as a notification).\n")
             }
             RunMode.REMOTE -> {

@@ -313,7 +313,7 @@ MAX_FRAME_BYTES = 10 * 1024 * 1024
 # Largest file written through write_file in total (all chunks).
 MAX_WRITE_FILE_BYTES = 64 * 1024 * 1024
 LLM_SCRIPT = Path(__file__).with_name("local_model_manager.sh")
-LLM_ACTIONS = ("llm_status", "llm_install", "llm_start", "llm_stop")
+LLM_ACTIONS = ("llm_status", "llm_install", "llm_start", "llm_stop", "llm_cancel", "llm_delete")
 
 
 def register_detached_session(session: "BridgeSession"):
@@ -658,12 +658,13 @@ class BridgeSession:
                 await self.send("error", path=request_path, error=str(error), **extra)
 
     async def llm_action(self, action, msg):
-        """Local model management (status, install, start, stop) through local_model_manager.sh."""
+        """Local model management (status, install, start, stop, cancel, delete) through local_model_manager.sh."""
         request_id = msg.get("request_id")
         extra = {"request_id": request_id} if request_id is not None else {}
         try:
             args = llm_command_args(action, msg)
-            timeout = 3600 if action == "llm_install" else 120
+            # install only starts the background download and returns; start waits for the server.
+            timeout = 180
             process = await asyncio.create_subprocess_exec(
                 *args, stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
@@ -698,6 +699,7 @@ _LLM_ARG_PATTERN = {
     "ctx": r"\d{3,6}",
     "threads": r"\d{1,2}",
     "port": r"\d{2,5}",
+    "size": r"\d{1,13}",
 }
 
 
@@ -763,7 +765,7 @@ async def handle_connection(websocket):
                         session = BridgeSession(websocket)
                     info = await asyncio.to_thread(get_system_info, session.cwd)
                     await session.send("auth_ok", system=info, cwd=session.cwd,
-                                       capabilities=["concurrent_execute", "write_append", "llm"],
+                                       capabilities=["concurrent_execute", "write_append", "llm", "llm_background_install"],
                                        max_frame_bytes=MAX_FRAME_BYTES)
                 else:
                     err_msg = json.dumps({"type": "auth_fail", "error": "Authentication failed: invalid token."})

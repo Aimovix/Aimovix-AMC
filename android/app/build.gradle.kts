@@ -67,6 +67,11 @@ android {
     }
 }
 
+// Room schema history (used to write and test database migrations).
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

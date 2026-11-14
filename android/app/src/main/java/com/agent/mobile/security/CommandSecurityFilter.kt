@@ -23,7 +23,8 @@ data class SecurityAssessment(
     /**
      * Actions that affect other people or cost money (SMS, calls, reading contacts/messages,
      * camera, microphone). They always need the user's personal confirmation, in every preset
-     * including Turbo, and are never executed in unattended background runs.
+     * including Turbo. Background runs never perform them on their own: they pause and ask, and
+     * continue only after the user approved that exact call.
      */
     val alwaysConfirm: Boolean = false,
     /**
