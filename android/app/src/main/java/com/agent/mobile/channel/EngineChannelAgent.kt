@@ -26,7 +26,10 @@ class EngineChannelAgent(
         headless = true,
         personaStore = runtime.personaStore,
         phone = runtime.phoneController
-    ).also { it.channelName = channelName }
+    ).also {
+        it.channelName = channelName
+        it.bridgeRecovery = { runtime.bridgeStarter.ensureConnected(bridge, prefs.loadAuthToken(), 20_000L) }
+    }
 
     override val isBusy: Boolean get() = engine.isBusy.value
 

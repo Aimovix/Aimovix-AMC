@@ -47,6 +47,23 @@ class LlmClient(
         /** On-device models: prompt prefill of a long context can take minutes before the first token. */
         const val LOCAL_FIRST_TOKEN_TIMEOUT_S = 600L
         const val LOCAL_STEP_TIMEOUT_S = 15 * 60L
+
+        /**
+         * Wait time the provider asked for: `retry-after-ms` (OpenAI), else `Retry-After` in
+         * seconds or as an HTTP date. 0 when absent or unreadable.
+         */
+        fun parseRetryAfterMillis(retryAfterMs: String?, retryAfter: String?, nowMs: Long = System.currentTimeMillis()): Long {
+            retryAfterMs?.trim()?.toDoubleOrNull()?.let { if (it > 0) return it.toLong() }
+            val value = retryAfter?.trim().orEmpty()
+            if (value.isEmpty()) return 0L
+            value.toDoubleOrNull()?.let { return if (it > 0) (it * 1000).toLong() else 0L }
+            return try {
+                val date = java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", java.util.Locale.US).parse(value)
+                (date!!.time - nowMs).coerceAtLeast(0L)
+            } catch (e: Exception) {
+                0L
+            }
+        }
     }
 
     /** Separate client for the LOCAL provider (llama-server on 127.0.0.1). */
@@ -99,9 +116,14 @@ class LlmClient(
         data class Error(
             val message: String,
             val statusCode: Int = 0,
-            val isRetryable: Boolean = true
+            val isRetryable: Boolean = true,
+            /** How long the provider asked us to wait (Retry-After), 0 when it did not say. */
+            val retryAfterMs: Long = 0L
         ) : LlmStreamEvent()
     }
+
+    private fun retryAfterMillis(response: okhttp3.Response): Long =
+        parseRetryAfterMillis(response.header("retry-after-ms"), response.header("Retry-After"))
 
     /**
      * Streams tokens in real time via Server-Sent Events (SSE).
@@ -351,7 +373,7 @@ class LlmClient(
             if (!response.isSuccessful) {
                 val errBody = response.body?.string() ?: ""
                 val isRetryable = response.code == 429 || response.code >= 500
-                emit(LlmStreamEvent.Error("OpenAI API error (${response.code}): $errBody", response.code, isRetryable))
+                emit(LlmStreamEvent.Error("OpenAI API error (${response.code}): $errBody", response.code, isRetryable, retryAfterMillis(response)))
                 return@executeCancellableCall
             }
 
@@ -638,7 +660,7 @@ class LlmClient(
                     else ->
                         "Gemini API error (${response.code}): $errBody"
                 }
-                emit(LlmStreamEvent.Error(displayError, response.code, isRetryable))
+                emit(LlmStreamEvent.Error(displayError, response.code, isRetryable, retryAfterMillis(response)))
                 return@executeCancellableCall
             }
 
@@ -911,7 +933,7 @@ class LlmClient(
             if (!response.isSuccessful) {
                 val errBody = response.body?.string() ?: ""
                 val isRetryable = response.code == 429 || response.code >= 500
-                emit(LlmStreamEvent.Error("Claude API error (${response.code}): $errBody", response.code, isRetryable))
+                emit(LlmStreamEvent.Error("Claude API error (${response.code}): $errBody", response.code, isRetryable, retryAfterMillis(response)))
                 return@executeCancellableCall
             }
 

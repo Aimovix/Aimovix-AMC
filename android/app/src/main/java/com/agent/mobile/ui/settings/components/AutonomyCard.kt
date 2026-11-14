@@ -113,6 +113,57 @@ fun AutonomyCard(
                 )
             }
 
+            // --- Approval timeout ----------------------------------------------------------
+            var approvalMinutes by remember { mutableIntStateOf((preferenceManager.loadApprovalTimeoutMs() / 60_000L).toInt()) }
+            Column {
+                Text(
+                    "Wait for an approval: $approvalMinutes min",
+                    style = MaterialTheme.typography.bodyMedium.copy(color = TextWhite, fontWeight = FontWeight.SemiBold)
+                )
+                Text(
+                    "While you watch a task, an approval nobody answers counts as rejected after this time. " +
+                        "Background tasks wait for your answer instead and continue afterwards.",
+                    style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
+                )
+                Slider(
+                    value = approvalMinutes.toFloat(),
+                    onValueChange = { approvalMinutes = it.roundToInt().coerceIn(1, 60) },
+                    onValueChangeFinished = { preferenceManager.saveApprovalTimeoutMinutes(approvalMinutes) },
+                    valueRange = 1f..60f,
+                    colors = SliderDefaults.colors(thumbColor = AccentPrimary, activeTrackColor = AccentPrimary)
+                )
+            }
+
+            // --- Background approvals waiting for the user ---------------------------------
+            val queue = remember { com.agent.mobile.AgentRuntime.get(context).approvalQueue }
+            val waiting by queue.pending.collectAsState(initial = emptyList())
+            if (waiting.isNotEmpty()) {
+                HorizontalDivider(color = BorderSubtle)
+                Text(
+                    "Waiting for your approval (${waiting.size})",
+                    style = MaterialTheme.typography.bodyMedium.copy(color = TextWhite, fontWeight = FontWeight.SemiBold)
+                )
+                waiting.take(5).forEach { item ->
+                    Surface(color = DarkSurface, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(item.runTitle, style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontWeight = FontWeight.SemiBold))
+                            Text(item.description.take(300), style = MaterialTheme.typography.bodySmall.copy(color = TextWhite, fontFamily = FontFamily.Monospace))
+                            Text(item.riskReason.take(200), style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 10.5.sp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = { coroutineScope.launch { queue.decide(item.id, approved = false) } },
+                                    border = BorderStroke(1.dp, BorderSubtle)
+                                ) { Text("Reject", fontSize = 12.sp, color = TextWhite) }
+                                OutlinedButton(
+                                    onClick = { coroutineScope.launch { queue.decide(item.id, approved = true) } },
+                                    border = BorderStroke(1.dp, AccentPrimary.copy(alpha = 0.5f))
+                                ) { Text("Approve", fontSize = 12.sp, color = TextWhite) }
+                            }
+                        }
+                    }
+                }
+            }
+
             HorizontalDivider(color = BorderSubtle)
 
             // --- Heartbeat -----------------------------------------------------------------

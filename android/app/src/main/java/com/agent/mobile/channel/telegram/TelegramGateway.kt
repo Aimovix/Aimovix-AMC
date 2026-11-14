@@ -77,6 +77,48 @@ class TelegramGateway(
     @Volatile
     private var botUsername: String = ""
 
+    /**
+     * Decides an approval that a background run parked (see ApprovalQueueManager). Returns true
+     * when this was the first answer. Set by the channel manager; null: such buttons do nothing.
+     */
+    @Volatile
+    var onParkedDecision: (suspend (approvalId: String, approved: Boolean) -> Boolean)? = null
+
+    /** Sends [text] to every paired account (their private chats). */
+    suspend fun notifyOwners(text: String) {
+        for (user in store.get().paired) {
+            try {
+                sendReply(user.id, text)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not notify ${user.id}: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Asks every paired account to approve an action a background run parked. The answer goes to
+     * [onParkedDecision]; the first answer (here, in the notification or in the app) wins.
+     */
+    suspend fun askParkedApproval(approvalId: String, text: String) {
+        for (user in store.get().paired) {
+            try {
+                api.sendMessage(
+                    user.id, "🔐 Approval needed (background task)\n\n${text.take(1_500)}",
+                    buttons = listOf(
+                        TelegramBotApi.Button("✅ Approve", "$PARKED_PREFIX$approvalId:y"),
+                        TelegramBotApi.Button("❌ Reject", "$PARKED_PREFIX$approvalId:n")
+                    )
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not ask ${user.id}: ${e.message}")
+            }
+        }
+    }
+
     /** True while the agent works on a message from [chatId]. */
     fun isTurnActive(chatId: Long): Boolean = chats[chatId]?.job?.isActive == true
 
@@ -397,6 +439,10 @@ class TelegramGateway(
     }
 
     private suspend fun handleCallback(cb: TelegramBotApi.CallbackQuery) {
+        if (cb.data.startsWith(PARKED_PREFIX)) {
+            handleParkedCallback(cb)
+            return
+        }
         val parts = cb.data.split(':')
         val pending = if (parts.size == 3 && parts[0] == "ap") approvals[parts[1]] else null
         if (pending == null || pending.chatId != cb.chatId || !store.get().isPaired(cb.fromId)) {
@@ -407,6 +453,35 @@ class TelegramGateway(
         pending.decision.complete(approved)
         tryAnswer(cb.id, if (approved) "Approved" else "Rejected")
         tryEdit(cb.chatId, cb.messageId, pending.text + if (approved) "\n\n✅ Approved" else "\n\n❌ Rejected")
+    }
+
+    private suspend fun handleParkedCallback(cb: TelegramBotApi.CallbackQuery) {
+        val rest = cb.data.removePrefix(PARKED_PREFIX)
+        val id = rest.substringBeforeLast(':')
+        val answer = rest.substringAfterLast(':')
+        val decide = onParkedDecision
+        if (decide == null || id.isBlank() || answer !in setOf("y", "n") || !store.get().isPaired(cb.fromId)) {
+            tryAnswer(cb.id, "This request is no longer active.")
+            return
+        }
+        val approved = answer == "y"
+        val first = try {
+            decide(id, approved)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not record the decision: ${e.message}")
+            false
+        }
+        if (!first) {
+            tryAnswer(cb.id, "Already decided.")
+            return
+        }
+        tryAnswer(cb.id, if (approved) "Approved" else "Rejected")
+        tryEdit(
+            cb.chatId, cb.messageId,
+            if (approved) "✅ Approved. The background task continues." else "❌ Rejected. The task continues without it."
+        )
     }
 
     // -------------------------------------------------------------------------------------------
@@ -475,6 +550,9 @@ class TelegramGateway(
     companion object {
         private const val TAG = "TelegramGateway"
         private const val NOTICE_INTERVAL_MS = 10 * 60_000L
+
+        /** Callback data prefix of buttons for approvals parked by background runs. */
+        const val PARKED_PREFIX = "pk:"
 
         val COMMANDS = listOf(
             "new" to "Start a new conversation",
