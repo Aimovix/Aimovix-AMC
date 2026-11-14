@@ -210,6 +210,8 @@ class AgentTaskWorker(
             }
             PendingApprovalEntity.STATUS_REJECTED ->
                 ResumeRequest(approval.sessionId, ResumeRequest.rejectedNote(approval.description), chain = chain)
+            PendingApprovalEntity.STATUS_EXPIRED ->
+                ResumeRequest(approval.sessionId, ResumeRequest.expiredNote(approval.description), chain = chain)
             else -> null
         }
     }

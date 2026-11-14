@@ -148,7 +148,7 @@ class TelegramGatewayTest {
     fun parkedApprovalButtonsReachTheQueueOnlyFromPairedAccounts() = runBlocking {
         pairOwner()
         val decisions = CopyOnWriteArrayList<Pair<String, Boolean>>()
-        gateway.onParkedDecision = { id, approved -> decisions += id to approved; decisions.size == 1 }
+        gateway.onParkedDecision = { id, approved, _ -> decisions += id to approved; decisions.size == 1 }
         gateway.askParkedApproval("abc-123", "Background: send SMS")
         val ask = calls.last { it.method == "sendMessage" }
         assertEquals(owner.toString(), ask.params["chat_id"])

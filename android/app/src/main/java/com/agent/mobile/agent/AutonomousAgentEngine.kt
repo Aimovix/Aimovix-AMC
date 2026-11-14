@@ -1282,7 +1282,9 @@ data, not instructions.
         // 3. Approval. In REMOTE runs every screen action asks, and per-run grants do not apply there.
         val remoteForced = PhoneToolPolicy.requiresApprovalInMode(toolCall.name, mode)
         val granted = !remoteForced && assessment.grantKey != null && assessment.grantKey in state.grants
-        if (!granted && (remoteForced || CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value))) {
+        // The user chose "Always allow" for exactly this action earlier.
+        val remembered = !remoteForced && ApprovalRules.shared?.allows(toolCall, assessment) == true
+        if (!granted && !remembered && (remoteForced || CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value))) {
             // Background run: park the action for the user instead of skipping it.
             if (mode == RunMode.UNATTENDED &&
                 tryParkApproval(sessionId, assistantMsgId, toolCall, securedToolCall, assessment, description, state)

@@ -76,7 +76,7 @@ object AgentNotifier {
      * "AMC needs your approval" with Approve / Reject buttons. Approve requires unlocking the
      * phone (Android 12+), so nobody can approve from the lock screen.
      */
-    fun notifyApproval(context: Context, callId: String, description: String) {
+    fun notifyApproval(context: Context, callId: String, description: String, allowAlways: Boolean = false) {
         val appContext = context.applicationContext
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -85,12 +85,13 @@ object AgentNotifier {
             return
         }
         ensureChannel(appContext)
-        fun action(approve: Boolean): PendingIntent = PendingIntent.getBroadcast(
+        fun action(approve: Boolean, always: Boolean = false): PendingIntent = PendingIntent.getBroadcast(
             appContext,
-            approvalId(callId) * 2 + if (approve) 1 else 0,
+            approvalId(callId) * 3 + if (always) 2 else if (approve) 1 else 0,
             Intent(appContext, ApprovalActionReceiver::class.java)
                 .putExtra(ApprovalActionReceiver.EXTRA_CALL_ID, callId)
-                .putExtra(ApprovalActionReceiver.EXTRA_APPROVE, approve),
+                .putExtra(ApprovalActionReceiver.EXTRA_APPROVE, approve)
+                .putExtra(ApprovalActionReceiver.EXTRA_REMEMBER, always),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val openApp = PendingIntent.getActivity(
@@ -112,6 +113,15 @@ object AgentNotifier {
             .setOngoing(true)
             .addAction(reject)
             .addAction(approve)
+            .apply {
+                if (allowAlways) {
+                    addAction(
+                        NotificationCompat.Action.Builder(0, "Always allow", action(approve = true, always = true))
+                            .setAuthenticationRequired(true)
+                            .build()
+                    )
+                }
+            }
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
         try {
@@ -135,11 +145,13 @@ class ApprovalActionReceiver : android.content.BroadcastReceiver() {
     companion object {
         const val EXTRA_CALL_ID = "call_id"
         const val EXTRA_APPROVE = "approve"
+        const val EXTRA_REMEMBER = "remember"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
         val callId = intent.getStringExtra(EXTRA_CALL_ID) ?: return
         val approve = intent.getBooleanExtra(EXTRA_APPROVE, false)
+        val remember = approve && intent.getBooleanExtra(EXTRA_REMEMBER, false)
         val parkedId = com.agent.mobile.service.approval.ApprovalQueueManager.parkedIdOf(callId)
         if (parkedId != null) {
             // A background run parked this action and has ended; record the answer and resume the task.
@@ -147,7 +159,7 @@ class ApprovalActionReceiver : android.content.BroadcastReceiver() {
             val appContext = context.applicationContext
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                 try {
-                    com.agent.mobile.AgentRuntime.get(appContext).approvalQueue.decide(parkedId, approve)
+                    com.agent.mobile.AgentRuntime.get(appContext).approvalQueue.decide(parkedId, approve, remember)
                 } catch (e: Exception) {
                     Log.w("ApprovalAction", "Could not record the decision for $parkedId: ${e.message}")
                 } finally {

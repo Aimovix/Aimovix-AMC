@@ -26,6 +26,9 @@ class AgentRuntime private constructor(context: Context) {
     val memoryStore = MemoryStore(File(appContext.filesDir, "agent/MEMORY.md"))
     /** The user's persona and standing instructions for the agent (like OpenClaw's SOUL.md). */
     val personaStore = TextFileStore(File(appContext.filesDir, "agent/SOUL.md"))
+    /** Actions the user chose to "always allow" (exact action only). */
+    val approvalRules = com.agent.mobile.agent.ApprovalRules(File(appContext.filesDir, "agent/approval_rules.txt"))
+        .also { com.agent.mobile.agent.ApprovalRules.shared = it }
     val scheduler = SchedulerManager(appContext)
     val platform: AgentPlatform = AndroidAgentPlatform(appContext, scheduler) { title, message ->
         telegram.deliver(title, message)

@@ -274,6 +274,26 @@ class HeadlessAgentRunTest {
     }
 
     @Test
+    fun anAlwaysAllowedActionRunsWithoutAskingButSmsStillAsks() = runBlocking {
+        val rules = ApprovalRules(tmp.newFile())
+        val kill = ToolCall(name = "execute_command", arguments = mapOf("command" to "kill 4242"))
+        rules.remember(kill, AgentTools.assess(kill))
+        ApprovalRules.shared = rules
+        try {
+            toolCall("call_1", "execute_command", JSONObject().put("command", "kill 4242"))
+            toolCall("call_2", "execute_command", JSONObject().put("command", "termux-sms-send -n 1 hi"))
+            reply("Done.")
+            val asked = CopyOnWriteArrayList<String>()
+            val e = engine()
+            e.approvalHandler = { call, _ -> asked += AgentTools.describe(call); false }
+            e.runHeadless(title = "t", prompt = "stop the server and text me", mode = RunMode.REMOTE)
+            assertEquals(listOf("termux-sms-send -n 1 hi"), asked)
+        } finally {
+            ApprovalRules.shared = null
+        }
+    }
+
+    @Test
     fun afterTheErrorWarningADifferentApproachStillRuns() = runBlocking {
         // Five failures in a row (unknown tools), then the loop warning for the next call ...
         for (i in 1..5) toolCall("call_e$i", "no_such_tool_$i", JSONObject())

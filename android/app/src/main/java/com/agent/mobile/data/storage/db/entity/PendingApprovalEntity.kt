@@ -30,5 +30,7 @@ data class PendingApprovalEntity(
         const val STATUS_PENDING = "PENDING"
         const val STATUS_APPROVED = "APPROVED"
         const val STATUS_REJECTED = "REJECTED"
+        /** Nobody answered in time: the task continues without the action. */
+        const val STATUS_EXPIRED = "EXPIRED"
     }
 }

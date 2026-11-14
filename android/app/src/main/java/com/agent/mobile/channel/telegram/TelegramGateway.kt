@@ -82,7 +82,7 @@ class TelegramGateway(
      * when this was the first answer. Set by the channel manager; null: such buttons do nothing.
      */
     @Volatile
-    var onParkedDecision: (suspend (approvalId: String, approved: Boolean) -> Boolean)? = null
+    var onParkedDecision: (suspend (approvalId: String, approved: Boolean, remember: Boolean) -> Boolean)? = null
 
     /** Sends [text] to every paired account (their private chats). */
     suspend fun notifyOwners(text: String) {
@@ -101,14 +101,15 @@ class TelegramGateway(
      * Asks every paired account to approve an action a background run parked. The answer goes to
      * [onParkedDecision]; the first answer (here, in the notification or in the app) wins.
      */
-    suspend fun askParkedApproval(approvalId: String, text: String) {
+    suspend fun askParkedApproval(approvalId: String, text: String, allowAlways: Boolean = false) {
         for (user in store.get().paired) {
             try {
                 api.sendMessage(
                     user.id, "🔐 Approval needed (background task)\n\n${text.take(1_500)}",
-                    buttons = listOf(
+                    buttons = listOfNotNull(
                         TelegramBotApi.Button("✅ Approve", "$PARKED_PREFIX$approvalId:y"),
-                        TelegramBotApi.Button("❌ Reject", "$PARKED_PREFIX$approvalId:n")
+                        TelegramBotApi.Button("❌ Reject", "$PARKED_PREFIX$approvalId:n"),
+                        if (allowAlways) TelegramBotApi.Button("♾️ Always allow", "$PARKED_PREFIX$approvalId:a") else null
                     )
                 )
             } catch (e: CancellationException) {
@@ -460,13 +461,13 @@ class TelegramGateway(
         val id = rest.substringBeforeLast(':')
         val answer = rest.substringAfterLast(':')
         val decide = onParkedDecision
-        if (decide == null || id.isBlank() || answer !in setOf("y", "n") || !store.get().isPaired(cb.fromId)) {
+        if (decide == null || id.isBlank() || answer !in setOf("y", "n", "a") || !store.get().isPaired(cb.fromId)) {
             tryAnswer(cb.id, "This request is no longer active.")
             return
         }
-        val approved = answer == "y"
+        val approved = answer == "y" || answer == "a"
         val first = try {
-            decide(id, approved)
+            decide(id, approved, answer == "a")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

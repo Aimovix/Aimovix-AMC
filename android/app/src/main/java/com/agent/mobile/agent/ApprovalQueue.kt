@@ -61,6 +61,11 @@ data class ResumeRequest(
             "[AMC] The user rejected the paused action `${description.take(300)}`. Do not retry it. Continue the " +
                 "task without it if that makes sense, otherwise finish with a short summary of what is done and what is not."
 
+        fun expiredNote(description: String) =
+            "[AMC] Nobody answered the approval for the paused action `${description.take(300)}` in time, so it was " +
+                "not done. Continue the task without it if that makes sense, otherwise finish with a short summary of " +
+                "what is done and what still needs the user's approval."
+
         const val CONTINUE_NOTE =
             "[AMC] Continuation: the previous background slot ended (step or time budget). Look at what is " +
                 "already done above and continue the task from there. Do not redo finished steps."

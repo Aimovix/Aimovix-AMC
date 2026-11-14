@@ -64,7 +64,7 @@ class TelegramChannelManager(private val runtime: AgentRuntime) {
             onPaired = ::onPaired,
             onTurnActive = ::onTurnActive
         )
-        g.onParkedDecision = { id, approved -> runtime.approvalQueue.decide(id, approved) }
+        g.onParkedDecision = { id, approved, remember -> runtime.approvalQueue.decide(id, approved, remember) }
         gateway = g
         statusJob = scope.launch { g.status.collect { _status.value = it; refreshState() } }
         g.start()
@@ -104,7 +104,11 @@ class TelegramChannelManager(private val runtime: AgentRuntime) {
     suspend fun askParkedApproval(entity: com.agent.mobile.data.storage.db.entity.PendingApprovalEntity) {
         val g = gateway ?: return
         if (!prefs.loadTelegramDelivery()) return
-        g.askParkedApproval(entity.id, com.agent.mobile.service.approval.ApprovalQueueManager.notificationText(entity))
+        g.askParkedApproval(
+            entity.id,
+            com.agent.mobile.service.approval.ApprovalQueueManager.notificationText(entity),
+            allowAlways = com.agent.mobile.service.approval.ApprovalQueueManager.isRememberable(entity)
+        )
     }
 
     /** Creates a fresh one-time pairing code (valid 15 minutes). */

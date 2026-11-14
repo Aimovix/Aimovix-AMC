@@ -3,6 +3,7 @@ package com.agent.mobile.service.approval
 import android.content.Context
 import android.util.Log
 import com.agent.mobile.agent.ApprovalQueue
+import com.agent.mobile.agent.ApprovalRules
 import com.agent.mobile.agent.ParkedApproval
 import com.agent.mobile.data.storage.db.dao.AgentQueueDao
 import com.agent.mobile.data.storage.db.entity.PendingApprovalEntity
@@ -50,7 +51,8 @@ class ApprovalQueueManager(
             dao.pruneDecided(System.currentTimeMillis() - PRUNE_AFTER_MS)
             dao.insertApproval(entity)
         }
-        AgentNotifier.notifyApproval(context, CALL_PREFIX + id, notificationText(entity))
+        AgentNotifier.notifyApproval(context, CALL_PREFIX + id, notificationText(entity), allowAlways = isRememberable(entity))
+        ApprovalExpiryWorker.schedule(context, id)
         try {
             remoteAsker?.invoke(entity)
         } catch (e: CancellationException) {
@@ -65,13 +67,39 @@ class ApprovalQueueManager(
      * Records the user's answer. Returns true when this was the first answer (the task then
      * continues in a new background run), false when the approval was already decided.
      */
-    suspend fun decide(id: String, approved: Boolean): Boolean {
+    suspend fun decide(id: String, approved: Boolean, remember: Boolean = false): Boolean {
         val status = if (approved) PendingApprovalEntity.STATUS_APPROVED else PendingApprovalEntity.STATUS_REJECTED
         val changed = withContext(Dispatchers.IO) { dao.decideApproval(id, status, System.currentTimeMillis()) }
         AgentNotifier.cancelApproval(context, CALL_PREFIX + id)
         if (changed == 0) return false
+        if (approved && remember) {
+            withContext(Dispatchers.IO) { dao.getApproval(id) }?.let { entity ->
+                val call = callOf(entity)
+                ApprovalRules.shared?.remember(call, com.agent.mobile.agent.AgentTools.assess(call))
+            }
+        }
         onDecided(id)
         return true
+    }
+
+    /** Nobody answered in time: the task continues without the action (see [ApprovalExpiryWorker]). */
+    suspend fun expire(id: String): Boolean {
+        val changed = withContext(Dispatchers.IO) {
+            dao.decideApproval(id, PendingApprovalEntity.STATUS_EXPIRED, System.currentTimeMillis())
+        }
+        AgentNotifier.cancelApproval(context, CALL_PREFIX + id)
+        if (changed == 0) return false
+        onDecided(id)
+        return true
+    }
+
+    /** Shows the question again for an approval that is still open. */
+    suspend fun remind(id: String) {
+        val entity = withContext(Dispatchers.IO) { dao.getApproval(id) } ?: return
+        if (entity.status != PendingApprovalEntity.STATUS_PENDING) return
+        AgentNotifier.notifyApproval(
+            context, CALL_PREFIX + id, "⏰ Still waiting for you. " + notificationText(entity), allowAlways = isRememberable(entity)
+        )
     }
 
     suspend fun pendingNow(): List<PendingApprovalEntity> = withContext(Dispatchers.IO) { dao.pendingApprovalsSync() }
@@ -84,6 +112,17 @@ class ApprovalQueueManager(
         private const val PRUNE_AFTER_MS = 14L * 24 * 60 * 60_000
 
         fun parkedIdOf(callId: String): String? = callId.removePrefix(CALL_PREFIX).takeIf { callId.startsWith(CALL_PREFIX) && it.isNotBlank() }
+
+        private fun callOf(entity: PendingApprovalEntity) = com.agent.mobile.data.model.ToolCall(
+            name = entity.toolName,
+            arguments = com.agent.mobile.agent.ApprovalFingerprint.decodeArguments(entity.argumentsJson) ?: emptyMap()
+        )
+
+        /** Whether "Always allow" may be offered for this action. */
+        fun isRememberable(entity: PendingApprovalEntity): Boolean {
+            val call = callOf(entity)
+            return ApprovalRules.isRememberable(call, com.agent.mobile.agent.AgentTools.assess(call))
+        }
 
         fun notificationText(entity: PendingApprovalEntity): String =
             "${entity.runTitle.ifBlank { "Background task" }}: ${entity.description}\n${entity.riskReason}".take(1_000)
