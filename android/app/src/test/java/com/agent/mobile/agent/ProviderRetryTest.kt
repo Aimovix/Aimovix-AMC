@@ -116,6 +116,39 @@ class ProviderRetryTest {
     }
 
     @Test
+    fun afterTheFallbackTookOverTheNextStepGoesThereDirectly() = runBlocking {
+        repeat(AutonomousAgentEngine.MAX_ATTEMPTS_PER_PROVIDER) { error(server, 500) }
+        // Step 1 on the fallback: a tool call; step 2 must not try the dead primary again.
+        val chunk = JSONObject().put(
+            "choices", JSONArray().put(
+                JSONObject().put(
+                    "delta", JSONObject().put(
+                        "tool_calls", JSONArray().put(
+                            JSONObject().put("index", 0).put("id", "c1").put(
+                                "function", JSONObject().put("name", "update_plan").put("arguments", JSONObject().put("plan", "- [ ] a").toString())
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        fallbackServer.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody("data: $chunk\n\ndata: [DONE]\n\n"))
+        reply(fallbackServer, "Done on the fallback.")
+
+        val result = engine(withFallback = true).runUnattended("t", "hello")
+        assertEquals("Done on the fallback.", result.summary)
+        assertEquals("The primary is not retried on every step", AutonomousAgentEngine.MAX_ATTEMPTS_PER_PROVIDER, server.requestCount)
+        assertEquals(2, fallbackServer.requestCount)
+    }
+
+    @Test
+    fun anOverloadedErrorInsideTheStreamIsRetried() {
+        assertTrue(com.agent.mobile.data.network.LlmClient.isRetryableStreamError("overloaded_error", "Overloaded"))
+        assertTrue(com.agent.mobile.data.network.LlmClient.isRetryableStreamError("", "The server is temporarily unavailable"))
+        assertFalse(com.agent.mobile.data.network.LlmClient.isRetryableStreamError("invalid_request_error", "messages: field required"))
+    }
+
+    @Test
     fun aProviderThatStaysDownIsReportedForALaterRetry() = runBlocking {
         repeat(AutonomousAgentEngine.MAX_ATTEMPTS_PER_PROVIDER) { error(server, 502) }
         val result = engine().runUnattended("t", "hello")
