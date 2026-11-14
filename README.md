@@ -154,7 +154,7 @@ Then just write to your bot, for example *"How full is my storage?"* or *"Take a
 
 An optional secondary provider can handle retryable failures such as rate limits and server errors. Token counts and cost estimates are informational; provider billing is authoritative.
 
-**Local AI with one tap:** in **Settings → Local AI** tap **Set up local AI**. AMC picks the model that fits the phone, Termux downloads it in the background (a progress bar shows size, speed and time left, also in a notification with **Cancel**), then AMC starts `llama-server`, tests speed and tool calls, and makes it the active model with your cloud model as fallback. You can leave the screen or the app; after a lost connection, a killed app or a restart the setup continues where it stopped and the download resumes. Termux needs the current bridge (`amc update`).
+**Local AI with one tap:** in **Settings → Local AI** tap **Set up local AI**. AMC picks the model that fits the phone, Termux downloads it in the background (a progress bar shows size, speed and time left, also in a notification with **Cancel**), then AMC starts `llama-server`, tests speed and tool calls, and makes it the active model with your cloud model as fallback. You can leave the screen or the app; after a lost connection, a killed app or a restart the setup continues where it stopped and the download resumes. If the bridge in Termux is too old, the card offers **Update bridge**, which runs the AMC installer in Termux.
 
 To install and run a local model by hand from Termux:
 

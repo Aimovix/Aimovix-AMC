@@ -83,7 +83,8 @@ class LocalModelSetup(
         const val BACKGROUND_INSTALL_CAPABILITY = "llm_background_install"
         /** How often a download that died in Termux is restarted (it resumes the partial file). */
         private const val MAX_DOWNLOAD_RESTARTS = 3
-        const val UPDATE_COMMAND = "amc update"
+        /** Re-runs the AMC installer in Termux, which brings the bridge up to date. */
+        val UPDATE_COMMAND: String get() = com.agent.mobile.core.termux.TermuxRunCommand.INSTALL_SCRIPT
     }
 
     sealed class Outcome {
@@ -153,7 +154,7 @@ class LocalModelSetup(
             return fail(SetupError.BRIDGE, "The Termux bridge is not reachable. AMC tries to start it; check that Termux is installed and allowed to run in the background.")
         }
         if ("llm" !in bridge.capabilities || BACKGROUND_INSTALL_CAPABILITY !in bridge.capabilities) {
-            return fail(SetupError.BRIDGE_OLD, "The AMC bridge in Termux is too old for this setup. Run '$UPDATE_COMMAND' in Termux, then try again.")
+            return fail(SetupError.BRIDGE_OLD, "The AMC bridge in Termux is too old for this setup. Update it (AMC runs the installer in Termux), then try again.")
         }
 
         var choice: Recommendation.Model = if (resumeModel != null) {

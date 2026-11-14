@@ -13,7 +13,7 @@ enum class SetupError(val fixLabel: String?) {
     /** The Termux bridge could not be reached or started. */
     BRIDGE("Try again"),
     /** The bridge in Termux is too old for background downloads. */
-    BRIDGE_OLD("Copy update command"),
+    BRIDGE_OLD("Update bridge"),
     /** Download interrupted (no network, server error); the partial file is kept. */
     NETWORK("Resume"),
     /** Not enough free storage for the model. */

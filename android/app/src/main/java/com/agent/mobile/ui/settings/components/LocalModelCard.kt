@@ -184,9 +184,17 @@ private fun fixSetupError(context: Context, error: SetupError) {
             if (!opened) Toast.makeText(context, "Open Android settings → Storage", Toast.LENGTH_LONG).show()
         }
         SetupError.BRIDGE_OLD -> {
-            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText("AMC", LocalModelSetup.UPDATE_COMMAND))
-            Toast.makeText(context, "Copied '${LocalModelSetup.UPDATE_COMMAND}'. Run it in Termux, then set up again.", Toast.LENGTH_LONG).show()
+            // Runs the installer in Termux (RUN_COMMAND); without that permission the command is copied.
+            val started = com.agent.mobile.core.termux.TermuxRunCommand.start(
+                context, LocalModelSetup.UPDATE_COMMAND, "AMC: update bridge", background = false
+            )
+            if (started) {
+                Toast.makeText(context, "The installer runs in Termux. When it says 'Setup complete', tap Try again.", Toast.LENGTH_LONG).show()
+            } else {
+                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("AMC", LocalModelSetup.UPDATE_COMMAND))
+                Toast.makeText(context, "Update command copied. Paste it in Termux, then tap Try again.", Toast.LENGTH_LONG).show()
+            }
         }
         else -> LocalModelSetupWorker.start(context)
     }

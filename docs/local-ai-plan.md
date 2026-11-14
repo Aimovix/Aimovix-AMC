@@ -126,4 +126,4 @@ Nicht auf einem echten Gerät getestet.
 | M1 Katalog prüfen | ⬜ | blockiert: Hugging Face ist aus der Build-Umgebung nicht erreichbar; Frage 2 offen |
 | M2, M3, A1–A5, D1, D2 | ⬜ | offen |
 
-Wichtig: Die Einrichtung verlangt jetzt eine Bridge mit `llm_background_install`. Nutzer mit altem Termux-Setup bekommen den Fix „Copy update command“ (`amc update`).
+Wichtig: Die Einrichtung verlangt jetzt eine Bridge mit `llm_background_install`. Nutzer mit altem Termux-Setup bekommen den Fix „Update bridge“ (startet den Installer per RUN_COMMAND; `amc update` gibt es nicht). Der Installer lädt von `main`, wirkt also erst nach dem Merge.
