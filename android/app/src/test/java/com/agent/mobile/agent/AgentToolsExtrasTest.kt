@@ -66,6 +66,25 @@ class AgentToolsExtrasTest {
     }
 
     @Test
+    fun promptHasClockDeviceAndModeSpecificBudget() {
+        val tz = java.util.TimeZone.getTimeZone("Europe/Berlin")
+        val now = java.util.Date(1_789_000_000_000L) // 2026-09-10 00:26:40 UTC
+        val bg = AgentPrompts.build(memory = "", mode = RunMode.UNATTENDED, maxSteps = 25, now = now, timeZone = tz, device = "Pixel 9, Android 16 (API 36)")
+        assertTrue(bg.contains("2026-09-10 02:26 (time zone Europe/Berlin, UTC+02:00)"))
+        assertTrue(bg.contains("- Device: Pixel 9, Android 16 (API 36)"))
+        assertTrue(bg.contains(AgentPrompts.TERMUX_HOME))
+        assertTrue("Background runs are told they continue automatically", bg.contains("continues it automatically"))
+        assertFalse(bg.contains("finish with a summary"))
+        assertTrue("Unattended runs try another way instead of asking", bg.contains("Nobody can answer questions in this run"))
+
+        val chat = AgentPrompts.build(memory = "", mode = RunMode.INTERACTIVE, maxSteps = 40, now = now, timeZone = tz, device = "")
+        assertFalse(chat.contains("continues it automatically"))
+        assertFalse(chat.contains("Nobody can answer questions"))
+        assertFalse(chat.contains("- Device:"))
+        assertEquals("-05:00", AgentPrompts.utcOffset(java.util.TimeZone.getTimeZone("America/New_York"), java.util.Date(1_768_000_000_000L)))
+    }
+
+    @Test
     fun promptModesAndPersona() {
         val remote = AgentPrompts.build(memory = "", mode = RunMode.REMOTE, maxSteps = 30, persona = "Be brief.", skills = "- weather: forecast (~/.amc/skills/weather/SKILL.md)")
         assertTrue(remote.contains("MODE: REMOTE CHAT via Telegram"))
