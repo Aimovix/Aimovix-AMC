@@ -108,3 +108,23 @@ A1 → A2 → A3 → A5; parallel dazu A4, A6, A8, B2, B10 (keine gemeinsamen Da
 6. **Provider-Fehler:** falscher Primary-Key mit Fallback → Task endet über Fallback, ein Hinweis im Chat.
 7. **Langer Run:** Task mit > 40 Schritten unattended → Summary nach Fortsetzungen, kein stiller Abbruch.
 8. **Trigger-Kette:** `notification_trigger` auf Test-App → Sub-Agent-Recherche → Ergebnis in Telegram.
+
+## Umsetzungsstand (Branch `ccr-f38d295f-n1ab1l`)
+
+Unit-Tests: 332 (Android, Robolectric), alle grün; `assembleDebug` baut. Nichts davon ist auf einem echten Gerät getestet (Abschnitt E bleibt offen).
+
+| Task | Stand | Wo |
+|---|---|---|
+| A1 Approval-Queue | ✅ | `agent/ApprovalQueue.kt`, `service/approval/ApprovalQueueManager.kt`, Room v2 (`pending_approvals`) |
+| A2 Approve-then-Resume | ✅ | `AutonomousAgentEngine.resumeUnattended`, `AgentTaskWorker` (`KIND_RESUME`); Fingerprint-Bindung, einmalige Ausführung |
+| A3 Run-Checkpoint | ✅ | `agent_runs`; ein von WorkManager neu gestarteter Lauf setzt seine Session fort |
+| A4 Provider-Retry | ✅ | Backoff mit Jitter + `Retry-After`, danach Fallback; Anbieter dauerhaft weg → Fortsetzung nach 10 min |
+| A5 Lange UNATTENDED-Runs | ✅ | Fortsetzung per Folge-Worker statt `setForeground` (max. 6 Läufe pro Task) |
+| A6 Bridge-Self-Heal | ✅ | `bridgeRecovery` vor Bridge-Tools (App, Worker, Telegram) |
+| A7 Telegram-Zustellung | ✅ | Schalter „Send results to Telegram“; Buttons für geparkte Freigaben |
+| A8 Setup | ✅ | Schritt „Let AMC run in the background“; optionaler Phantom-Killer-Schritt (Shizuku oder ADB-Befehl) |
+| B2 Approval-Timeout | ✅ | Slider in Settings → Autonomy, dazu Liste wartender Freigaben mit Approve/Reject |
+| B8 Stuck-Erkennung | ✅ | Kreisläufe ohne neue Ergebnisse: Hinweis nach 4, Stopp nach 8 |
+| B1, B3–B7, B9–B11, C*, D* | ⬜ | offen |
+
+Room: `AppDatabase` ist jetzt Version 2 mit exportiertem Schema (`android/app/schemas/`) und `DatabaseMigrationTest`. Jede künftige Tabellenänderung braucht eine weitere explizite Migration.

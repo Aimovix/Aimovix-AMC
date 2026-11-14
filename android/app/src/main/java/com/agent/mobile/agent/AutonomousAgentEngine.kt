@@ -76,6 +76,13 @@ class AutonomousAgentEngine(
         private const val REFLECTION_THRESHOLD = 3
         private const val MAX_CONSECUTIVE_ERRORS = 5
 
+        /**
+         * Actions in a row whose exact result the agent already had earlier in the run (cycles such
+         * as A → B → C → A → B → C that the repeat check does not see): hint first, then stop.
+         */
+        const val NO_PROGRESS_HINT = 4
+        const val NO_PROGRESS_STOP = 8
+
         /** Attempts per provider (first try + retries) for errors that may go away (429, 5xx, network). */
         const val MAX_ATTEMPTS_PER_PROVIDER = 3
         private const val MAX_RETRY_DELAY_MS = 30_000L
@@ -737,6 +744,9 @@ class AutonomousAgentEngine(
         var budgetExhausted: Boolean = false
         /** The run stopped because no provider answered (after retries and the fallback). */
         var providerFailed: Boolean = false
+        /** Hashes of (action, result) pairs seen in this run, and how many repeats came in a row. */
+        val seenResults = HashSet<Int>()
+        var noProgress = 0
     }
 
     /** Tools the model may not use in [mode]. */
@@ -1210,8 +1220,42 @@ class AutonomousAgentEngine(
             toolResult = result,
             status = status
         )
-        _messages.value = _messages.value + toolMsg
-        chatRepository?.saveMessage(sessionId, toolMsg)
+        val progressHint = trackProgress(toolCall.name, description, observation, state)
+        // Providers read the tool result fields, so the hint goes into stderr (like the reflection hint).
+        val finalToolMsg = if (progressHint != null) {
+            toolMsg.copy(
+                text = toolMsg.text + "\n\n" + progressHint,
+                toolResult = toolMsg.toolResult?.let { it.copy(stderr = (it.stderr + "\n\n" + progressHint).trim()) }
+            )
+        } else toolMsg
+        _messages.value = _messages.value + finalToolMsg
+        chatRepository?.saveMessage(sessionId, finalToolMsg)
+        if (state.noProgress >= NO_PROGRESS_STOP) {
+            appendSystemMessage(
+                "🛑 No progress: the last $NO_PROGRESS_STOP actions only repeated results the agent already had. Execution stopped.",
+                sessionId
+            )
+            state.stopRequested = true
+        }
+    }
+
+    /**
+     * Counts actions in a row that brought nothing new (same action, same result as earlier in
+     * the run). Returns a one-time hint for the model when the count reaches [NO_PROGRESS_HINT].
+     */
+    private fun trackProgress(toolName: String, description: String, observation: String, state: LoopState): String? {
+        if (toolName in LOOP_EXEMPT_TOOLS) return null
+        val key = (description + "\u0000" + observation).hashCode()
+        if (state.seenResults.add(key)) {
+            state.noProgress = 0
+            return null
+        }
+        state.noProgress++
+        return if (state.noProgress == NO_PROGRESS_HINT) {
+            "[AMC] Your last $NO_PROGRESS_HINT actions only repeated results you already had: you are going in circles. " +
+                "Stop, decide what is actually missing, and either try a clearly different approach or finish and " +
+                "report what blocks you."
+        } else null
     }
 
     /**

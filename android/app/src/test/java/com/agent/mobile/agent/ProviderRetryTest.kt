@@ -169,6 +169,41 @@ class ProviderRetryTest {
         assertEquals(1, recoveries)
     }
 
+    private fun toolCall(id: String, name: String, args: JSONObject) {
+        val chunk = JSONObject().put(
+            "choices", JSONArray().put(
+                JSONObject().put(
+                    "delta", JSONObject().put(
+                        "tool_calls", JSONArray().put(
+                            JSONObject().put("index", 0).put("id", id).put(
+                                "function", JSONObject().put("name", name).put("arguments", args.toString())
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody("data: $chunk\n\ndata: [DONE]\n\n"))
+    }
+
+    @Test
+    fun goingInCirclesGetsAHintAndThenStops() = runBlocking {
+        val cycle = listOf("a", "b", "c")
+        val total = cycle.size + AutonomousAgentEngine.NO_PROGRESS_STOP
+        repeat(total) { i ->
+            toolCall("c$i", "forget", JSONObject().put("text", "note ${cycle[i % cycle.size]}"))
+        }
+        reply(server, "never reached")
+        val e = engine()
+        e.setMaxSteps(30)
+        val result = e.runUnattended("t", "go")
+        assertEquals("Stopped after the last repeat", total, server.requestCount)
+        assertFalse(result.success)
+        val bodies = (0 until server.requestCount).map { server.takeRequest().body.readUtf8() }
+        assertTrue(bodies.any { it.contains("you are going in circles") })
+        assertTrue(e.messages.value.any { it.text.contains("No progress") })
+    }
+
     @Test
     fun retryDelayGrowsHonoursRetryAfterAndIsCapped() {
         val r = Random(1)

@@ -80,6 +80,7 @@ AMC works like a self-hosted personal agent in the spirit of OpenClaw or OpenCra
 - **Persona (SOUL.md):** in **Settings → Autonomy → Persona & standing instructions** you describe who the agent should be and how it should work for you (name, tone, language, defaults, things to always or never do). It applies everywhere and never overrides the security and legal rules.
 - **Long-term memory:** the agent saves stable facts about you (name, preferences, devices, recurring tasks) and sees them in every new conversation. View, edit or clear it in **Settings → Autonomy**. Secrets are never meant to be stored there.
 - **Scheduled agent tasks:** ask, for example, *"Remind me every day at 8 to take my medication"* or *"Check the weather every two hours and tell me if it will rain"*. The agent schedules itself; each background run gets its own chat session and ends with a notification.
+- **Background tasks keep going:** when a background task reaches an action that needs your approval, it pauses and asks you (notification with Approve / Reject, which needs an unlocked phone; the list under **Settings → Autonomy**; or Telegram buttons). After your answer the task continues in the same chat; only the exact action you approved runs, once. A task whose step or time budget runs out continues in a new background run (up to 6 runs per task), a task interrupted by a restart or reboot continues where it stopped, provider errors (rate limits, outages) are retried with backoff before the fallback model, and a dropped Termux bridge is restarted mid-task.
 - **Heartbeat:** optional periodic check-in (15 minutes to 12 hours). The agent works through your checklist and only notifies you when something needs attention; quiet runs leave no trace.
 - **Skills:** reusable how-to files in `~/.amc/skills/` (created by the installer), either `<name>.md` or `<name>/SKILL.md` with `name:` and `description:` front matter (the Agent Skills format used by OpenClaw). Every run starts with a list of the installed skills and their descriptions; the agent reads a matching skill before following it and writes new ones after solving something it is likely to need again. Treat downloaded skills like scripts: read them before use.
 - **Steering:** you can keep typing while the agent works; the message is queued and picked up before its next step.
@@ -123,6 +124,7 @@ Then just write to your bot, for example *"How full is my storage?"* or *"Take a
 
 - Only paired Telegram accounts in private chats can reach the agent; group messages and strangers are ignored (strangers get a short pairing hint). The phone notifies you whenever an account is paired.
 - Actions that need approval arrive as ✅/❌ buttons. No answer within 10 minutes counts as rejected. Your security preset applies exactly as in the app.
+- **Send results to Telegram** (off by default): results of background tasks, agent notifications and the approval questions of paused background tasks also go to your paired accounts, with ✅/❌ buttons that let the task continue.
 - The channel runs in a foreground service and restarts after a reboot when it is enabled. For reliable delivery while the phone sleeps, set **Android Settings → Apps → AMC → Battery** to **Unrestricted**.
 - Messages, replies, approval requests and files pass through Telegram's servers. Use the in-app chat for anything you would not send through Telegram, and keep the bot token secret (anyone with it can read your bot's messages, but only paired accounts can control the agent).
 
@@ -162,7 +164,7 @@ The model manager downloads a GGUF model and starts `llama-server` on loopback p
 
 ## Background operation
 
-Set **Android Settings → Apps → Termux → Battery** to **Unrestricted** or **Not optimized**, and allow notifications. Leave Termux running in the background rather than exiting or force-stopping it.
+Set **Android Settings → Apps → Termux → Battery** and **Apps → AMC → Battery** to **Unrestricted** or **Not optimized** (the setup checklist offers both), and allow notifications. On Android 12 and later, the optional phone control step "Stop Android from killing Termux processes" switches off the phantom process killer through Shizuku or shows the ADB command. Leave Termux running in the background rather than exiting or force-stopping it.
 
 The service uses a wake lock, a notification, and startup hooks. These improve reliability but cannot guarantee that Android or manufacturer-specific limits will keep a process alive. Termux:Boot must be installed separately if you want startup after a device reboot.
 
@@ -188,7 +190,7 @@ amc run         # Run in the foreground
 
 On first launch AMC shows its terms of use, disclaimer and privacy notice (English and German); the app can only be used after all three confirmations are ticked, and the texts can be reread in **Settings → Legal & privacy**. Raising `LegalTexts.VERSION` asks every user to accept a changed version.
 
-- Actions that involve other people or cost money (sending SMS or messages in any app, phone calls, reading messages, contacts or call logs, camera photos, microphone recordings, payments) **always** require your confirmation, in every security mode including Turbo and Custom allowlists (in the app, or with buttons in your paired Telegram chat), and are never performed in unattended background runs.
+- Actions that involve other people or cost money (sending SMS or messages in any app, phone calls, reading messages, contacts or call logs, camera photos, microphone recordings, payments) **always** require your confirmation, in every security mode including Turbo and Custom allowlists (in the app, or with buttons in your paired Telegram chat). Background runs never perform them on their own: they pause, ask you, and continue only after you approved that exact action.
 - The agent's system prompt refuses clearly illegal tasks (spam, harassment, covert surveillance, unauthorized access, piracy) and treats other people's data as personal data.
 - Documents: [terms](docs/legal/TERMS.md) ([German](docs/legal/TERMS.de.md)), [privacy notice](docs/legal/PRIVACY.md) ([German](docs/legal/PRIVACY.de.md)), [third-party notices](docs/legal/THIRD_PARTY_NOTICES.md), and a note on when a German imprint is required.
 - AMC is a private, non-commercial open-source hobby project with no income. It is not affiliated with or endorsed by any AI provider or by Termux. Contact: GitHub issues.
