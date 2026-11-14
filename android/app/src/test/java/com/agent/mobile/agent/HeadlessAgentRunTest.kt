@@ -55,7 +55,7 @@ class HeadlessAgentRunTest {
 
     @After
     fun tearDown() {
-        engines.forEach { it.close() }
+        engines.forEach { it.closeAndAwait() }
         server.shutdown()
         Dispatchers.resetMain()
         mainDispatcher.close()
