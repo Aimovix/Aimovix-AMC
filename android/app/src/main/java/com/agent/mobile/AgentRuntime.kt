@@ -34,6 +34,10 @@ class AgentRuntime private constructor(context: Context) {
             scheduler.scheduleAgentTask(title, prompt, delayMinutes = 0, repeatEveryMinutes = 0)
         }
     val telegram: TelegramChannelManager by lazy { TelegramChannelManager(this) }
+    /** Background-run approvals waiting for the user; answering one resumes its task. */
+    val approvalQueue = com.agent.mobile.service.approval.ApprovalQueueManager(
+        appContext, database.agentQueueDao()
+    ) { approvalId -> scheduler.enqueueResume(approvalId) }
     /** Starts the Termux bridge through RUN_COMMAND when it is not reachable. */
     val bridgeStarter = com.agent.mobile.core.termux.BridgeStarter(appContext)
 

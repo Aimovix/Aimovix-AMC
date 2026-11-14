@@ -76,6 +76,23 @@ class AutonomousAgentEngine(
         private const val REFLECTION_THRESHOLD = 3
         private const val MAX_CONSECUTIVE_ERRORS = 5
 
+        /** Attempts per provider (first try + retries) for errors that may go away (429, 5xx, network). */
+        const val MAX_ATTEMPTS_PER_PROVIDER = 3
+        private const val MAX_RETRY_DELAY_MS = 30_000L
+        /** A provider that asks to wait longer than this is not waited for (fallback or stop instead). */
+        private const val MAX_RETRY_AFTER_MS = 60_000L
+
+        /**
+         * Wait before retry [attempt] (1-based): exponential with jitter, at least what the provider
+         * asked for. Null when the provider wants us to wait too long.
+         */
+        internal fun retryDelayMs(attempt: Int, retryAfterMs: Long, baseMs: Long, random: java.util.Random = java.util.Random()): Long? {
+            if (retryAfterMs > MAX_RETRY_AFTER_MS) return null
+            val exp = (baseMs shl (attempt - 1).coerceIn(0, 10)).coerceAtMost(MAX_RETRY_DELAY_MS)
+            val jittered = (exp * (0.75 + random.nextDouble() * 0.5)).toLong()
+            return maxOf(jittered, retryAfterMs)
+        }
+
         /** Interactive approvals that nobody answers are rejected after this (configurable in Settings). */
         const val DEFAULT_APPROVAL_TIMEOUT_MS = 10 * 60_000L
 
@@ -96,6 +113,10 @@ class AutonomousAgentEngine(
         /** Start of a screen reading in a tool result ("Screen: App (pkg) · …"). */
         private val SCREEN_HEADER = Regex("(^|\\n)Screen: ")
 
+        /** Tools that need the Termux bridge. */
+        private val BRIDGE_TOOLS = setOf(AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WRITE_FILE, AgentTools.SEND_FILE)
+        private const val BRIDGE_RECOVERY_TIMEOUT_MS = 25_000L
+
         private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS) +
             PhoneTools.LOOP_EXEMPT
     }
@@ -104,7 +125,13 @@ class AutonomousAgentEngine(
         val sessionId: String?,
         val summary: String,
         val success: Boolean,
-        val skippedApprovals: List<String>
+        val skippedApprovals: List<String>,
+        /** Set when the run parked an action for the user's approval and stopped (see [ApprovalQueue]). */
+        val parkedApprovalId: String? = null,
+        /** True when the run ended because its step or time budget ran out, not because it finished. */
+        val budgetExhausted: Boolean = false,
+        /** True when the run stopped because the AI provider stayed unreachable (worth a later retry). */
+        val providerFailed: Boolean = false
     )
 
     private var activeJob: Job? = null
@@ -168,6 +195,24 @@ class AutonomousAgentEngine(
      */
     @Volatile
     var approvalHandler: (suspend (ToolCall, SecurityAssessment) -> Boolean)? = null
+
+    /**
+     * Parks actions that need approval in UNATTENDED runs, so the user can answer later and the
+     * task resumes. When null, such actions are skipped and reported (the old behaviour).
+     */
+    @Volatile
+    var approvalQueue: ApprovalQueue? = null
+
+    /**
+     * Starts or reconnects the Termux bridge (through RUN_COMMAND). Called when a bridge tool is
+     * about to run while the bridge is down, so a run heals itself instead of failing every command.
+     */
+    @Volatile
+    var bridgeRecovery: (suspend () -> Boolean)? = null
+
+    /** First retry delay after a provider error (doubles per retry). Lowered in tests. */
+    @Volatile
+    internal var retryBaseDelayMs: Long = 2_000L
 
     /** Receives files from `send_file` in channel conversations. Null: files are shown in the app. */
     @Volatile
@@ -440,8 +485,24 @@ class AutonomousAgentEngine(
      * Runs one task without a user watching (scheduled task or heartbeat) in a fresh session.
      * Must be called on a headless engine instance. Actions that need approval are refused.
      */
-    suspend fun runUnattended(title: String, prompt: String): UnattendedResult =
-        runHeadless(title = title, prompt = prompt, mode = RunMode.UNATTENDED)
+    suspend fun runUnattended(
+        title: String,
+        prompt: String,
+        onSessionReady: (suspend (String) -> Unit)? = null
+    ): UnattendedResult =
+        runHeadless(title = title, prompt = prompt, mode = RunMode.UNATTENDED, onSessionReady = onSessionReady)
+
+    /**
+     * Continues the session of an earlier background run (after an approval was answered, after
+     * its budget ran out, or after AMC was restarted). An approved call runs exactly once first,
+     * and only while it still matches the approved fingerprint and is not blocked.
+     */
+    suspend fun resumeUnattended(
+        title: String,
+        resume: ResumeRequest,
+        onSessionReady: (suspend (String) -> Unit)? = null
+    ): UnattendedResult =
+        runHeadless(title = title, prompt = resume.note, mode = RunMode.UNATTENDED, resume = resume, onSessionReady = onSessionReady)
 
     /**
      * Queues a message from a channel user while a REMOTE run is busy ("steering"); it is picked
@@ -474,26 +535,46 @@ class AutonomousAgentEngine(
             RunMode.REMOTE -> REMOTE_TIMEOUT_MS
             RunMode.SUBAGENT -> SUBAGENT_TIMEOUT_MS
             else -> UNATTENDED_TIMEOUT_MS
-        }
+        },
+        resume: ResumeRequest? = null,
+        onSessionReady: (suspend (String) -> Unit)? = null
     ): UnattendedResult = withContext(Dispatchers.Main) {
         check(headless) { "runHeadless requires a headless engine" }
         require(mode != RunMode.INTERACTIVE) { "Interactive runs use startTask" }
+        require(resume == null || mode == RunMode.UNATTENDED) { "Only background runs are resumed" }
         val skipped = mutableListOf<String>()
 
-        val existing = if (mode == RunMode.REMOTE && sessionId != null) chatRepository?.getSessionById(sessionId) else null
+        val continueId = resume?.sessionId ?: sessionId.takeIf { mode == RunMode.REMOTE }
+        val existing = continueId?.let { chatRepository?.getSessionById(it) }
         if (existing != null) {
             sessionCollectJob?.cancel()
             _currentSession.value = existing
             _messages.value = chatRepository?.getMessagesForSessionSync(existing.id).orEmpty()
+        } else if (resume != null) {
+            return@withContext UnattendedResult(null, "The chat of this task no longer exists, so it cannot be continued.", false, skipped)
         } else {
             createNewSessionInternal(title)
         }
         val activeSessionId = _currentSession.value?.id
             ?: return@withContext UnattendedResult(null, "Could not create a session.", false, skipped)
+        try {
+            onSessionReady?.invoke(activeSessionId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Session callback failed: ${e.message}")
+        }
+
+        val state = LoopState().apply {
+            runTitle = title
+            chain = resume?.chain ?: 0
+            resume?.grantKey?.let { grants += it }
+        }
+        val turnText = if (resume != null) runApprovedCall(activeSessionId, resume, state, skipped) else prompt.trim()
 
         val userMessage = ChatMessage(
             role = MessageRole.USER,
-            text = prompt.trim(),
+            text = turnText,
             imageBase64 = imageBase64,
             imageMimeType = imageMimeType
         )
@@ -509,7 +590,7 @@ class AutonomousAgentEngine(
             val finished = withTimeoutOrNull(timeoutMs) {
                 // A child job, so the phone control Stop button can end the run without cancelling the caller.
                 coroutineScope {
-                    val loop = launch { runAgentLoop(activeSessionId, mode, skipped) }
+                    val loop = launch { runAgentLoop(activeSessionId, mode, skipped, state) }
                     headlessLoopJob = loop
                     loop.join()
                 }
@@ -522,6 +603,7 @@ class AutonomousAgentEngine(
                 appendSystemMessage("🛑 Stopped by the user (Stop button of phone control).", activeSessionId)
             } else if (finished == null) {
                 success = false
+                state.budgetExhausted = true
                 bridgeClient.interruptCurrent()
                 recoverAbortedToolCalls(activeSessionId, "Time limit reached.")
                 appendSystemMessage("⏱️ Time limit reached. The task was stopped.", activeSessionId)
@@ -558,7 +640,64 @@ class AutonomousAgentEngine(
         val summary = finalReply?.text?.trim()
             ?: listOfNotNull(lastThought?.text?.trim(), lastSystem?.text).joinToString("\n\n").ifBlank { null }
             ?: "The task finished without a summary."
-        UnattendedResult(activeSessionId, summary, success, skipped)
+        UnattendedResult(
+            activeSessionId, summary, success, skipped,
+            parkedApprovalId = state.parkedId,
+            budgetExhausted = state.budgetExhausted && state.parkedId == null && !stoppedByUser,
+            providerFailed = state.providerFailed && !stoppedByUser
+        )
+    }
+
+    /**
+     * Builds the first user turn of a resumed run. An approved call runs here, once, before the
+     * model continues; its result becomes part of the turn. The provider never sees a tool call
+     * it did not make, so this works for every provider.
+     */
+    private suspend fun runApprovedCall(
+        sessionId: String,
+        resume: ResumeRequest,
+        state: LoopState,
+        skipped: MutableList<String>
+    ): String {
+        val call = resume.approvedCall ?: return resume.note
+        if (PhoneTools.isPhoneTool(call.name)) {
+            return resume.note + " AMC restored that approval for this run. The screen may have changed: read it " +
+                "first, then do the action again."
+        }
+        val description = AgentTools.describe(call)
+        if (resume.approvedFingerprint == null || ApprovalFingerprint.of(call) != resume.approvedFingerprint) {
+            appendSystemMessage("🛡️ The approved action no longer matches what was stored and was not run: `${description.take(160)}`", sessionId)
+            return resume.note + " AMC did NOT run it: the stored action does not match what was approved."
+        }
+        val assessment = AgentTools.assess(call)
+        excludedTools = excludedFor(RunMode.UNATTENDED)
+        if (assessment.isBlocked || !AgentTools.isKnown(call.name) || call.name in excludedTools) {
+            val why = if (assessment.isBlocked) assessment.reason else "the tool is not available in this run"
+            val result = ToolResult(toolCallId = call.id, command = description, toolName = call.name, stderr = why, exitCode = -1, isError = true)
+            recordAudit(sessionId, description, assessment.level.name, why, result, 0, approved = false)
+            appendSystemMessage("🛡️ Approved action not run: `${description.take(160)}` ($why)", sessionId)
+            return resume.note + " AMC did NOT run it: $why."
+        }
+        val start = System.currentTimeMillis()
+        val raw = try {
+            dispatchTool(
+                call.copy(riskLevel = assessment.level.name, riskReason = assessment.reason),
+                "", mutableListOf(), RunMode.UNATTENDED, skipped, state
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            ToolResult(toolCallId = call.id, command = description, stderr = e.localizedMessage ?: e.toString(), exitCode = -1, isError = true)
+        }
+        recordAudit(sessionId, description, assessment.level.name, "Approved by the user (parked action)", raw, System.currentTimeMillis() - start, approved = true)
+        val failed = raw.isError || raw.exitCode != 0
+        appendSystemMessage(
+            (if (failed) "⚠️ Approved action failed: " else "✅ Approved action done: ") + "`${description.take(160)}`",
+            sessionId
+        )
+        val output = compactToolOutput(if (raw.stdout.isNotEmpty()) raw.stdout else raw.stderr).ifBlank { "(no output)" }
+        val guarded = if (call.name in UNTRUSTED_OUTPUT_TOOLS) "[UNTRUSTED_OUTPUT_START]\n$output\n[UNTRUSTED_OUTPUT_END]" else output
+        return "${resume.note} AMC ran it now (exit code ${raw.exitCode}${if (failed) ", failed" else ""}). Result:\n$guarded\n\nContinue the task."
     }
 
     private fun drainSteeringQueue(sessionId: String): Boolean {
@@ -588,6 +727,16 @@ class AutonomousAgentEngine(
         var control: AutoCloseable? = null
         /** Grant approved for the current call only (REMOTE runs, where grants are not kept). */
         var callGrant: String? = null
+        /** Title of the run (shown with parked approvals). */
+        var runTitle: String = ""
+        /** Runs of this task before this one (resumes and continuations); limits parking. */
+        var chain: Int = 0
+        /** Queue id of the action this run parked for the user's approval. */
+        var parkedId: String? = null
+        /** The step or time budget ran out before the task finished. */
+        var budgetExhausted: Boolean = false
+        /** The run stopped because no provider answered (after retries and the fallback). */
+        var providerFailed: Boolean = false
     }
 
     /** Tools the model may not use in [mode]. */
@@ -627,7 +776,8 @@ class AutonomousAgentEngine(
     private suspend fun runAgentLoop(
         executionSessionId: String,
         mode: RunMode,
-        skippedApprovals: MutableList<String> = mutableListOf()
+        skippedApprovals: MutableList<String> = mutableListOf(),
+        state: LoopState = LoopState()
     ) {
         val stepLimit = when (mode) {
             RunMode.UNATTENDED -> minOf(_maxSteps.value, UNATTENDED_MAX_STEPS)
@@ -644,7 +794,6 @@ class AutonomousAgentEngine(
             skills = loadSkillsIndex(),
             channel = channelName
         )
-        val state = LoopState()
         excludedTools = excludedFor(mode)
         try {
             runLoopIterations(executionSessionId, systemPrompt, mode, state, skippedApprovals, stepLimit, steerable)
@@ -678,9 +827,14 @@ class AutonomousAgentEngine(
         while (currentCoroutineContext().isActive) {
             if (steerable) drainSteeringQueue(executionSessionId)
             if (iterations >= stepLimit) {
+                state.budgetExhausted = true
                 appendSystemMessage(
-                    "ℹ️ Step limit of $stepLimit reached. Send \"continue\" to let the agent keep working " +
-                        "or raise the limit in Settings → Autonomy.",
+                    if (mode == RunMode.UNATTENDED) {
+                        "ℹ️ Step budget of this background run used up ($stepLimit steps)."
+                    } else {
+                        "ℹ️ Step limit of $stepLimit reached. Send \"continue\" to let the agent keep working " +
+                            "or raise the limit in Settings → Autonomy."
+                    },
                     executionSessionId
                 )
                 break
@@ -747,9 +901,9 @@ class AutonomousAgentEngine(
         var errorEvent: LlmClient.LlmStreamEvent.Error? = null
         val textBuilder = StringBuilder()
 
-        var streamAttempt = 0
-        while (streamAttempt < 2 && !streamCompleted && currentCoroutineContext().isActive) {
-            streamAttempt++
+        var attemptOnProvider = 0
+        while (!streamCompleted && currentCoroutineContext().isActive) {
+            attemptOnProvider++
             try {
                 val contextMessages = prepareContextMessages(_messages.value.filter { it.id != assistantMsgId })
                 llmClient.streamRequest(
@@ -784,10 +938,28 @@ class AutonomousAgentEngine(
                 errorEvent = LlmClient.LlmStreamEvent.Error(e.localizedMessage ?: "Network error", 0, true)
             }
 
-            if (!streamCompleted && errorEvent != null) {
+            if (!streamCompleted && errorEvent != null && errorEvent!!.isRetryable) {
+                // 1. Retry the same provider with backoff (429, 5xx, network), honouring Retry-After.
+                val wait = if (attemptOnProvider < MAX_ATTEMPTS_PER_PROVIDER) {
+                    retryDelayMs(attemptOnProvider, errorEvent!!.retryAfterMs, retryBaseDelayMs)
+                } else null
+                if (wait != null) {
+                    appendSystemMessage(
+                        "⏳ ${activeConfig.provider.displayName} did not answer (${errorEvent!!.message.take(120)}). " +
+                            "Retrying in ${(wait + 999) / 1000} s…",
+                        executionSessionId
+                    )
+                    delay(wait)
+                    textBuilder.clear()
+                    updateMessageText(assistantMsgId, "", MessageStatus.STREAMING)
+                    errorEvent = null
+                    continue
+                }
+                // 2. Then the fallback provider (once per step; the next step tries the primary again).
                 val fallback = primaryConfig.fallbackProvider
-                if (fallback != null && !isUsingFallback && errorEvent!!.isRetryable) {
+                if (fallback != null && !isUsingFallback) {
                     isUsingFallback = true
+                    attemptOnProvider = 0
                     val fallbackModel = primaryConfig.fallbackModelName.ifEmpty { fallback.defaultModel }
                     activeConfig = ModelConfig(
                         provider = fallback,
@@ -809,6 +981,7 @@ class AutonomousAgentEngine(
         }
 
         if (!streamCompleted) {
+            if (errorEvent?.isRetryable == true) state.providerFailed = true
             updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
             _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
             if (errorEvent != null) {
@@ -949,6 +1122,10 @@ class AutonomousAgentEngine(
         val remoteForced = PhoneToolPolicy.requiresApprovalInMode(toolCall.name, mode)
         val granted = !remoteForced && assessment.grantKey != null && assessment.grantKey in state.grants
         if (!granted && (remoteForced || CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value))) {
+            // Background run: park the action for the user instead of skipping it.
+            if (mode == RunMode.UNATTENDED &&
+                tryParkApproval(sessionId, assistantMsgId, toolCall, securedToolCall, assessment, description, state)
+            ) return
             val skippedBefore = skippedApprovals.size
             val approved = requestApproval(
                 assistantMsgId, securedToolCall, assessment, description, mode, skippedApprovals,
@@ -1129,6 +1306,59 @@ class AutonomousAgentEngine(
         }
     }
 
+    /**
+     * Parks [toolCall] in the [approvalQueue] and ends this run; a new run continues after the
+     * user's answer. Never parks calls that carry a secret, phone actions that cannot be granted
+     * per app (sending, paying: the screen will have changed), or when the task already used its
+     * run budget. Returns false when the call was not parked (it is then skipped as before).
+     */
+    private suspend fun tryParkApproval(
+        sessionId: String,
+        assistantMsgId: String,
+        toolCall: ToolCall,
+        securedToolCall: ToolCall,
+        assessment: SecurityAssessment,
+        description: String,
+        state: LoopState
+    ): Boolean {
+        val queue = approvalQueue ?: return false
+        if (assessment.redact || state.chain >= ResumeRequest.MAX_CHAIN - 1) return false
+        if (PhoneTools.isPhoneTool(toolCall.name) && assessment.grantKey == null) return false
+        val id = try {
+            queue.park(
+                ParkedApproval(
+                    sessionId = sessionId,
+                    runTitle = state.runTitle,
+                    call = toolCall,
+                    description = description,
+                    riskLevel = assessment.level.name,
+                    riskReason = assessment.reason,
+                    fingerprint = ApprovalFingerprint.of(toolCall),
+                    grantKey = assessment.grantKey,
+                    chain = state.chain
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not park the approval: ${e.message}")
+            null
+        } ?: return false
+        releasePhoneCall(toolCall)
+        val paused = appendToolMessage(
+            sessionId, securedToolCall, toolCall.name, description, "",
+            "Paused: this action waits for the user's approval. The task continues automatically in a new run " +
+                "after the user answers. Do nothing else now.",
+            -1, isError = true
+        )
+        updateMessageToolResult(assistantMsgId, paused, MessageStatus.WAITING_FOR_APPROVAL)
+        recordAudit(sessionId, description, assessment.level.name, "Waiting for the user's approval (parked)", paused, 0, approved = false)
+        appendSystemMessage("⏸️ Waiting for your approval: `${description.take(160)}`. The task continues after you answer.", sessionId)
+        state.parkedId = id
+        state.stopRequested = true
+        return true
+    }
+
     private fun releasePhoneCall(call: ToolCall) {
         if (!PhoneTools.isPhoneTool(call.name)) return
         try {
@@ -1165,6 +1395,7 @@ class AutonomousAgentEngine(
         fun fail(text: String) = ToolResult(toolCallId = call.id, command = description, toolName = call.name, stderr = text, exitCode = 1, isError = true)
 
         if (PhoneTools.isPhoneTool(call.name)) return runPhoneTool(call, mode, state, pendingVision)
+        if (call.name in BRIDGE_TOOLS) ensureBridge()
 
         return when (call.name) {
             AgentTools.EXECUTE_COMMAND -> {
@@ -1312,6 +1543,21 @@ class AutonomousAgentEngine(
             )
         }
         return result(r.text, r.ok)
+    }
+
+    /** Brings the bridge back before a bridge tool runs, when it dropped during the run. */
+    private suspend fun ensureBridge() {
+        if (bridgeClient.connectionStatus.value is ConnectionStatus.Connected) return
+        val recover = bridgeRecovery ?: return
+        val ok = try {
+            withTimeoutOrNull(BRIDGE_RECOVERY_TIMEOUT_MS) { recover() } ?: false
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Bridge recovery failed: ${e.message}")
+            false
+        }
+        Log.i(TAG, if (ok) "Termux bridge recovered during the run" else "Termux bridge still unreachable")
     }
 
     /** Sends an image to the channel chat, or shows it in the app's artifact panel. */

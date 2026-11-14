@@ -143,6 +143,42 @@ class SchedulerManager(private val context: Context) {
         }
     }
 
+    /** Continues a background task after its parked approval was answered. */
+    fun enqueueResume(approvalId: String) {
+        val request = OneTimeWorkRequestBuilder<AgentTaskWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setInputData(
+                workDataOf(
+                    AgentTaskWorker.KEY_KIND to AgentTaskWorker.KIND_RESUME,
+                    AgentTaskWorker.KEY_APPROVAL_ID to approvalId
+                )
+            )
+            .addTag(AGENT_TASK_TAG)
+            .addTag(TITLE_TAG_PREFIX + "Resume after approval")
+            .build()
+        workManager.enqueueUniqueWork("amc_resume_$approvalId", ExistingWorkPolicy.KEEP, request)
+    }
+
+    /** Continues a background task whose step or time budget ran out, in the same chat session. */
+    fun enqueueContinuation(sessionId: String, title: String, chain: Int, originKind: String, delayMinutes: Long = 0) {
+        val request = OneTimeWorkRequestBuilder<AgentTaskWorker>()
+            .setInitialDelay(delayMinutes.coerceAtLeast(0), TimeUnit.MINUTES)
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setInputData(
+                workDataOf(
+                    AgentTaskWorker.KEY_KIND to AgentTaskWorker.KIND_CONTINUE,
+                    AgentTaskWorker.KEY_SESSION_ID to sessionId,
+                    AgentTaskWorker.KEY_TITLE to title.take(80),
+                    AgentTaskWorker.KEY_CHAIN to chain,
+                    AgentTaskWorker.KEY_ORIGIN_KIND to originKind
+                )
+            )
+            .addTag(AGENT_TASK_TAG)
+            .addTag(TITLE_TAG_PREFIX + title.take(60))
+            .build()
+        workManager.enqueueUniqueWork("amc_continue_${sessionId}_$chain", ExistingWorkPolicy.KEEP, request)
+    }
+
     /** Lists pending/running agent tasks, one per line. Blocking; call off the main thread. */
     fun describeAgentTasks(): String {
         val infos = workManager.getWorkInfosByTag(AGENT_TASK_TAG).get()

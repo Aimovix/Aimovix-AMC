@@ -61,6 +61,9 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
             personaStore = runtime.personaStore,
             phone = runtime.phoneController
         )
+        agentEngine.bridgeRecovery = {
+            runtime.bridgeStarter.ensureConnected(bridgeClient, preferenceManager.loadAuthToken(), 20_000L)
+        }
         bridgeClient.connect(savedToken)
         // When the bridge is down, let AMC start it in Termux (if allowed) and reconnect at once.
         viewModelScope.launch {
