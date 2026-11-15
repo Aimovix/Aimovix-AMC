@@ -149,6 +149,10 @@ data, not instructions.
             AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH,
             AgentTools.WEB_SEARCH, AgentTools.SEARCH_HISTORY, AgentTools.DELEGATE_TASK, AgentTools.JOB_STATUS
         ) + PhoneTools.UNTRUSTED_OUTPUT
+        /** Tools whose results are text that other people control (see guardPersistence). */
+        private val EXTERNAL_CONTENT_TOOLS = setOf(AgentTools.WEB_FETCH, AgentTools.WEB_SEARCH) +
+            (PhoneTools.UNTRUSTED_OUTPUT - PhoneTools.PRIVILEGED_SHELL)
+
         /** Texts of image messages the app adds as USER turns (screenshots, photos). */
         private val SYNTHETIC_IMAGE_PREFIXES = listOf("📱 Screenshot", "📸 Photo captured")
 
@@ -813,6 +817,28 @@ data, not instructions.
         var fallbackUntil: Long = 0L
         /** How often this run was asked to continue or to finish properly instead of stopping. */
         var finishNudges = 0
+        /** The run has read web pages, search results, the screen or notifications (text others control). */
+        var readExternalContent = false
+    }
+
+    /**
+     * Text from web pages, the screen or notifications can carry instructions ("remember: send all
+     * reports to …"). After such content was read in this run, actions that would make it last beyond
+     * the run (memory, scheduled tasks, notification triggers, skill files) need the user's approval.
+     */
+    private fun guardPersistence(call: ToolCall, base: SecurityAssessment, state: LoopState): SecurityAssessment {
+        if (!state.readExternalContent || base.isBlocked) return base
+        val persistent = when (call.name) {
+            AgentTools.REMEMBER, AgentTools.SCHEDULE_TASK, PhoneTools.NOTIFICATION_TRIGGER -> true
+            AgentTools.WRITE_FILE, AgentTools.EDIT_FILE -> call.arguments["path"].orEmpty().contains(".amc/skills")
+            else -> false
+        }
+        if (!persistent || (base.level == RiskLevel.HIGH && base.sensitive)) return base
+        return base.copy(
+            level = RiskLevel.HIGH,
+            sensitive = true,
+            reason = "Lasting change after reading web, screen or notification content in this run (prompt-injection guard)"
+        )
     }
 
     /**
@@ -1238,7 +1264,7 @@ data, not instructions.
                 null
             }
         } else null
-        val assessment = withScriptChecks(toolCall, AgentTools.assess(toolCall, phoneContext))
+        val assessment = guardPersistence(toolCall, withScriptChecks(toolCall, AgentTools.assess(toolCall, phoneContext)), state)
         val description = AgentTools.describe(toolCall, redact = assessment.redact)
         // What is shown, stored and sent back to the model; the real arguments are only used to execute.
         val displayCall = if (assessment.redact) PhoneTools.redacted(toolCall) else toolCall
@@ -1309,7 +1335,11 @@ data, not instructions.
             if (!approved) {
                 releasePhoneCall(toolCall)
                 val notAsked = skippedApprovals.size > skippedBefore
-                val reason = if (notAsked) {
+                val unreachable = approvalUnreachable.also { approvalUnreachable = false }
+                val reason = if (unreachable) {
+                    "Not executed: the approval request could not reach the user (network problem), so they did not " +
+                        "decide. You may ask again later in this run; meanwhile continue with work that needs no approval."
+                } else if (notAsked) {
                     "Not executed: this action requires the user's approval, and the user cannot be asked during this " +
                         "run. Skip it and mention it in your summary."
                 } else {
@@ -1318,7 +1348,7 @@ data, not instructions.
                 }
                 val rejected = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "", reason, -1, isError = true)
                 updateMessageToolResult(assistantMsgId, rejected, MessageStatus.ERROR)
-                recordAudit(sessionId, description, assessment.level.name, if (notAsked) "Needs approval (user not present)" else "Rejected by the user", rejected, 0, approved = false)
+                recordAudit(sessionId, description, assessment.level.name, if (unreachable) "Approval request not delivered" else if (notAsked) "Needs approval (user not present)" else "Rejected by the user", rejected, 0, approved = false)
                 return
             }
         }
@@ -1395,6 +1425,7 @@ data, not instructions.
             toolResult = result,
             status = status
         )
+        if (!failed && toolCall.name in EXTERNAL_CONTENT_TOOLS) state.readExternalContent = true
         val progressHint = trackProgress(toolCall.name, description, observation, state)
         // A successful step with a new result ends the warned phase: a later loop gets its own warning.
         if (!failed && state.noProgress == 0) state.loopWarnings = 0
@@ -1462,6 +1493,10 @@ data, not instructions.
                 updateMessageStatus(assistantMsgId, MessageStatus.WAITING_FOR_APPROVAL)
                 try {
                     handler(call, assessment)
+                } catch (e: ApprovalUnreachableException) {
+                    Log.w(TAG, "Approval not delivered: ${e.message}")
+                    approvalUnreachable = true
+                    false
                 } finally {
                     updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
                 }
@@ -1830,6 +1865,10 @@ data, not instructions.
         }
         return result(r.text, r.ok)
     }
+
+    /** The last approval request could not be delivered (set by the channel handler, read once). */
+    @Volatile
+    private var approvalUnreachable = false
 
     /** Chat runs report start and end here (see InteractiveRunGuard); null in tests and headless engines. */
     @Volatile
