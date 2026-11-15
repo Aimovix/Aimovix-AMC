@@ -56,4 +56,15 @@ class MemoryStoreTest {
         assertTrue(prompt.contains("UNATTENDED"))
         assertTrue(AgentPrompts.heartbeatPrompt("").contains(AgentPrompts.HEARTBEAT_OK))
     }
+
+    @Test
+    fun lessonsRotateBeforeFacts() {
+        val s = MemoryStore(tmp.newFile(), maxChars = 400)
+        s.remember("The user's name is Sam")
+        repeat(20) { s.rememberLesson("lesson number $it about something that went wrong") }
+        val entries = s.entries()
+        assertTrue("Facts stay", entries.any { it.contains("name is Sam") })
+        assertTrue(entries.count { it.contains("Lesson:") } <= MemoryStore.MAX_LESSONS)
+        assertTrue("The newest lesson is kept", entries.last().contains("lesson number 19"))
+    }
 }

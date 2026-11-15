@@ -21,7 +21,16 @@ class MemoryStore(
         const val DEFAULT_MAX_CHARS = 6_000
         private const val MAX_ENTRY_CHARS = 500
         private val ENTRY_PREFIX = Regex("""^-\s*(\[\d{4}-\d{2}-\d{2}]\s*)?""")
+        /** Entries learned from failed runs; they rotate, facts about the user stay. */
+        const val LESSON_PREFIX = "Lesson:"
+        const val MAX_LESSONS = 15
     }
+
+    private fun isLesson(entry: String) = stripPrefix(entry).startsWith(LESSON_PREFIX, ignoreCase = true)
+
+    /** Stores one lesson from a failed run (problem, cause, what worked). */
+    fun rememberLesson(lesson: String, now: Date = Date()): String =
+        remember("$LESSON_PREFIX ${lesson.trim().removePrefix(LESSON_PREFIX).trim()}", now)
 
     private val lock = Any()
 
@@ -47,8 +56,14 @@ class MemoryStore(
         val date = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(now)
         current += "- [$date] $clean"
         var dropped = 0
+        // Over the limit: old lessons go first, then the oldest facts. Too many lessons: the oldest goes.
+        while (current.count { isLesson(it) } > MAX_LESSONS) {
+            current.removeAt(current.indexOfFirst { isLesson(it) })
+            dropped++
+        }
         while (current.size > 1 && current.joinToString("\n").length > maxChars) {
-            current.removeAt(0)
+            val oldestLesson = current.dropLast(1).indexOfFirst { isLesson(it) }
+            current.removeAt(if (oldestLesson >= 0) oldestLesson else 0)
             dropped++
         }
         write(current)
