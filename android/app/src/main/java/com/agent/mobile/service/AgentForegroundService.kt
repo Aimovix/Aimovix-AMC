@@ -30,6 +30,7 @@ class AgentForegroundService : Service {
         const val ACTION_UPDATE = "com.agent.mobile.ACTION_UPDATE"
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_MESSAGE = "extra_message"
+        private const val WAKE_LOCK_MAX_MS = 2 * 60 * 60 * 1000L
 
         fun start(context: Context) {
             try {
@@ -57,6 +58,24 @@ class AgentForegroundService : Service {
             }
         }
 
+        /** The running service instance in this process (null when it is not started). */
+        @Volatile
+        private var instance: AgentForegroundService? = null
+
+        /** Runs that currently need the CPU (chat runs, channel runs). */
+        private val busyRuns = java.util.concurrent.atomic.AtomicInteger(0)
+
+        /**
+         * A run started or ended. The WakeLock is held only while at least one run is active:
+         * holding it from app start on drained the battery while the agent was idle.
+         */
+        fun setBusy(busy: Boolean) {
+            val n = if (busy) busyRuns.incrementAndGet() else busyRuns.updateAndGet { maxOf(0, it - 1) }
+            instance?.applyBusy(n > 0)
+        }
+
+        internal fun isWakeLockHeldForTest(): Boolean = instance?.serviceWakeLock?.isHeld == true
+
         fun stop(context: Context) {
             try {
                 val intent = Intent(context, AgentForegroundService::class.java)
@@ -81,7 +100,8 @@ class AgentForegroundService : Service {
         }
         try {
             if (serviceWakeLock?.isHeld == false) {
-                serviceWakeLock?.acquire(6 * 60 * 60 * 1000L) // Safe 6h max timeout
+                // Renewed by every run start; a run that never ends cannot hold it forever.
+                serviceWakeLock?.acquire(WAKE_LOCK_MAX_MS)
                 Log.d(TAG, "Foreground service WakeLock acquired")
             }
         } catch (e: Exception) {
@@ -100,10 +120,15 @@ class AgentForegroundService : Service {
         }
     }
 
+    private fun applyBusy(busy: Boolean) {
+        if (busy) acquireWakeLock() else releaseWakeLock()
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        acquireWakeLock()
+        instance = this
+        applyBusy(busyRuns.get() > 0)
         try {
             TermuxBridgeClient.getInstance(applicationContext)
         } catch (e: Exception) {
@@ -118,7 +143,7 @@ class AgentForegroundService : Service {
             return START_NOT_STICKY
         }
 
-        acquireWakeLock()
+        applyBusy(busyRuns.get() > 0)
 
         val title = intent?.getStringExtra(EXTRA_TITLE) ?: "AMC – AI Mobile Center"
         val message = intent?.getStringExtra(EXTRA_MESSAGE) ?: "Autonomous agent ready"
@@ -177,6 +202,7 @@ class AgentForegroundService : Service {
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
         releaseWakeLock()
         super.onDestroy()
     }

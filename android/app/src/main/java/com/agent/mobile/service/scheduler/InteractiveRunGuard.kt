@@ -29,6 +29,7 @@ class InteractiveRunGuard(private val context: Context) : InteractiveRunListener
 
     override suspend fun onRunStarted(sessionId: String, title: String) {
         alive += sessionId
+        com.agent.mobile.service.AgentForegroundService.setBusy(true)
         try {
             AgentRuntime.get(context).database.agentQueueDao().upsertRun(
                 AgentRunEntity(id = runId(sessionId), sessionId = sessionId, title = title.ifBlank { "Chat task" }, kind = KIND, status = AgentRunEntity.STATUS_RUNNING)
@@ -41,6 +42,7 @@ class InteractiveRunGuard(private val context: Context) : InteractiveRunListener
 
     override suspend fun onRunEnded(sessionId: String, interrupted: Boolean) {
         alive -= sessionId
+        com.agent.mobile.service.AgentForegroundService.setBusy(false)
         try {
             val dao = AgentRuntime.get(context).database.agentQueueDao()
             val run = dao.getRun(runId(sessionId))

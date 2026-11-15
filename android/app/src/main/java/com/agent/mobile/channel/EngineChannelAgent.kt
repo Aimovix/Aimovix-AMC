@@ -34,6 +34,15 @@ class EngineChannelAgent(
     override val isBusy: Boolean get() = engine.isBusy.value
 
     override suspend fun run(request: TurnRequest): AutonomousAgentEngine.UnattendedResult {
+        com.agent.mobile.service.AgentForegroundService.setBusy(true)
+        try {
+            return runTurn(request)
+        } finally {
+            com.agent.mobile.service.AgentForegroundService.setBusy(false)
+        }
+    }
+
+    private suspend fun runTurn(request: TurnRequest): AutonomousAgentEngine.UnattendedResult {
         // Settings may have changed in the app since the last message.
         engine.reloadSettings()
         engine.approvalHandler = request.approval
