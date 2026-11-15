@@ -84,6 +84,49 @@ class TelegramGateway(
     @Volatile
     var onParkedDecision: (suspend (approvalId: String, approved: Boolean, remember: Boolean) -> Boolean)? = null
 
+    /** Records the answer to a parked question (ask_user). True for the first answer. */
+    var onParkedAnswer: (suspend (approvalId: String, answer: String) -> Boolean)? = null
+
+    /** Open questions: Telegram message id → approval id, and their answer suggestions. */
+    private val questionMessages = java.util.concurrent.ConcurrentHashMap<Long, String>()
+    private val questionOptions = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+
+    /**
+     * Asks every paired account a question of a background run. Answers: a suggestion button, a
+     * reply to the message, or /answer <text> for the latest question.
+     */
+    suspend fun askParkedQuestion(approvalId: String, question: String, options: List<String>) {
+        questionOptions[approvalId] = options
+        for (user in store.get().paired) {
+            try {
+                val id = api.sendMessage(
+                    user.id, "❓ Question from a background task\n\n${question.take(1_500)}\n\nReply to this message with your answer.",
+                    buttons = options.mapIndexed { i, o -> TelegramBotApi.Button(o.take(40), "$QUESTION_PREFIX$approvalId:$i") }
+                )
+                questionMessages[id] = approvalId
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not ask ${user.id}: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun answerQuestion(chatId: Long, approvalId: String, answer: String) {
+        val record = onParkedAnswer ?: return
+        val first = try {
+            record(approvalId, answer)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not record the answer: ${e.message}")
+            false
+        }
+        questionMessages.values.removeAll { it == approvalId }
+        questionOptions.remove(approvalId)
+        send(chatId, if (first) "✅ Thanks, the background task continues with your answer." else "This question was already answered.")
+    }
+
     /** Sends [text] to every paired account (their private chats). */
     suspend fun notifyOwners(text: String) {
         for (user in store.get().paired) {
@@ -229,8 +272,25 @@ class TelegramGateway(
             handleUnpaired(m, text)
             return
         }
+        // A reply to a question of a background task is its answer, not a new task.
+        questionMessages[m.replyToMessageId]?.let { approvalId ->
+            if (text.isNotBlank()) {
+                answerQuestion(m.chatId, approvalId, text)
+                return
+            }
+        }
         val command = text.takeIf { it.startsWith("/") }
             ?.substringBefore(' ')?.substringBefore('@')?.lowercase()
+        if (command == "/answer") {
+            val answer = text.substringAfter(' ', "").trim()
+            val latest = questionMessages.entries.maxByOrNull { it.key }?.value
+            when {
+                latest == null -> send(m.chatId, "There is no open question.")
+                answer.isEmpty() -> send(m.chatId, "Write /answer followed by your answer.")
+                else -> answerQuestion(m.chatId, latest, answer)
+            }
+            return
+        }
         when (command) {
             "/start", "/help" -> send(m.chatId, HELP)
             "/pair" -> send(m.chatId, "✅ This account is already paired.")
@@ -461,6 +521,18 @@ class TelegramGateway(
             handleParkedCallback(cb)
             return
         }
+        if (cb.data.startsWith(QUESTION_PREFIX)) {
+            val rest = cb.data.removePrefix(QUESTION_PREFIX)
+            val approvalId = rest.substringBeforeLast(':')
+            val option = questionOptions[approvalId]?.getOrNull(rest.substringAfterLast(':').toIntOrNull() ?: -1)
+            if (option == null || !store.get().isPaired(cb.fromId)) {
+                tryAnswer(cb.id, "This question is no longer open.")
+                return
+            }
+            tryAnswer(cb.id, option)
+            answerQuestion(cb.chatId, approvalId, option)
+            return
+        }
         val parts = cb.data.split(':')
         val pending = if (parts.size == 3 && parts[0] == "ap") approvals[parts[1]] else null
         if (pending == null || pending.chatId != cb.chatId || !store.get().isPaired(cb.fromId)) {
@@ -573,11 +645,14 @@ class TelegramGateway(
 
         /** Callback data prefix of buttons for approvals parked by background runs. */
         const val PARKED_PREFIX = "pk:"
+        /** Callback data prefix of answer suggestions for parked questions. */
+        const val QUESTION_PREFIX = "pq:"
 
         val COMMANDS = listOf(
             "new" to "Start a new conversation",
             "stop" to "Stop the running task",
             "status" to "Show agent status",
+            "answer" to "Answer the latest question of a background task",
             "help" to "How to use AMC from Telegram",
             "unpair" to "Disconnect this Telegram account"
         )
@@ -590,6 +665,7 @@ While I work you can send more instructions. Actions that need your approval com
 /new – new conversation
 /stop – stop the running task
 /status – status
+/answer <text> – answer the latest question of a background task
 /unpair – disconnect this account
 """.trim()
     }

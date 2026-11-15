@@ -70,6 +70,14 @@ data class ResumeRequest(
             "[AMC] Continuation: the previous background slot ended (step or time budget). Look at what is " +
                 "already done above and continue the task from there. Do not redo finished steps."
 
+        fun answeredNote(question: String, answer: String) =
+            "[AMC] The user answered your question \"${question.take(300)}\": ${answer.take(2_000)}\n" +
+                "Continue the task with this answer."
+
+        fun unansweredQuestionNote(question: String) =
+            "[AMC] Nobody answered your question \"${question.take(300)}\" in time. Continue with a sensible default " +
+                "if that is safe, otherwise finish with a short summary that starts with \"BLOCKED:\" and says what is missing."
+
         const val APP_CLOSED_NOTE =
             "[AMC] The app was closed while you worked on this task in the chat. You now continue it as a background " +
                 "run: nobody is watching, actions that need approval are asked for by notification. Look at what is " +

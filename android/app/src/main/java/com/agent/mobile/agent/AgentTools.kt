@@ -34,6 +34,7 @@ object AgentTools {
     const val SEARCH_HISTORY = "search_history"
     const val SEND_FILE = "send_file"
     const val LIST_RECENT_RUNS = "list_recent_runs"
+    const val ASK_USER = "ask_user"
     const val JOB_START = "job_start"
     const val JOB_STATUS = "job_status"
     const val JOB_STOP = "job_stop"
@@ -166,6 +167,16 @@ object AgentTools {
                         "storage_ok. The run waits until all are met, e.g. 'wifi, charging' for a backup.",
                     required = false
                 )
+            )
+        ),
+        Definition(
+            ASK_USER,
+            "Background runs only: ask the user a question only they can answer (which contact, which file, a " +
+                "choice). The run pauses; the user is asked by notification and Telegram, and the task continues " +
+                "with the answer. First do everything that needs no answer.",
+            listOf(
+                Param("question", ParamType.STRING, "The question, short and self-contained."),
+                Param("options", ParamType.STRING, "Optional answer suggestions separated by '|', e.g. 'Mom|Dad|Both'.", required = false)
             )
         ),
         Definition(
@@ -359,6 +370,7 @@ object AgentTools {
             SEARCH_HISTORY -> "search_history: ${a["query"].orEmpty().take(120)}"
             SEND_FILE -> "send_file ${a["path"].orEmpty()}"
             JOB_START -> "job_start: ${a["command"]?.trim().orEmpty()}"
+            ASK_USER -> "ask_user: ${a["question"].orEmpty().take(200)}"
             JOB_STATUS -> "job_status ${a["job_id"].orEmpty()}".trim() +
                 (a["offset"]?.takeIf { it.isNotBlank() && it.trim() != "0" }?.let { " (from byte $it)" } ?: "")
             JOB_STOP -> "job_stop ${a["job_id"].orEmpty()}"
@@ -443,6 +455,10 @@ object AgentTools {
                 } else {
                     SecurityAssessment(RiskLevel.MEDIUM, "Network request (download)")
                 }
+            }
+            ASK_USER -> {
+                if (a["question"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A question is required.")
+                else SecurityAssessment(RiskLevel.LOW, "Asking the user")
             }
             REMEMBER, FORGET, UPDATE_PLAN, NOTIFY_USER, LIST_SCHEDULED_TASKS, LIST_RECENT_RUNS ->
                 SecurityAssessment(RiskLevel.LOW, "Agent bookkeeping")

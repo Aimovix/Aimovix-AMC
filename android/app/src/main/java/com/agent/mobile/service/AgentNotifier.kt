@@ -131,6 +131,61 @@ object AgentNotifier {
         }
     }
 
+    /**
+     * A question from a background run, with a reply field (and the suggested answers as quick
+     * replies). The answer continues the task.
+     */
+    fun notifyQuestion(context: Context, callId: String, runTitle: String, question: String, options: List<String>) {
+        val appContext = context.applicationContext
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "POST_NOTIFICATIONS not granted; the question cannot be shown")
+            return
+        }
+        ensureChannel(appContext)
+        val remoteInput = androidx.core.app.RemoteInput.Builder(ApprovalActionReceiver.KEY_ANSWER)
+            .setLabel("Your answer")
+            .apply { if (options.isNotEmpty()) setChoices(options.toTypedArray()) }
+            .build()
+        // Mutable: the system adds the typed answer to this intent.
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
+        val reply = PendingIntent.getBroadcast(
+            appContext, approvalId(callId) * 3 + 2,
+            Intent(appContext, ApprovalActionReceiver::class.java)
+                .setPackage(appContext.packageName)
+                .putExtra(ApprovalActionReceiver.EXTRA_CALL_ID, callId)
+                .putExtra(ApprovalActionReceiver.EXTRA_IS_ANSWER, true),
+            flags
+        )
+        val answer = NotificationCompat.Action.Builder(0, "Answer", reply)
+            .addRemoteInput(remoteInput)
+            .setAllowGeneratedReplies(false)
+            .build()
+        val openApp = PendingIntent.getActivity(
+            appContext, 0,
+            Intent(appContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val body = question.take(1_000)
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("❓ ${runTitle.ifBlank { "Background task" }.take(80)}")
+            .setContentText(body.take(200))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(openApp)
+            .setOngoing(true)
+            .addAction(answer)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        try {
+            (appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(approvalId(callId), notification)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Question notification failed: ${e.message}")
+        }
+    }
+
     fun cancelApproval(context: Context, callId: String) {
         try {
             (context.applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(approvalId(callId))
@@ -146,6 +201,8 @@ class ApprovalActionReceiver : android.content.BroadcastReceiver() {
         const val EXTRA_CALL_ID = "call_id"
         const val EXTRA_APPROVE = "approve"
         const val EXTRA_REMEMBER = "remember"
+        const val EXTRA_IS_ANSWER = "is_answer"
+        const val KEY_ANSWER = "answer"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -153,6 +210,22 @@ class ApprovalActionReceiver : android.content.BroadcastReceiver() {
         val approve = intent.getBooleanExtra(EXTRA_APPROVE, false)
         val remember = approve && intent.getBooleanExtra(EXTRA_REMEMBER, false)
         val parkedId = com.agent.mobile.service.approval.ApprovalQueueManager.parkedIdOf(callId)
+        if (parkedId != null && intent.getBooleanExtra(EXTRA_IS_ANSWER, false)) {
+            val text = androidx.core.app.RemoteInput.getResultsFromIntent(intent)?.getCharSequence(KEY_ANSWER)?.toString().orEmpty()
+            if (text.isBlank()) return
+            val pending = goAsync()
+            val appContext = context.applicationContext
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    com.agent.mobile.AgentRuntime.get(appContext).approvalQueue.answer(parkedId, text)
+                } catch (e: Exception) {
+                    Log.w("ApprovalAction", "Could not record the answer for $parkedId: ${e.message}")
+                } finally {
+                    pending.finish()
+                }
+            }
+            return
+        }
         if (parkedId != null) {
             // A background run parked this action and has ended; record the answer and resume the task.
             val pending = goAsync()

@@ -145,6 +145,36 @@ class TelegramGatewayTest {
     }
 
     @Test
+    fun parkedQuestionsAreAnsweredByButtonReplyOrCommand() = runBlocking {
+        pairOwner()
+        val answers = CopyOnWriteArrayList<Pair<String, String>>()
+        gateway.onParkedAnswer = { id, text -> answers += id to text; true }
+
+        gateway.askParkedQuestion("q-1", "Which contact: Anna or Ana?", listOf("Anna", "Ana"))
+        val ask = calls.last { it.method == "sendMessage" }
+        assertTrue(ask.params["reply_markup"].orEmpty().contains("pq:q-1:1"))
+        gateway.handleUpdate(callback(stranger, "pq:q-1:0"))
+        assertTrue("Strangers cannot answer", answers.isEmpty())
+        gateway.handleUpdate(callback(owner, "pq:q-1:1"))
+        assertEquals(listOf("q-1" to "Ana"), answers.toList())
+
+        // Free text as a reply to the question message.
+        gateway.askParkedQuestion("q-2", "Which folder?", emptyList())
+        val questionId = nextMessageId.get()
+        val reply = message(owner, "~/Documents/2026").let {
+            it.copy(message = it.message!!.copy(replyToMessageId = questionId))
+        }
+        gateway.handleUpdate(reply)
+        assertEquals("q-2" to "~/Documents/2026", answers.last())
+        assertFalse("A reply is an answer, not a new task", agent.requests.isNotEmpty())
+
+        // /answer for the latest open question.
+        gateway.askParkedQuestion("q-3", "Time?", emptyList())
+        gateway.handleUpdate(message(owner, "/answer 18:30"))
+        assertEquals("q-3" to "18:30", answers.last())
+    }
+
+    @Test
     fun parkedApprovalButtonsReachTheQueueOnlyFromPairedAccounts() = runBlocking {
         pairOwner()
         val decisions = CopyOnWriteArrayList<Pair<String, Boolean>>()

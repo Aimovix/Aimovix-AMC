@@ -65,6 +65,7 @@ class TelegramChannelManager(private val runtime: AgentRuntime) {
             onTurnActive = ::onTurnActive
         )
         g.onParkedDecision = { id, approved, remember -> runtime.approvalQueue.decide(id, approved, remember) }
+        g.onParkedAnswer = { id, text -> runtime.approvalQueue.answer(id, text) }
         gateway = g
         statusJob = scope.launch { g.status.collect { _status.value = it; refreshState() } }
         g.start()
@@ -104,6 +105,10 @@ class TelegramChannelManager(private val runtime: AgentRuntime) {
     suspend fun askParkedApproval(entity: com.agent.mobile.data.storage.db.entity.PendingApprovalEntity) {
         val g = gateway ?: return
         if (!prefs.loadTelegramDelivery()) return
+        if (com.agent.mobile.service.approval.ApprovalQueueManager.isQuestion(entity)) {
+            g.askParkedQuestion(entity.id, entity.description, com.agent.mobile.service.approval.ApprovalQueueManager.optionsOf(entity))
+            return
+        }
         g.askParkedApproval(
             entity.id,
             com.agent.mobile.service.approval.ApprovalQueueManager.notificationText(entity),

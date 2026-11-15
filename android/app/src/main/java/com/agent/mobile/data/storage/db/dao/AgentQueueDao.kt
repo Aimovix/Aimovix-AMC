@@ -27,6 +27,10 @@ interface AgentQueueDao {
     @Query("UPDATE pending_approvals SET status = :status, decidedAt = :decidedAt WHERE id = :id AND status = 'PENDING'")
     suspend fun decideApproval(id: String, status: String, decidedAt: Long): Int
 
+    /** Stores the user's answer to a parked question (in its arguments). 1 for the first answer, else 0. */
+    @Query("UPDATE pending_approvals SET status = :status, argumentsJson = :argumentsJson, decidedAt = :decidedAt WHERE id = :id AND status = 'PENDING'")
+    suspend fun answerApproval(id: String, status: String, argumentsJson: String, decidedAt: Long): Int
+
     @Query("DELETE FROM pending_approvals WHERE status != 'PENDING' AND decidedAt < :before")
     suspend fun pruneDecided(before: Long)
 

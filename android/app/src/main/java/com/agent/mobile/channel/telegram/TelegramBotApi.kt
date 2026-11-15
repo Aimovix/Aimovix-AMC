@@ -46,7 +46,9 @@ class TelegramBotApi(
         val fromName: String,
         val text: String,
         val photoFileId: String? = null,
-        val hasUnsupportedMedia: Boolean = false
+        val hasUnsupportedMedia: Boolean = false,
+        /** Id of the message this one replies to (0 when it is no reply). */
+        val replyToMessageId: Long = 0L
     )
 
     data class CallbackQuery(
@@ -240,7 +242,8 @@ class TelegramBotApi(
                 fromName = name,
                 text = m.optString("text").ifEmpty { m.optString("caption") },
                 photoFileId = largestPhoto,
-                hasUnsupportedMedia = unsupported && largestPhoto == null
+                hasUnsupportedMedia = unsupported && largestPhoto == null,
+                replyToMessageId = m.optJSONObject("reply_to_message")?.optLong("message_id") ?: 0L
             )
         }
 

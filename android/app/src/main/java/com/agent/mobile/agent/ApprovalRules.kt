@@ -44,6 +44,6 @@ class ApprovalRules(private val file: File) {
 
         fun isRememberable(call: ToolCall, assessment: SecurityAssessment): Boolean =
             !assessment.alwaysConfirm && !assessment.isBlocked && !assessment.redact &&
-                !PhoneTools.isPhoneTool(call.name) && call.name != AgentTools.DELEGATE_TASK
+                !PhoneTools.isPhoneTool(call.name) && call.name != AgentTools.DELEGATE_TASK && call.name != AgentTools.ASK_USER
     }
 }

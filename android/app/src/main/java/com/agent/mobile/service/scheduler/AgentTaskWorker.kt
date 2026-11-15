@@ -199,6 +199,15 @@ class AgentTaskWorker(
     private fun resumeFor(approval: PendingApprovalEntity): ResumeRequest? {
         // Not counted against the chain: the user's answer started this run.
         val chain = approval.chain
+        if (approval.toolName == com.agent.mobile.agent.AgentTools.ASK_USER) {
+            val answer = ApprovalFingerprint.decodeArguments(approval.argumentsJson)?.get(PendingApprovalEntity.ANSWER_KEY)
+            return when {
+                approval.status == PendingApprovalEntity.STATUS_ANSWERED && !answer.isNullOrBlank() ->
+                    ResumeRequest(approval.sessionId, ResumeRequest.answeredNote(approval.description, answer), chain = chain)
+                approval.status == PendingApprovalEntity.STATUS_PENDING -> null
+                else -> ResumeRequest(approval.sessionId, ResumeRequest.unansweredQuestionNote(approval.description), chain = chain)
+            }
+        }
         return when (approval.status) {
             PendingApprovalEntity.STATUS_APPROVED -> {
                 val args = ApprovalFingerprint.decodeArguments(approval.argumentsJson) ?: emptyMap()

@@ -51,7 +51,11 @@ class ApprovalQueueManager(
             dao.pruneDecided(System.currentTimeMillis() - PRUNE_AFTER_MS)
             dao.insertApproval(entity)
         }
-        AgentNotifier.notifyApproval(context, CALL_PREFIX + id, notificationText(entity), allowAlways = isRememberable(entity))
+        if (isQuestion(entity)) {
+            AgentNotifier.notifyQuestion(context, CALL_PREFIX + id, entity.runTitle, entity.description, optionsOf(entity))
+        } else {
+            AgentNotifier.notifyApproval(context, CALL_PREFIX + id, notificationText(entity), allowAlways = isRememberable(entity))
+        }
         ApprovalExpiryWorker.schedule(context, id)
         try {
             remoteAsker?.invoke(entity)
@@ -82,6 +86,26 @@ class ApprovalQueueManager(
         return true
     }
 
+    /** The user's answer to a parked question. True for the first answer (the task then continues). */
+    suspend fun answer(id: String, text: String): Boolean {
+        val answer = text.trim().take(2_000)
+        if (answer.isEmpty()) return false
+        val entity = withContext(Dispatchers.IO) { dao.getApproval(id) } ?: return false
+        if (!isQuestion(entity)) return false
+        val args = (com.agent.mobile.agent.ApprovalFingerprint.decodeArguments(entity.argumentsJson) ?: emptyMap()) +
+            (PendingApprovalEntity.ANSWER_KEY to answer)
+        val changed = withContext(Dispatchers.IO) {
+            dao.answerApproval(
+                id, PendingApprovalEntity.STATUS_ANSWERED,
+                com.agent.mobile.agent.ApprovalFingerprint.encodeArguments(args), System.currentTimeMillis()
+            )
+        }
+        AgentNotifier.cancelApproval(context, CALL_PREFIX + id)
+        if (changed == 0) return false
+        onDecided(id)
+        return true
+    }
+
     /** Nobody answered in time: the task continues without the action (see [ApprovalExpiryWorker]). */
     suspend fun expire(id: String): Boolean {
         val changed = withContext(Dispatchers.IO) {
@@ -97,6 +121,10 @@ class ApprovalQueueManager(
     suspend fun remind(id: String) {
         val entity = withContext(Dispatchers.IO) { dao.getApproval(id) } ?: return
         if (entity.status != PendingApprovalEntity.STATUS_PENDING) return
+        if (isQuestion(entity)) {
+            AgentNotifier.notifyQuestion(context, CALL_PREFIX + id, entity.runTitle, "⏰ Still waiting: " + entity.description, optionsOf(entity))
+            return
+        }
         AgentNotifier.notifyApproval(
             context, CALL_PREFIX + id, "⏰ Still waiting for you. " + notificationText(entity), allowAlways = isRememberable(entity)
         )
@@ -117,6 +145,13 @@ class ApprovalQueueManager(
             name = entity.toolName,
             arguments = com.agent.mobile.agent.ApprovalFingerprint.decodeArguments(entity.argumentsJson) ?: emptyMap()
         )
+
+        fun isQuestion(entity: PendingApprovalEntity) = entity.toolName == com.agent.mobile.agent.AgentTools.ASK_USER
+
+        /** Answer suggestions of a parked question ("a|b|c"). */
+        fun optionsOf(entity: PendingApprovalEntity): List<String> =
+            (com.agent.mobile.agent.ApprovalFingerprint.decodeArguments(entity.argumentsJson)?.get("options") ?: "")
+                .split('|').map { it.trim() }.filter { it.isNotEmpty() }.take(5)
 
         /** Whether "Always allow" may be offered for this action. */
         fun isRememberable(entity: PendingApprovalEntity): Boolean {

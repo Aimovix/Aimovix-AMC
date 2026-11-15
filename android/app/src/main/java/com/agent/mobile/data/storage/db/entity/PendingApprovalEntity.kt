@@ -32,5 +32,8 @@ data class PendingApprovalEntity(
         const val STATUS_REJECTED = "REJECTED"
         /** Nobody answered in time: the task continues without the action. */
         const val STATUS_EXPIRED = "EXPIRED"
+        /** A parked question (ask_user) the user answered; the answer is in the arguments under ANSWER_KEY. */
+        const val STATUS_ANSWERED = "ANSWERED"
+        const val ANSWER_KEY = "__answer"
     }
 }

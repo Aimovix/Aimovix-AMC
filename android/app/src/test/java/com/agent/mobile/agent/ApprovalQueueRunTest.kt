@@ -267,6 +267,28 @@ class ApprovalQueueRunTest {
     }
 
     @Test
+    fun aQuestionParksTheRunAndTheAnswerResumesIt() = runBlocking {
+        toolCall("call_q", "ask_user", JSONObject().put("question", "Which contact: Anna or Ana?").put("options", "Anna|Ana"))
+        val queue = FakeQueue()
+        val result = engine(queue).runUnattended("t", "text my sister")
+        assertEquals("q1", result.parkedApprovalId)
+        assertEquals("ask_user", queue.parked.single().call.name)
+        assertEquals("Which contact: Anna or Ana?", queue.parked.single().description)
+        assertEquals("The run ends after asking", 1, server.requestCount)
+
+        val note = ResumeRequest.answeredNote("Which contact: Anna or Ana?", "Ana")
+        assertTrue(note.startsWith("[AMC] The user answered"))
+        assertTrue(note.contains("Ana"))
+    }
+
+    @Test
+    fun askUserIsOnlyOfferedToBackgroundRuns() = runBlocking {
+        reply("ok")
+        engine(FakeQueue()).runUnattended("t", "hi")
+        assertTrue(JSONObject(server.takeRequest().body.readUtf8()).getJSONArray("tools").toString().contains("ask_user"))
+    }
+
+    @Test
     fun usedUpStepBudgetIsReportedForAContinuation() = runBlocking {
         repeat(5) { i -> toolCall("call_$i", "update_plan", JSONObject().put("plan", "- [>] step $i")) }
         val result = engine(FakeQueue(), steps = 5).runUnattended("t", "long task")
