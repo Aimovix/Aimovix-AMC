@@ -328,16 +328,23 @@ def unregister_detached_session(session: "BridgeSession"):
         if DETACHED_SESSIONS[k] is session:
             del DETACHED_SESSIONS[k]
 
-def pop_detached_session(execution_id: str | None = None) -> "BridgeSession | None":
-    """Retrieve and unregister a detached session by execution_id or most recent."""
+def pop_detached_session(execution_ids=None) -> "BridgeSession | None":
+    """Retrieve and unregister the detached session that runs one of execution_ids.
+
+    Only a client that names a running execution gets its session back: handing the most recent
+    session to any new connection let a background worker take over the chat's commands.
+    """
+    if isinstance(execution_ids, str):
+        execution_ids = [execution_ids]
+    ids = [i for i in (execution_ids or []) if isinstance(i, str) and i]
     matched = None
-    if execution_id:
+    for execution_id in ids:
         for k, sess in list(DETACHED_SESSIONS.items()):
             if k == execution_id or execution_id in getattr(sess, "executions", {}):
                 matched = sess
                 break
-    elif DETACHED_SESSIONS:
-        matched = next(reversed(list(DETACHED_SESSIONS.values())))
+        if matched is not None:
+            break
     if matched is not None:
         unregister_detached_session(matched)
         return matched
@@ -757,16 +764,31 @@ async def handle_connection(websocket):
                     token.encode("utf-8"), AUTH_TOKEN.encode("utf-8")
                 ):
                     authenticated = True
-                    matched_session = pop_detached_session(msg.get("execution_id"))
+                    wanted = msg.get("execution_ids")
+                    if not isinstance(wanted, list):
+                        wanted = [msg.get("execution_id")]
+                    matched_session = pop_detached_session(wanted)
+                    resumed = []
                     if matched_session is not None:
                         session = matched_session
-                        await session.attach(websocket)
+                        # Running executions and those whose result waits in the buffer.
+                        known = set(session.executions) | {
+                            e.get("execution_id") for e in session.buffered_output + session.buffered_events
+                        }
+                        resumed = [i for i in wanted if isinstance(i, str) and i in known]
                     else:
                         session = BridgeSession(websocket)
                     info = await asyncio.to_thread(get_system_info, session.cwd)
-                    await session.send("auth_ok", system=info, cwd=session.cwd,
-                                       capabilities=["concurrent_execute", "write_append", "llm", "llm_background_install"],
-                                       max_frame_bytes=MAX_FRAME_BYTES)
+                    auth_ok = dict(system=info, cwd=session.cwd,
+                                   capabilities=["concurrent_execute", "write_append", "llm", "llm_background_install",
+                                                 "resume_executions"],
+                                   max_frame_bytes=MAX_FRAME_BYTES, resumed_executions=resumed)
+                    if matched_session is not None:
+                        # auth_ok first, then the output buffered while the client was away.
+                        await websocket.send(json.dumps({"type": "auth_ok", **auth_ok}))
+                        await session.attach(websocket)
+                    else:
+                        await session.send("auth_ok", **auth_ok)
                 else:
                     err_msg = json.dumps({"type": "auth_fail", "error": "Authentication failed: invalid token."})
                     with suppress(websockets.exceptions.ConnectionClosed):

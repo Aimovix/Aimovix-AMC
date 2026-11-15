@@ -44,12 +44,17 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await self.server.wait_closed()
         self.info_patch.stop()
 
-    async def connect(self, authenticate=True):
+    async def connect(self, authenticate=True, execution_ids=None):
         client = await websockets.connect(self.url)
         self.clients.append(client)
         if authenticate:
-            await client.send(json.dumps({"action": "auth", "token": bridge.AUTH_TOKEN}))
-            self.assertEqual((await self.receive(client))["type"], "auth_ok")
+            auth = {"action": "auth", "token": bridge.AUTH_TOKEN}
+            if execution_ids is not None:
+                auth["execution_ids"] = execution_ids
+            await client.send(json.dumps(auth))
+            ok = await self.receive(client)
+            self.assertEqual(ok["type"], "auth_ok")
+            self.last_auth_ok = ok
         return client
 
     async def receive(self, client):
@@ -431,9 +436,10 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await client1.close()
         self.clients.remove(client1)
 
-        # Connect client 2 within grace period
+        # Connect client 2 within grace period, naming the running execution
         await asyncio.sleep(0.1)
-        client2 = await self.connect()
+        client2 = await self.connect(execution_ids=["job_persist"])
+        self.assertEqual(self.last_auth_ok["resumed_executions"], ["job_persist"])
         # Client 2 should receive buffered or streamed remaining output and completed event
         messages = await self.until(client2, "completed")
         combined_output = "".join(m.get("data", "") for m in messages)
@@ -451,8 +457,8 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await client1.close()
         self.clients.remove(client1)
 
-        # Reconnect via client 2 and interrupt
-        client2 = await self.connect()
+        # Reconnect via client 2 (naming the execution) and interrupt
+        client2 = await self.connect(execution_ids=["job_interrupt"])
         await client2.send(json.dumps({"action": "interrupt"}))
         messages = await self.until(client2, "completed")
         self.assertTrue(any(m["type"] == "interrupted" for m in messages))
@@ -463,6 +469,26 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         next_msgs = await self.until(client2, "completed")
         self.assertIn("after_interrupt", "".join(m.get("data", "") for m in next_msgs))
         self.assertEqual(next_msgs[-1]["exit_code"], 0)
+
+    async def test_a_client_without_the_execution_id_does_not_take_over_a_detached_session(self):
+        client1 = await self.connect()
+        cmd = make_python_cmd("-u", "-c", "import time; print('started', flush=True); time.sleep(30)")
+        await self.execute(client1, cmd, execution_id="job_private")
+        self.assertIn("started", (await self.receive(client1))["data"])
+        await client1.close()
+        self.clients.remove(client1)
+
+        # Another client (e.g. a background worker) logs in without naming the execution.
+        stranger = await self.connect()
+        self.assertEqual(self.last_auth_ok["resumed_executions"], [])
+        self.assertIn("job_private", bridge.DETACHED_SESSIONS)
+
+        # The owner still gets it back within the grace period.
+        owner = await self.connect(execution_ids=["job_private"])
+        self.assertEqual(self.last_auth_ok["resumed_executions"], ["job_private"])
+        await owner.send(json.dumps({"action": "interrupt", "execution_id": "job_private"}))
+        messages = await self.until(owner, "completed")
+        self.assertEqual(messages[-1]["execution_id"], "job_private")
 
     async def test_grace_period_expiration_cleans_up_abandoned_session(self):
         with patch.object(bridge, "RECONNECT_GRACE_SECONDS", 0.15):

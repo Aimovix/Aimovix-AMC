@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.*
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -36,6 +37,9 @@ class TermuxBridgeClient(
 ) {
     companion object {
         private const val TAG = "TermuxBridgeClient"
+
+        /** How long running commands wait for a reconnect (the bridge keeps them for 30 s). */
+        const val EXECUTION_GRACE_MS = 25_000L
 
         /** Added to timed-out commands so the model knows how to run long work next time. */
         const val LONG_RUNNING_HINT = "[AMC] The output above is what the command printed before the timeout. For long " +
@@ -259,6 +263,8 @@ class TermuxBridgeClient(
     private var isAutoReconnectEnabled = true
     private var reconnectJob: Job? = null
     private var heartbeatJob: Job? = null
+    /** Fails running commands when no reconnect picked them up in time (see holdExecutionsForReconnect). */
+    private var executionGraceJob: Job? = null
     private var isManualDisconnect = false
     private var reconnectAttempts = 0
 
@@ -515,7 +521,7 @@ class TermuxBridgeClient(
 
     private fun handleConnectionLost(reason: String) {
         stopHeartbeat()
-        failAllPendingExecutions("Connection lost: $reason")
+        holdExecutionsForReconnect("Connection lost: $reason")
         if (_connectionStatus.value !is ConnectionStatus.AuthFailed && !isManualDisconnect) {
             _connectionStatus.value = ConnectionStatus.Disconnected
             scheduleReconnect()
@@ -531,7 +537,7 @@ class TermuxBridgeClient(
         stopHeartbeat()
         authWatchdog?.cancel()
         val currentGen = connectionGeneration.incrementAndGet()
-        failAllPendingExecutions("Reconnecting to Termux bridge...")
+        holdExecutionsForReconnect("Reconnecting to Termux bridge")
 
         // Clean up previous socket
         try {
@@ -556,6 +562,13 @@ class TermuxBridgeClient(
                 val authMsg = JSONObject().apply {
                     put("action", "auth")
                     put("token", authToken)
+                    // Commands still waiting for their result: the bridge hands back their session
+                    // (with the output buffered meanwhile) only to a client that names them.
+                    val waiting = pendingExecutions.keys.toList()
+                    if (waiting.isNotEmpty()) {
+                        put("execution_ids", JSONArray(waiting))
+                        put("execution_id", waiting.first())
+                    }
                 }
                 ws.send(authMsg.toString())
                 // A bridge that accepts the socket but never answers would otherwise keep us in
@@ -571,7 +584,7 @@ class TermuxBridgeClient(
                         connectAttemptInFlight = false
                         if (webSocket === ws) webSocket = null
                         ws.cancel()
-                        failAllPendingExecutions("The bridge did not answer the login")
+                        holdExecutionsForReconnect("The bridge did not answer the login")
                         _connectionStatus.value = ConnectionStatus.Error(
                             "The bridge accepted the connection but did not answer the login. Restart it with 'amc restart'."
                         )
@@ -585,6 +598,12 @@ class TermuxBridgeClient(
                 handleIncomingMessage(text)
             }
 
+            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                // The bridge closed the connection (restart, shutdown): acknowledge it so onClosed
+                // follows at once. Without it the drop was only noticed at the next heartbeat timeout.
+                ws.close(1000, null)
+            }
+
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 if (connectionGeneration.get() != currentGen) return
                 Log.w(TAG, "WebSocket closed ($code): $reason")
@@ -592,7 +611,7 @@ class TermuxBridgeClient(
                 authWatchdog?.cancel()
                 if (webSocket === ws) webSocket = null
                 stopHeartbeat()
-                failAllPendingExecutions("Connection to Termux closed ($reason)")
+                holdExecutionsForReconnect("Connection to Termux closed ($reason)")
                 if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
                     _connectionStatus.value = ConnectionStatus.Disconnected
                     scheduleReconnect()
@@ -606,7 +625,7 @@ class TermuxBridgeClient(
                 authWatchdog?.cancel()
                 if (webSocket === ws) webSocket = null
                 stopHeartbeat()
-                failAllPendingExecutions("Connection error: ${t.localizedMessage}")
+                holdExecutionsForReconnect("Connection error: ${t.localizedMessage}")
                 if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
                     _connectionStatus.value = ConnectionStatus.Error(describeConnectFailure(t))
                     scheduleReconnect()
@@ -638,7 +657,55 @@ class TermuxBridgeClient(
         }
     }
 
+    /**
+     * The connection dropped: requests without a result yet fail now, but running commands get
+     * [EXECUTION_GRACE_MS] to be picked up again after a reconnect (the bridge keeps them running
+     * and buffers their output). Failing them at once made the agent run a command again that was
+     * still running, e.g. a second pip install.
+     */
+    private fun holdExecutionsForReconnect(reason: String) {
+        failRequestsExceptExecutions(reason)
+        if (pendingExecutions.isEmpty() || executionGraceJob?.isActive == true) return
+        executionGraceJob = scope.launch {
+            delay(EXECUTION_GRACE_MS)
+            if (_connectionStatus.value !is ConnectionStatus.Connected) {
+                failAllPendingExecutions(statusUnknown(reason))
+            }
+        }
+    }
+
+    private fun statusUnknown(reason: String) =
+        "$reason. The connection to Termux was lost while the command ran, so its result is unknown: it may have " +
+            "finished or still be running. Check (files, processes, output) before running it again."
+
+    /** After a reconnect: commands the bridge did not hand back will never report; end them now. */
+    private fun failExecutionsNotResumed(resumed: Set<String>?) {
+        executionGraceJob?.cancel()
+        executionGraceJob = null
+        val lost = pendingExecutions.keys.filter { resumed == null || it !in resumed }
+        for (id in lost) {
+            pendingExecutions.remove(id)?.complete(
+                ToolResult(toolCallId = id, command = "", stderr = statusUnknown("Reconnected to Termux"), exitCode = -1, isError = true)
+            )
+            executionBuffers.remove(id)
+            executionChunkCallbacks.remove(id)
+        }
+    }
+
+    private fun failRequestsExceptExecutions(reason: String) {
+        pendingLlmActions.values.forEach { it.complete(LlmActionResult(false, reason, emptyMap())) }
+        pendingLlmActions.clear()
+        pendingPings.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
+        pendingPings.clear()
+        pendingFileReads.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
+        pendingFileReads.clear()
+        pendingFileWrites.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
+        pendingFileWrites.clear()
+    }
+
     private fun failAllPendingExecutions(reason: String) {
+        executionGraceJob?.cancel()
+        executionGraceJob = null
         pendingExecutions.forEach { (id, deferred) ->
             deferred.complete(
                 ToolResult(
@@ -695,6 +762,12 @@ class TermuxBridgeClient(
                     serverCapabilities = json.optJSONArray("capabilities")?.let { arr ->
                         (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }.toSet()
                     } ?: emptySet()
+                    // Bridges with resume_executions say which waiting commands they handed back;
+                    // with older bridges that cannot be known, so waiting commands end here.
+                    val resumed = json.optJSONArray("resumed_executions")?.let { arr ->
+                        (0 until arr.length()).map { arr.optString(it) }.toSet()
+                    }
+                    failExecutionsNotResumed(resumed)
                     _connectionStatus.value = ConnectionStatus.Connected(info)
                     // Once connected, cancel any scheduled reconnects and start heartbeat
                     reconnectJob?.cancel()
