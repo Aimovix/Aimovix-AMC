@@ -114,3 +114,6 @@ interface InteractiveRunListener {
     suspend fun onRunStarted(sessionId: String, title: String)
     suspend fun onRunEnded(sessionId: String, interrupted: Boolean)
 }
+
+/** An approval request could not be delivered to the user (e.g. Telegram unreachable): not a rejection. */
+class ApprovalUnreachableException(message: String) : Exception(message)

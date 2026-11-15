@@ -304,6 +304,23 @@ class TelegramGatewayTest {
     }
 
     @Test
+    fun anUndeliverableApprovalIsNotARejection() = runBlocking {
+        pairOwner()
+        val offline = TelegramGateway(
+            api = TelegramBotApi("TEST:TOKEN", baseUrl = "http://127.0.0.1:1"),
+            store = store, agentFactory = { agent }, scope = scope, approvalTimeoutMs = 200L
+        )
+        val call = ToolCall(name = "execute_command", arguments = mapOf("command" to "kill 42"))
+        val error = try {
+            offline.askApproval(owner, call, CommandSecurityFilter.analyze("kill 42"))
+            null
+        } catch (e: com.agent.mobile.agent.ApprovalUnreachableException) {
+            e
+        }
+        assertTrue("Sending failed three times: the user could not decide", error != null)
+    }
+
+    @Test
     fun messagesDuringATaskSteerItAndStopCancelsIt() = runBlocking {
         pairOwner()
         val started = CompletableDeferred<Unit>()
