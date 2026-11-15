@@ -171,13 +171,17 @@ class TelegramGateway(
                 backoffMs = 2_000L
                 if (_status.value !is Status.Running) _status.value = Status.Running(botUsername)
                 for (update in updates) {
-                    store.update { it.copy(offset = maxOf(it.offset, update.updateId + 1)) }
                     try {
                         handleUpdate(update)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         Log.w(TAG, "Handling update ${update.updateId} failed: ${e.message}", e)
+                    } finally {
+                        // Confirmed only after the update was taken on: when AMC is killed in between,
+                        // Telegram delivers it again instead of losing the message. A failing update
+                        // is still confirmed, so it cannot block the queue.
+                        store.update { it.copy(offset = maxOf(it.offset, update.updateId + 1)) }
                     }
                 }
             } catch (e: CancellationException) {

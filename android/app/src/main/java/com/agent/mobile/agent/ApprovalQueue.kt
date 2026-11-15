@@ -70,6 +70,11 @@ data class ResumeRequest(
             "[AMC] Continuation: the previous background slot ended (step or time budget). Look at what is " +
                 "already done above and continue the task from there. Do not redo finished steps."
 
+        const val APP_CLOSED_NOTE =
+            "[AMC] The app was closed while you worked on this task in the chat. You now continue it as a background " +
+                "run: nobody is watching, actions that need approval are asked for by notification. Look at what is " +
+                "already done above and finish the task; your final summary is shown as a notification."
+
         const val RESTART_NOTE =
             "[AMC] AMC was restarted (app closed or phone rebooted) while you worked on this task. Look at what " +
                 "is already done above and continue. Repeat a step only when its result is missing."
@@ -99,4 +104,13 @@ object ApprovalFingerprint {
     } catch (e: Exception) {
         null
     }
+}
+
+/**
+ * Told when a chat run starts and ends, so the app can continue it in the background when it is
+ * closed mid-run. [interrupted]: the run was cancelled without the user pressing Stop.
+ */
+interface InteractiveRunListener {
+    suspend fun onRunStarted(sessionId: String, title: String)
+    suspend fun onRunEnded(sessionId: String, interrupted: Boolean)
 }

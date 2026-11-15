@@ -36,6 +36,7 @@ class AgentTaskWorker(
         const val KEY_SESSION_ID = "agent_task_session_id"
         const val KEY_CHAIN = "agent_task_chain"
         const val KEY_ORIGIN_KIND = "agent_task_origin_kind"
+        const val KEY_NOTE = "agent_task_note"
         const val KIND_TASK = "task"
         const val KIND_HEARTBEAT = "heartbeat"
         const val KIND_RESUME = "resume"
@@ -182,7 +183,9 @@ class AgentTaskWorker(
                 Plan(
                     title = inputData.getString(KEY_TITLE) ?: "Background task",
                     originKind = inputData.getString(KEY_ORIGIN_KIND) ?: KIND_TASK,
-                    resume = ResumeRequest(sessionId, ResumeRequest.CONTINUE_NOTE, chain = inputData.getInt(KEY_CHAIN, 1))
+                    resume = ResumeRequest(
+                        sessionId, inputData.getString(KEY_NOTE) ?: ResumeRequest.CONTINUE_NOTE, chain = inputData.getInt(KEY_CHAIN, 1)
+                    )
                 )
             }
             else -> {

@@ -160,7 +160,15 @@ class SchedulerManager(private val context: Context) {
     }
 
     /** Continues a background task whose step or time budget ran out, in the same chat session. */
-    fun enqueueContinuation(sessionId: String, title: String, chain: Int, originKind: String, delayMinutes: Long = 0) {
+    fun enqueueContinuation(
+        sessionId: String,
+        title: String,
+        chain: Int,
+        originKind: String,
+        delayMinutes: Long = 0,
+        /** First turn of the continued run; the usual continuation note when null. */
+        note: String? = null
+    ) {
         val request = OneTimeWorkRequestBuilder<AgentTaskWorker>()
             .setInitialDelay(delayMinutes.coerceAtLeast(0), TimeUnit.MINUTES)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -170,7 +178,8 @@ class SchedulerManager(private val context: Context) {
                     AgentTaskWorker.KEY_SESSION_ID to sessionId,
                     AgentTaskWorker.KEY_TITLE to title.take(80),
                     AgentTaskWorker.KEY_CHAIN to chain,
-                    AgentTaskWorker.KEY_ORIGIN_KIND to originKind
+                    AgentTaskWorker.KEY_ORIGIN_KIND to originKind,
+                    AgentTaskWorker.KEY_NOTE to note
                 )
             )
             .addTag(AGENT_TASK_TAG)

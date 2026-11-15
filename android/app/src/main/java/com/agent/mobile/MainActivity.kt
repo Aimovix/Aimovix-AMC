@@ -61,6 +61,8 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
             personaStore = runtime.personaStore,
             phone = runtime.phoneController
         )
+        // A chat run that is cut off by closing the app continues as a background run.
+        agentEngine.interactiveRunListener = com.agent.mobile.service.scheduler.InteractiveRunGuard(context)
         // A finished local model setup changes the model; also continue a setup that stopped half-way.
         viewModelScope.launch {
             com.agent.mobile.service.scheduler.LocalModelSetupWorker.activated.collect { agentEngine.reloadSettings() }

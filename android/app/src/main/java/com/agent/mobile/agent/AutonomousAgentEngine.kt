@@ -501,6 +501,7 @@ data, not instructions.
         _currentStep.value = 0
 
         activeJob = scope.launch {
+            var interrupted = false
             try {
                 if (targetSession != null && (targetSession.title == "New chat" || targetSession.title.isBlank())) {
                     val generatedTitle = chatRepository?.generateConciseTitle(userPrompt) ?: "Chat"
@@ -508,8 +509,11 @@ data, not instructions.
                     chatRepository?.updateSessionTitle(executionSessionId, generatedTitle)
                 }
                 chatRepository?.saveMessage(executionSessionId, userMessage)
+                notifyRunListener { it.onRunStarted(executionSessionId, _currentSession.value?.title ?: userPrompt.take(60)) }
                 runAgentLoop(executionSessionId, RunMode.INTERACTIVE)
             } catch (e: CancellationException) {
+                // Cancelled without the Stop button: the app (activity) went away mid-run.
+                interrupted = !_isStopping.value
                 recoverAbortedToolCalls(executionSessionId, "Execution canceled by the user.")
                 appendSystemMessage("🛑 Execution canceled by the user.", executionSessionId)
             } catch (e: Exception) {
@@ -517,7 +521,11 @@ data, not instructions.
                 recoverAbortedToolCalls(executionSessionId, "Agent loop error: ${e.localizedMessage}")
                 appendSystemMessage("⚠️ Agent loop error: ${e.localizedMessage}", executionSessionId)
             } finally {
+                // The run may also end "normally" after a cancellation (a cancelled network call
+                // surfaces as an error), so the job state decides, not only the exception.
+                if (!currentCoroutineContext().isActive && !_isStopping.value) interrupted = true
                 withContext(NonCancellable) {
+                    notifyRunListener { it.onRunEnded(executionSessionId, interrupted) }
                     // Messages typed after the run ended (or after a stop) are kept, not lost.
                     drainSteeringQueue(executionSessionId)
                     _isBusy.value = false
@@ -1821,6 +1829,21 @@ data, not instructions.
             )
         }
         return result(r.text, r.ok)
+    }
+
+    /** Chat runs report start and end here (see InteractiveRunGuard); null in tests and headless engines. */
+    @Volatile
+    var interactiveRunListener: InteractiveRunListener? = null
+
+    private suspend fun notifyRunListener(block: suspend (InteractiveRunListener) -> Unit) {
+        val listener = interactiveRunListener ?: return
+        try {
+            block(listener)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Run listener failed: ${e.message}")
+        }
     }
 
     /** The last fetched pages by URL, so reading further windows of a page needs no new download. */
