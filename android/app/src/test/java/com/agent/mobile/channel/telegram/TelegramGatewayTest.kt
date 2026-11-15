@@ -292,6 +292,33 @@ class TelegramGatewayTest {
     }
 
     @Test
+    fun aTaskThatRunsOutOfBudgetContinuesAutomatically() = runBlocking {
+        pairOwner()
+        agent.behaviour = { req ->
+            if (agent.requests.size < 3) {
+                AutonomousAgentEngine.UnattendedResult("s-1", "part done", false, emptyList(), budgetExhausted = true)
+            } else {
+                AutonomousAgentEngine.UnattendedResult("s-1", "All 300 photos are backed up.", true, emptyList())
+            }
+        }
+        gateway.handleUpdate(message(owner, "back up all photos"))
+        waitUntil { sentTexts(owner).any { it.contains("All 300 photos") } }
+        assertEquals(3, agent.requests.size)
+        assertTrue(agent.requests[1].text.startsWith("[AMC] Continuation"))
+        assertEquals("s-1", agent.requests[1].sessionId)
+        assertEquals(2, sentTexts(owner).count { it.startsWith("⏳ Still working") })
+    }
+
+    @Test
+    fun continuationsStopAfterTheLimit() = runBlocking {
+        pairOwner()
+        agent.behaviour = { AutonomousAgentEngine.UnattendedResult("s-1", "still not done", false, emptyList(), budgetExhausted = true) }
+        gateway.handleUpdate(message(owner, "endless task"))
+        waitUntil { sentTexts(owner).any { it.contains("still not done") } }
+        assertEquals(1 + TelegramGateway.MAX_CONTINUATIONS, agent.requests.size)
+    }
+
+    @Test
     fun approvalsAreAskedWithButtonsAndAnsweredByCallback() = runBlocking {
         pairOwner()
         val decision = CompletableDeferred<Boolean>()

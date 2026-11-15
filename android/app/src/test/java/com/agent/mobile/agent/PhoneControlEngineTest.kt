@@ -178,7 +178,7 @@ class PhoneControlEngineTest {
     }
 
     @Test
-    fun remoteScreenActionsAlwaysAskEvenInTurboAndShowTheOverlay() = runBlocking {
+    fun remoteScreenActionsAskOncePerAppEvenInTurboAndShowTheOverlay() = runBlocking {
         toolCall("c1", PhoneTools.SCREEN_SCROLL, JSONObject().put("direction", "down"))
         toolCall("c2", PhoneTools.SCREEN_SCROLL, JSONObject().put("direction", "up"))
         reply("Done scrolling.")
@@ -188,7 +188,7 @@ class PhoneControlEngineTest {
         e.approvalHandler = { call, _ -> asked += AgentTools.describe(call); true }
         val result = e.runHeadless("Telegram", "scroll", RunMode.REMOTE)
         assertEquals("Done scrolling.", result.summary)
-        assertEquals(listOf("screen_scroll down", "screen_scroll up"), asked.toList())
+        assertEquals("The first action in the app asks; it covers navigating that app for the task", listOf("screen_scroll down"), asked.toList())
         assertEquals(2, phone.executed.size)
         assertEquals("overlay shown once per run", 1, phone.begun.get())
         assertEquals("overlay hidden when the run ends", 1, phone.closed.get())
@@ -224,9 +224,28 @@ class PhoneControlEngineTest {
         val e = engine(phone)
         e.approvalHandler = { _, _ -> asked.incrementAndGet(); true }
         e.runHeadless("Telegram", "read", RunMode.REMOTE)
-        assertEquals("REMOTE asks for every screen action", 2, asked.get())
+        assertEquals("One approval covers reading and navigating WhatsApp for this task", 1, asked.get())
         assertEquals(setOf("read:com.whatsapp"), phone.executed[0].second)
         assertEquals(setOf("read:com.whatsapp"), phone.executed[1].second)
+    }
+
+    @Test
+    fun remoteAppGrantDoesNotCoverOtherAppsOrSending() = runBlocking {
+        toolCall("c1", PhoneTools.SCREEN_SCROLL, JSONObject().put("direction", "down"))
+        toolCall("c2", PhoneTools.SCREEN_SCROLL, JSONObject().put("direction", "up"))
+        reply("Done.")
+        val phone = FakePhone()
+        val asked = CopyOnWriteArrayList<String>()
+        val e = engine(phone)
+        e.approvalHandler = { call, a ->
+            asked += AgentTools.describe(call) + " | " + a.reason
+            // The second action happens in another app.
+            phone.context = PhoneRiskContext(foregroundPackage = "com.example.mail", foregroundLabel = "Mail")
+            true
+        }
+        e.runHeadless("Telegram", "scroll", RunMode.REMOTE)
+        assertEquals("A different app asks again", 2, asked.size)
+        assertTrue(asked.first().contains("for the rest of this task"))
     }
 
     @Test

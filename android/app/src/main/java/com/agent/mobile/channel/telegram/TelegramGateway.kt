@@ -427,21 +427,28 @@ class TelegramGateway(
             }
             val prompt = text.ifBlank { "(The user sent a photo without a caption. Describe it or ask what to do with it.)" }
             val title = "✈️ " + prompt.lines().first().take(40)
-            val result = slot.agent.run(
-                TurnRequest(
-                    sessionId = store.get().sessions[chatId],
-                    title = title,
-                    text = prompt,
-                    imageBase64 = imageBase64,
-                    imageMimeType = if (imageBase64 != null) "image/jpeg" else null,
-                    approval = { call, assessment -> askApproval(chatId, call, assessment) },
-                    attachments = AttachmentSink { name, bytes, caption ->
-                        api.sendFile(chatId, name, bytes, caption)
-                        "Sent $name to the user's Telegram chat."
-                    }
-                )
+            fun request(text: String, image: String?) = TurnRequest(
+                sessionId = store.get().sessions[chatId],
+                title = title,
+                text = text,
+                imageBase64 = image,
+                imageMimeType = if (image != null) "image/jpeg" else null,
+                approval = { call, assessment -> askApproval(chatId, call, assessment) },
+                attachments = AttachmentSink { name, bytes, caption ->
+                    api.sendFile(chatId, name, bytes, caption)
+                    "Sent $name to the user's Telegram chat."
+                }
             )
+            var result = slot.agent.run(request(prompt, imageBase64))
             result.sessionId?.let { sid -> store.update { it.copy(sessions = it.sessions + (chatId to sid)) } }
+            // A long task that used up the step or time budget continues in the same conversation.
+            var part = 1
+            while (result.budgetExhausted && result.sessionId != null && part <= MAX_CONTINUATIONS) {
+                trySend(chatId, "⏳ Still working (part ${part + 1}): the step or time budget of the last part was used up.")
+                result = slot.agent.run(request(CONTINUE_NOTE, null))
+                result.sessionId?.let { sid -> store.update { it.copy(sessions = it.sessions + (chatId to sid)) } }
+                part++
+            }
             typing.cancel()
             val reply = buildString {
                 append(result.summary.trim())
@@ -640,6 +647,11 @@ class TelegramGateway(
     companion object {
         private const val TAG = "TelegramGateway"
         private const val NOTICE_INTERVAL_MS = 10 * 60_000L
+        /** Automatic continuations of a chat task whose budget ran out. */
+        const val MAX_CONTINUATIONS = 3
+        const val CONTINUE_NOTE = "[AMC] Continuation: the step or time budget of the previous part ended. Look at what " +
+            "is already done above and continue the task from there. Do not redo finished steps."
+
         /** Waits before the attempts to send an approval request. */
         private val SEND_RETRY_DELAYS_MS = listOf(0L, 2_000L, 5_000L)
 
