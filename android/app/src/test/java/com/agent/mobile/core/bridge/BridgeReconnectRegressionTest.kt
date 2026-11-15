@@ -40,11 +40,16 @@ class BridgeReconnectRegressionTest {
     @After
     fun tearDown() {
         clients.forEach { it.disconnect() }
-        try {
-            server?.shutdown()
-        } catch (e: java.io.IOException) {
-            // Open WebSockets can delay MockWebServer's shutdown; the assertions already ran.
-        }
+        // Open WebSockets can keep MockWebServer's shutdown waiting; the assertions already ran,
+        // so it gets a few seconds and is then left to the daemon thread.
+        val s = server ?: return
+        Thread {
+            try {
+                s.shutdown()
+            } catch (e: java.io.IOException) {
+                // see above
+            }
+        }.apply { isDaemon = true; start(); join(5_000) }
     }
 
     private fun authServer(vararg acceptTokens: String) = object : WebSocketListener() {
