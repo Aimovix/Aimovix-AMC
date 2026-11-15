@@ -263,6 +263,11 @@ class TermuxBridgeClient(
     private var isAutoReconnectEnabled = true
     private var reconnectJob: Job? = null
     private var heartbeatJob: Job? = null
+    /** Folder of the last command (cd included), sent with every command so it survives reconnects. */
+    @Volatile
+    var workingDir: String? = null
+        private set
+
     /** Fails running commands when no reconnect picked them up in time (see holdExecutionsForReconnect). */
     private var executionGraceJob: Job? = null
     private var isManualDisconnect = false
@@ -813,6 +818,7 @@ class TermuxBridgeClient(
                 "completed" -> {
                     val execId = json.optString("execution_id")
                     val exitCode = json.optInt("exit_code", 0)
+                    json.optString("cwd").takeIf { it.isNotBlank() }?.let { workingDir = it }
                     val buffers = executionBuffers[execId]
                     val out = buffers?.stdout?.build() ?: ""
                     val err = buffers?.stderr?.build() ?: ""
@@ -873,7 +879,13 @@ class TermuxBridgeClient(
                 }
                 "error" -> {
                     val execId = json.optString("execution_id")
-                    val err = json.optString("error")
+                    var err = json.optString("error")
+                    val dir = workingDir
+                    if (dir != null && execId.isNotEmpty() && err.contains(dir)) {
+                        // The remembered folder is gone: start from the bridge's default again.
+                        workingDir = null
+                        err += " (The working folder $dir no longer exists; the next command starts in the home folder.)"
+                    }
                     val reqId = json.optString("request_id")
                     val path = json.optString("path")
                     if (reqId.isNotEmpty()) {
@@ -967,6 +979,8 @@ class TermuxBridgeClient(
             put("command", command)
             put("execution_id", execId)
             put("timeout_ms", timeoutMs.coerceIn(1L, 3_600_000L))
+            // A new bridge session (after a reconnect) would start in the home folder again.
+            workingDir?.let { put("cwd", it) }
         }
 
         val ws = webSocket

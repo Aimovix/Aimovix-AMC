@@ -236,6 +236,37 @@ class BridgeReconnectRegressionTest {
     }
 
     @Test
+    fun theWorkingFolderIsSentWithEveryCommand() = runBlocking {
+        val sentCwds = java.util.concurrent.CopyOnWriteArrayList<String>()
+        server = MockWebServer().apply {
+            enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    val json = JSONObject(text)
+                    when (json.optString("action")) {
+                        "auth" -> webSocket.send(JSONObject().put("type", "auth_ok").put("cwd", "/home").toString())
+                        "execute" -> {
+                            sentCwds += json.optString("cwd", "<none>")
+                            val cwd = if (json.optString("command").startsWith("cd ")) "/home/proj" else json.optString("cwd", "/home")
+                            webSocket.send(
+                                JSONObject().put("type", "completed").put("execution_id", json.optString("execution_id"))
+                                    .put("exit_code", 0).put("cwd", cwd).toString()
+                            )
+                        }
+                    }
+                }
+            }))
+            start()
+        }
+        val c = client(server!!.port, "good")
+        c.connect("good")
+        assertNotNull(withTimeoutOrNull(5_000) { c.connectionStatus.first { it is ConnectionStatus.Connected } })
+        c.executeCommand("cd proj", timeoutMs = 5_000)
+        assertEquals("/home/proj", c.workingDir)
+        c.executeCommand("ls", timeoutMs = 5_000)
+        assertEquals(listOf("<none>", "/home/proj"), sentCwds.toList())
+    }
+
+    @Test
     fun reconnectIfDisconnectedRecoversAfterAFailure() = runBlocking {
         val port = freePort()
         val c = client(port, "good")
