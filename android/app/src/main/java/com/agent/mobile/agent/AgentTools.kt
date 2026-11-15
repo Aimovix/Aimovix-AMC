@@ -33,6 +33,7 @@ object AgentTools {
     const val DELEGATE_TASK = "delegate_task"
     const val SEARCH_HISTORY = "search_history"
     const val SEND_FILE = "send_file"
+    const val LIST_RECENT_RUNS = "list_recent_runs"
     const val JOB_START = "job_start"
     const val JOB_STATUS = "job_status"
     const val JOB_STOP = "job_stop"
@@ -158,8 +159,20 @@ object AgentTools {
                 Param("title", ParamType.STRING, "Short name for the task."),
                 Param("prompt", ParamType.STRING, "Complete instruction for the future run."),
                 Param("delay_minutes", ParamType.INTEGER, "Minutes from now until the first run (0 = as soon as possible).", required = false),
-                Param("repeat_every_minutes", ParamType.INTEGER, "Repeat interval in minutes (minimum 15). Omit or 0 for a one-time task.", required = false)
+                Param("repeat_every_minutes", ParamType.INTEGER, "Repeat interval in minutes (minimum 15). Omit or 0 for a one-time task.", required = false),
+                Param(
+                    "conditions", ParamType.STRING,
+                    "Optional, comma-separated: wifi (unmetered network), charging, battery_ok (battery not low), " +
+                        "storage_ok. The run waits until all are met, e.g. 'wifi, charging' for a backup.",
+                    required = false
+                )
             )
+        ),
+        Definition(
+            LIST_RECENT_RUNS,
+            "List your recent background runs (scheduled tasks, continuations, heartbeats) with status " +
+                "(done, failed, waiting for approval, continued) and time. Use it to check whether earlier work succeeded.",
+            listOf(Param("limit", ParamType.INTEGER, "Number of runs (1-30, default 10).", required = false))
         ),
         Definition(
             DELEGATE_TASK,
@@ -431,7 +444,7 @@ object AgentTools {
                     SecurityAssessment(RiskLevel.MEDIUM, "Network request (download)")
                 }
             }
-            REMEMBER, FORGET, UPDATE_PLAN, NOTIFY_USER, LIST_SCHEDULED_TASKS ->
+            REMEMBER, FORGET, UPDATE_PLAN, NOTIFY_USER, LIST_SCHEDULED_TASKS, LIST_RECENT_RUNS ->
                 SecurityAssessment(RiskLevel.LOW, "Agent bookkeeping")
             WEB_SEARCH -> {
                 if (a["query"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A search query is required.")

@@ -91,6 +91,23 @@ class AndroidAgentPlatform(
     override fun scheduleAgentTask(title: String, prompt: String, delayMinutes: Long, repeatEveryMinutes: Long): String =
         scheduler.scheduleAgentTask(title, prompt, delayMinutes, repeatEveryMinutes)
 
+    override fun scheduleAgentTask(
+        title: String, prompt: String, delayMinutes: Long, repeatEveryMinutes: Long, conditions: Set<String>
+    ): String = scheduler.scheduleAgentTask(title, prompt, delayMinutes, repeatEveryMinutes, conditions)
+
+    override suspend fun listRecentRuns(limit: Int): String {
+        val runs = AgentRuntime.get(context).database.agentQueueDao().recentRuns(limit)
+        val fmt = java.text.SimpleDateFormat("MMM d HH:mm", java.util.Locale.US)
+        return runs.joinToString("\n") { r ->
+            val status = when (r.status) {
+                com.agent.mobile.data.storage.db.entity.AgentRunEntity.STATUS_PARKED -> "waiting for approval"
+                com.agent.mobile.data.storage.db.entity.AgentRunEntity.STATUS_CONTINUED -> "continued in a later run"
+                else -> r.status.lowercase()
+            }
+            "${fmt.format(java.util.Date(r.updatedAt))}  $status  ${r.title}  (session ${r.sessionId.take(8)})"
+        }
+    }
+
     override suspend fun listAgentTasks(): String = withContext(Dispatchers.IO) { scheduler.describeAgentTasks() }
 
     override suspend fun cancelAgentTask(taskId: String): Boolean = withContext(Dispatchers.IO) { scheduler.cancelAgentTask(taskId) }

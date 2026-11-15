@@ -108,11 +108,14 @@ class SchedulerManager(private val context: Context) {
      * Schedules an unattended agent run. One-time when [repeatEveryMinutes] is 0, otherwise
      * periodic (WorkManager enforces a minimum of 15 minutes). Returns the WorkManager id.
      */
-    fun scheduleAgentTask(title: String, prompt: String, delayMinutes: Long, repeatEveryMinutes: Long): String {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .setRequiresBatteryNotLow(false)
-            .build()
+    fun scheduleAgentTask(
+        title: String,
+        prompt: String,
+        delayMinutes: Long,
+        repeatEveryMinutes: Long,
+        conditions: Set<String> = emptySet()
+    ): String {
+        val constraints = constraintsFor(conditions)
         val data = workDataOf(
             AgentTaskWorker.KEY_KIND to AgentTaskWorker.KIND_TASK,
             AgentTaskWorker.KEY_TITLE to title.take(80),
@@ -247,6 +250,16 @@ class SchedulerManager(private val context: Context) {
     }
 
     companion object {
+        /** WorkManager constraints for the agent's task conditions (network is always required). */
+        fun constraintsFor(conditions: Set<String>): Constraints = Constraints.Builder()
+            .setRequiredNetworkType(
+                if (com.agent.mobile.agent.TaskConditions.WIFI in conditions) NetworkType.UNMETERED else NetworkType.CONNECTED
+            )
+            .setRequiresCharging(com.agent.mobile.agent.TaskConditions.CHARGING in conditions)
+            .setRequiresBatteryNotLow(com.agent.mobile.agent.TaskConditions.BATTERY_OK in conditions)
+            .setRequiresStorageNotLow(com.agent.mobile.agent.TaskConditions.STORAGE_OK in conditions)
+            .build()
+
         const val AGENT_TASK_TAG = "amc_agent_task"
         const val HEARTBEAT_TAG = "amc_heartbeat"
         const val HEARTBEAT_WORK_NAME = "amc_heartbeat"

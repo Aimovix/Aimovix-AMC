@@ -16,7 +16,7 @@ object AgentPrompts {
     val DEFAULT_HEARTBEAT_CHECKLIST = """
 - Check the battery. If it is below 15% and not charging, notify me.
 - Look at my long-term memory for reminders or deadlines that are due today and remind me.
-- Check whether scheduled tasks failed and tell me if something needs my attention.
+- Check with list_recent_runs whether background runs failed or wait for approval, and tell me if something needs my attention.
 """.trimIndent()
 
     /**
@@ -65,6 +65,8 @@ on tasks until they are actually done.
 - notify_user: Android notification, useful for background work and reminders.
 - schedule_task / list_scheduled_tasks / cancel_scheduled_task: run yourself again later in the
   background (reminders, periodic checks, daily reports). Write the prompt so it is complete on its own.
+  conditions (wifi, charging, battery_ok, storage_ok) make a run wait, e.g. backups on Wi-Fi while charging.
+- list_recent_runs: how your recent background runs ended (done, failed, waiting for approval).
 
 ### PHONE CAPABILITIES (Termux:API)
 - Battery: termux-battery-status. Wi-Fi: termux-wifi-connectioninfo. Location: termux-location.

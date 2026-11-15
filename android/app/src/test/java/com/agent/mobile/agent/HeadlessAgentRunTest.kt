@@ -326,6 +326,7 @@ class HeadlessAgentRunTest {
         // ... and a clearly different approach afterwards must be executed, not end the run.
         toolCall("call_n", "execute_command", JSONObject().put("command", "echo different"))
         reply("Done with a different approach.")
+        reply("Lesson: unknown tool names fail; check the tool list before calling.")  // lesson after the run
 
         val e = engine()
         val result = e.runHeadless(title = "t", prompt = "do it", mode = RunMode.UNATTENDED)
@@ -339,6 +340,8 @@ class HeadlessAgentRunTest {
             "The different command was dispatched (it fails only because the test has no bridge)",
             different.toolResult!!.stderr.contains("Loop protection")
         )
+        // Several failures: one lesson for later runs, marked as such in memory.
+        assertTrue(e.memoryStore!!.entries().single().contains("Lesson: unknown tool names fail"))
     }
 
     @Test

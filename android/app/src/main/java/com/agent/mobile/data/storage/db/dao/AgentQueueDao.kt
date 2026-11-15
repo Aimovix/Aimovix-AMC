@@ -39,6 +39,9 @@ interface AgentQueueDao {
     @Query("UPDATE agent_runs SET status = :status, updatedAt = :updatedAt WHERE id = :id")
     suspend fun setRunStatus(id: String, status: String, updatedAt: Long)
 
+    @Query("SELECT * FROM agent_runs ORDER BY updatedAt DESC LIMIT :limit")
+    suspend fun recentRuns(limit: Int): List<AgentRunEntity>
+
     @Query("DELETE FROM agent_runs WHERE updatedAt < :before AND status != 'RUNNING'")
     suspend fun pruneRuns(before: Long)
 }
