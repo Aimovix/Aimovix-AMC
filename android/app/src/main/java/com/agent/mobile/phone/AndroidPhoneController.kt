@@ -269,7 +269,7 @@ class AndroidPhoneController(
             PhoneTools.OPEN_APP -> openApp(svc, a["name"].orEmpty(), grants, state)
             PhoneTools.WAIT_FOR -> waitFor(svc, call, grants, state)
             PhoneTools.SCREEN_CAPTURE -> screenshot(svc, call, grants)
-            PhoneTools.SCREEN_BATCH -> ActionBatchExecutor(this, svc, grants, context.packageName)
+            PhoneTools.SCREEN_BATCH -> ActionBatchExecutor(this, svc, grants, context.packageName, prefs.loadPhoneBlocklist())
                 .run(call.id, a, state.toBatchContext(), expected, approved)
             else -> fail("Unknown phone tool '${call.name}'.")
         }

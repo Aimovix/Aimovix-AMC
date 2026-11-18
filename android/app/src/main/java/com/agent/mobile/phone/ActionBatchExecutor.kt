@@ -23,10 +23,33 @@ internal class ActionBatchExecutor(
     private val controller: AndroidPhoneController,
     private val svc: PhoneControlService,
     private val grants: Set<String>,
-    private val ownPackage: String
+    private val ownPackage: String,
+    /** The user's block list from the settings (released apps and own entries count per step too). */
+    private val blocklist: PackageBlocklist = PackageBlocklist.DEFAULT
 ) {
     companion object {
         private const val STEP_SETTLE_MS = 800L
+
+        /**
+         * Risk context of one step on the screen as it is now. Uses the user's [blocklist]: a step
+         * must see the same released apps and own entries as the batch's first check did.
+         */
+        internal fun stepContext(
+            snapshot: ScreenSnapshot,
+            windowClass: String?,
+            target: TargetInfo?,
+            ownPackage: String,
+            blocklist: PackageBlocklist
+        ) = PhoneRiskContext(
+            keyguardLocked = false,
+            foregroundPackage = snapshot.packageName,
+            foregroundLabel = snapshot.appLabel,
+            windowClass = windowClass,
+            screenTitles = snapshot.elements.map { it.label }.filter { it.isNotBlank() }.take(4),
+            target = target,
+            blocklist = blocklist,
+            ownPackage = ownPackage
+        )
     }
 
     suspend fun run(
@@ -58,18 +81,7 @@ internal class ActionBatchExecutor(
 
             // Re-check this step on the screen as it is now.
             val target = ctx.targetInfo(stepCall.name, stepCall.arguments, fresh.snapshot)
-            val risk = PhoneToolPolicy.assess(
-                stepCall,
-                PhoneRiskContext(
-                    keyguardLocked = false,
-                    foregroundPackage = fresh.snapshot.packageName,
-                    foregroundLabel = fresh.snapshot.appLabel,
-                    windowClass = svc.windowClass,
-                    screenTitles = fresh.snapshot.elements.map { it.label }.filter { it.isNotBlank() }.take(4),
-                    target = target,
-                    ownPackage = ownPackage
-                )
-            )
+            val risk = PhoneToolPolicy.assess(stepCall, stepContext(fresh.snapshot, svc.windowClass, target, ownPackage, blocklist))
             if (risk.isBlocked) {
                 lines += "✗ $n. ${step.action}: blocked (${risk.reason})"
                 stopped = "step $n is blocked"; break
