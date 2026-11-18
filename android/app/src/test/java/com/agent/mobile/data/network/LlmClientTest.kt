@@ -365,5 +365,61 @@ class LlmClientTest {
         assertFalse(body.has("temperature"))
         assertEquals(com.agent.mobile.agent.AgentTools.ALL.size, body.getJSONArray("tools").length())
     }
+
+    private fun geminiConfig() = ModelConfig(provider = ProviderType.GEMINI, modelName = "gemini-2.5-flash", apiKey = "AIzaSecretKey",
+        baseUrl = mockServer.url("/v1beta").toString())
+
+    private fun geminiChunk(text: String, finish: String? = null): String {
+        val candidate = org.json.JSONObject().put("content", org.json.JSONObject().put("parts", org.json.JSONArray().put(org.json.JSONObject().put("text", text))))
+        if (finish != null) candidate.put("finishReason", finish)
+        return "data: " + org.json.JSONObject().put("candidates", org.json.JSONArray().put(candidate)) + "\n\n"
+    }
+
+    /** #31: Gemini has no [DONE]; a stream that stops without a finishReason was cut off. */
+    @Test
+    fun testGeminiStreamWithoutFinishReasonIsARetryableError() = runBlocking {
+        mockServer.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(geminiChunk("I will now ")))
+        val events = llmClient.streamRequest(geminiConfig(), "S", listOf(ChatMessage(role = MessageRole.USER, text = "hi"))).toList()
+        val error = events.last() as LlmClient.LlmStreamEvent.Error
+        assertTrue(error.isRetryable)
+        assertTrue(events.none { it is LlmClient.LlmStreamEvent.Completed })
+
+        mockServer.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream")
+            .setBody(geminiChunk("Done ") + geminiChunk("now.", finish = "STOP")))
+        val ok = llmClient.streamRequest(geminiConfig(), "S", listOf(ChatMessage(role = MessageRole.USER, text = "hi"))).toList()
+        val completed = ok.last() as LlmClient.LlmStreamEvent.Completed
+        assertEquals("Done now.", completed.fullText)
+        assertFalse(completed.truncated)
+    }
+
+    /** #31: overload inside the stream is retryable, MAX_TOKENS marks the reply as cut off. */
+    @Test
+    fun testGeminiStreamErrorsAndMaxTokens() = runBlocking {
+        mockServer.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream")
+            .setBody("data: {\"error\":{\"code\":503,\"message\":\"The model is overloaded.\",\"status\":\"UNAVAILABLE\"}}\n\n"))
+        val overloaded = llmClient.streamRequest(geminiConfig(), "S", listOf(ChatMessage(role = MessageRole.USER, text = "hi"))).toList()
+        assertTrue((overloaded.last() as LlmClient.LlmStreamEvent.Error).isRetryable)
+
+        mockServer.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream")
+            .setBody("data: {\"error\":{\"code\":400,\"message\":\"Invalid argument\",\"status\":\"INVALID_ARGUMENT\"}}\n\n"))
+        val invalid = llmClient.streamRequest(geminiConfig(), "S", listOf(ChatMessage(role = MessageRole.USER, text = "hi"))).toList()
+        assertFalse((invalid.last() as LlmClient.LlmStreamEvent.Error).isRetryable)
+
+        mockServer.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream")
+            .setBody(geminiChunk("A very long", finish = "MAX_TOKENS")))
+        val cut = llmClient.streamRequest(geminiConfig(), "S", listOf(ChatMessage(role = MessageRole.USER, text = "hi"))).toList()
+        assertTrue((cut.last() as LlmClient.LlmStreamEvent.Completed).truncated)
+    }
+
+    /** #32: the Gemini key goes in a header only, never into the URL. */
+    @Test
+    fun testGeminiKeyIsNotInTheUrl() = runBlocking {
+        mockServer.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(geminiChunk("ok", finish = "STOP")))
+        llmClient.streamRequest(geminiConfig(), "S", listOf(ChatMessage(role = MessageRole.USER, text = "hi"))).toList()
+        val request = mockServer.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)!!
+        assertFalse(request.path.orEmpty().contains("AIzaSecretKey"))
+        assertFalse(request.path.orEmpty().contains("key="))
+        assertEquals("AIzaSecretKey", request.getHeader("x-goog-api-key"))
+    }
 }
 
