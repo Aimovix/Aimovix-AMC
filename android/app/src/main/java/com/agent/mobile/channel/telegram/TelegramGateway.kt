@@ -119,6 +119,25 @@ class TelegramGateway(
         }
     }
 
+    /**
+     * Forgets an account that was unpaired outside the chat (in the app): its running task stops,
+     * its agent is closed and its conversation mapping is dropped, so nothing more reaches it (#39).
+     * Private chats have the user's id as chat id.
+     */
+    fun forget(userId: Long) {
+        store.update { st -> st.copy(paired = st.paired.filterNot { it.id == userId }, sessions = st.sessions - userId) }
+        approvals.entries.removeIf { (_, pending) ->
+            (pending.chatId == userId).also { if (it) pending.decision.complete(false) }
+        }
+        chats.remove(userId)?.let { slot ->
+            val job = slot.job
+            if (job == null || !job.isActive) slot.agent.close() else {
+                job.invokeOnCompletion { slot.agent.close() }
+                job.cancel()
+            }
+        }
+    }
+
     /** True while the agent works on a message from [chatId]. */
     fun isTurnActive(chatId: Long): Boolean = chats[chatId]?.job?.isActive == true
 
@@ -387,7 +406,7 @@ class TelegramGateway(
             }
             sendReply(chatId, reply)
         } catch (e: CancellationException) {
-            withContext(NonCancellable) { trySend(chatId, "🛑 Stopped.") }
+            if (store.get().isPaired(m.fromId)) withContext(NonCancellable) { trySend(chatId, "🛑 Stopped.") }
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Telegram turn failed: ${e.message}", e)

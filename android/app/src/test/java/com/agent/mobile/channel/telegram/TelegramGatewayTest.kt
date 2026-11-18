@@ -331,4 +331,22 @@ class TelegramGatewayTest {
         gateway.handleUpdate(message(owner, "do something"))
         assertTrue(agent.requests.isEmpty())
     }
+
+    /** #39: unpairing in the app stops the account's running task and nothing more reaches it. */
+    @Test
+    fun forgettingAnAccountStopsItsRunningTask() = runBlocking {
+        pairOwner()
+        val started = CompletableDeferred<Unit>()
+        agent.behaviour = { started.complete(Unit); awaitCancellation() }
+        gateway.handleUpdate(message(owner, "long task"))
+        withTimeout(5_000) { started.await() }
+        assertTrue(gateway.isTurnActive(owner))
+
+        gateway.forget(owner)
+        waitUntil { !gateway.isTurnActive(owner) }
+        assertFalse(store.get().isPaired(owner))
+        assertFalse(store.get().sessions.containsKey(owner))
+        delay(200)
+        assertTrue("No reply after unpairing", sentTexts(owner).none { it.contains("Stopped") || it.contains("Done") })
+    }
 }
