@@ -130,6 +130,11 @@
             android:name=".phone.PhoneControlStopReceiver"
             android:exported="false" />
 
+        <!-- "Stop all agents" action of the AMC notification (emergency brake). -->
+        <receiver
+            android:name=".service.StopAllRunsReceiver"
+            android:exported="false" />
+
         <!-- Approve / Reject actions of the approval notification. -->
         <receiver
             android:name=".service.ApprovalActionReceiver"

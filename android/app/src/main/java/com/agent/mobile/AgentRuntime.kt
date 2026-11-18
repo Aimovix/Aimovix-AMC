@@ -33,7 +33,7 @@ class AgentRuntime private constructor(context: Context) {
     /** Phone control layer (screen, notifications, intents, Shizuku) shared by every engine. */
     val phoneController: com.agent.mobile.agent.PhoneController =
         com.agent.mobile.phone.AndroidPhoneController(appContext, preferenceManager) { title, prompt ->
-            scheduler.scheduleAgentTask(title, prompt, delayMinutes = 0, repeatEveryMinutes = 0)
+            scheduler.scheduleAgentTask(title, prompt, delayMinutes = 0, repeatEveryMinutes = 0, trigger = com.agent.mobile.agent.RunTrigger.NOTIFICATION)
         }
     val telegram: TelegramChannelManager by lazy { TelegramChannelManager(this) }
     /** Background-run approvals waiting for the user; answering one resumes its task. */

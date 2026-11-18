@@ -151,12 +151,15 @@ object CommandSecurityFilter {
         val base = analyzeRisk(command)
         if (base.isBlocked) return base
         val normalized = normalizeCommand(command.trim())
-        val legal = ALWAYS_CONFIRM_PATTERNS.firstOrNull { (pattern, _) ->
+        // Every matching third-party action is named (a script may text and call), so later
+        // checks such as the unattended categories see all of them.
+        val legal = ALWAYS_CONFIRM_PATTERNS.filter { (pattern, _) ->
             pattern.matcher(command).find() || pattern.matcher(normalized).find()
-        } ?: return base
+        }
+        if (legal.isEmpty()) return base
         return SecurityAssessment(
             level = RiskLevel.HIGH,
-            reason = "${legal.second}. Always requires your confirmation.",
+            reason = "${legal.joinToString("; ") { it.second }}. Always requires your confirmation.",
             sensitive = true,
             alwaysConfirm = true
         )

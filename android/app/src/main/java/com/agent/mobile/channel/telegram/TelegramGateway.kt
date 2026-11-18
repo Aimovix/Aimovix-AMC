@@ -258,9 +258,13 @@ class TelegramGateway(
             }
             "/stop" -> {
                 val job = chats[m.chatId]?.job
+                // The emergency brake also reaches unattended background runs (scheduled, triggers).
+                val background = com.agent.mobile.agent.RunRegistry.stopAll(unattendedOnly = true)
                 if (job?.isActive == true) {
                     job.cancel()
-                    send(m.chatId, "🛑 Stopping the current task…")
+                    send(m.chatId, "🛑 Stopping the current task…" + if (background > 0) " Also stopped $background background run(s)." else "")
+                } else if (background > 0) {
+                    send(m.chatId, "🛑 Stopped $background background run(s).")
                 } else {
                     send(m.chatId, "Nothing is running.")
                 }
@@ -403,6 +407,12 @@ class TelegramGateway(
                     append("\n\nSkipped (needs approval): ")
                     append(result.skippedApprovals.take(3).joinToString("; ") { it.take(80) })
                 }
+                // Unattended runs: what the fixed rules refused and why the run ended.
+                if (result.autoDenied.isNotEmpty()) {
+                    append("\n\nRefused by the unattended rules (${result.autoDenied.size}): ")
+                    append(result.autoDenied.take(3).joinToString("; ") { it.take(160) })
+                }
+                result.limitReached?.let { append("\n\nRun ended: limit reached ($it).") }
             }
             sendReply(chatId, reply)
         } catch (e: CancellationException) {

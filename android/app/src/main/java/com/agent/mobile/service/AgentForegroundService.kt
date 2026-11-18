@@ -145,6 +145,11 @@ class AgentForegroundService : Service {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        // Emergency brake: stops every agent run (chat, background tasks, Telegram, triggers).
+        val stopAll = PendingIntent.getBroadcast(
+            this, 1, Intent(this, StopAllRunsReceiver::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(statusText)
@@ -152,6 +157,7 @@ class AgentForegroundService : Service {
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(android.R.drawable.ic_media_pause, "Stop all agents", stopAll)
             .build()
     }
 

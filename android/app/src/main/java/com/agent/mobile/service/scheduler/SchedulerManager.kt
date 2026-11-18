@@ -108,7 +108,13 @@ class SchedulerManager(private val context: Context) {
      * Schedules an unattended agent run. One-time when [repeatEveryMinutes] is 0, otherwise
      * periodic (WorkManager enforces a minimum of 15 minutes). Returns the WorkManager id.
      */
-    fun scheduleAgentTask(title: String, prompt: String, delayMinutes: Long, repeatEveryMinutes: Long): String {
+    fun scheduleAgentTask(
+        title: String,
+        prompt: String,
+        delayMinutes: Long,
+        repeatEveryMinutes: Long,
+        trigger: String = com.agent.mobile.agent.RunTrigger.SCHEDULE
+    ): String {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .setRequiresBatteryNotLow(false)
@@ -116,7 +122,8 @@ class SchedulerManager(private val context: Context) {
         val data = workDataOf(
             AgentTaskWorker.KEY_KIND to AgentTaskWorker.KIND_TASK,
             AgentTaskWorker.KEY_TITLE to title.take(80),
-            AgentTaskWorker.KEY_PROMPT to prompt.take(8_000)
+            AgentTaskWorker.KEY_PROMPT to prompt.take(8_000),
+            AgentTaskWorker.KEY_TRIGGER to trigger
         )
         val titleTag = TITLE_TAG_PREFIX + title.take(60)
         return if (repeatEveryMinutes > 0) {
@@ -160,7 +167,14 @@ class SchedulerManager(private val context: Context) {
     }
 
     /** Continues a background task whose step or time budget ran out, in the same chat session. */
-    fun enqueueContinuation(sessionId: String, title: String, chain: Int, originKind: String, delayMinutes: Long = 0) {
+    fun enqueueContinuation(
+        sessionId: String,
+        title: String,
+        chain: Int,
+        originKind: String,
+        delayMinutes: Long = 0,
+        trigger: String = com.agent.mobile.agent.RunTrigger.SCHEDULE
+    ) {
         val request = OneTimeWorkRequestBuilder<AgentTaskWorker>()
             .setInitialDelay(delayMinutes.coerceAtLeast(0), TimeUnit.MINUTES)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -170,7 +184,8 @@ class SchedulerManager(private val context: Context) {
                     AgentTaskWorker.KEY_SESSION_ID to sessionId,
                     AgentTaskWorker.KEY_TITLE to title.take(80),
                     AgentTaskWorker.KEY_CHAIN to chain,
-                    AgentTaskWorker.KEY_ORIGIN_KIND to originKind
+                    AgentTaskWorker.KEY_ORIGIN_KIND to originKind,
+                    AgentTaskWorker.KEY_TRIGGER to trigger
                 )
             )
             .addTag(AGENT_TASK_TAG)
@@ -237,10 +252,23 @@ class SchedulerManager(private val context: Context) {
         workManager.cancelUniqueWork(HEARTBEAT_WORK_NAME)
     }
 
+    /** Daily summary of every agent run from the audit log. */
+    fun scheduleDailyReport() {
+        val request = PeriodicWorkRequestBuilder<DailyReportWorker>(24, TimeUnit.HOURS)
+            .setInitialDelay(24, TimeUnit.HOURS)
+            .build()
+        workManager.enqueueUniquePeriodicWork(DAILY_REPORT_WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+    }
+
+    fun cancelDailyReport() {
+        workManager.cancelUniqueWork(DAILY_REPORT_WORK_NAME)
+    }
+
     companion object {
         const val AGENT_TASK_TAG = "amc_agent_task"
         const val HEARTBEAT_TAG = "amc_heartbeat"
         const val HEARTBEAT_WORK_NAME = "amc_heartbeat"
+        const val DAILY_REPORT_WORK_NAME = "amc_daily_report"
         private const val TITLE_TAG_PREFIX = "amc_title:"
         private const val REPEAT_TAG_PREFIX = "amc_repeat:"
     }

@@ -88,6 +88,15 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
                 }
             }
         }
+        // Audit retention (30/90/365 days, bounded size) and the optional daily summary.
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                runtime.chatRepository.auditLogger.rotate(preferenceManager.loadAuditRetentionDays())
+            } catch (e: Exception) {
+                android.util.Log.w("MainViewModel", "Audit retention failed: ${e.message}")
+            }
+        }
+        if (preferenceManager.loadDailyReport()) runtime.scheduler.scheduleDailyReport() else runtime.scheduler.cancelDailyReport()
         // Re-arm the heartbeat after app updates or reinstalls.
         if (preferenceManager.loadHeartbeatEnabled()) {
             runtime.scheduler.scheduleHeartbeat(preferenceManager.loadHeartbeatIntervalMinutes())

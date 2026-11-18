@@ -1,6 +1,6 @@
 # AMC – Datenschutzhinweise
 
-_Version 3. Dieses Dokument ist keine Rechtsberatung._
+_Version 4. Dieses Dokument ist keine Rechtsberatung._
 
 ## 1. Wer steht dahinter
 
@@ -12,7 +12,7 @@ Die Entwickler erhalten keine deiner Daten: AMC hat keine eigenen Server. Über 
 
 | Daten | Zweck | Speicherort | Löschen |
 | --- | --- | --- | --- |
-| Chats, Werkzeug-Ausgaben, Audit-Protokoll | Verlauf, Nachvollziehbarkeit | App-Datenbank (privater App-Speicher) | Chats / Audit-Protokoll in der App löschen oder App deinstallieren |
+| Chats, Werkzeug-Ausgaben, Audit-Protokoll | Verlauf, Nachvollziehbarkeit; das Audit-Protokoll hält jede Agenten-Aktion fest (Zeit, Lauf, Auslöser, Werkzeug, geschwärzte Argumente, Entscheidung und Regel, kurzes Ergebnis), per Hash verkettet, damit Änderungen sichtbar werden | App-Datenbank (privater App-Speicher) | Chats in der App löschen; das Audit-Protokoll wird nach deiner Wahl 30, 90 (Standard) oder 365 Tage aufbewahrt, ältere Einträge werden automatisch entfernt; Deinstallation entfernt alles |
 | Langzeitgedächtnis (`MEMORY.md`) | Fakten, die sich der Agent merken soll | Privater App-Speicher | Einstellungen → Autonomy → Gedächtnis → Clear all |
 | API-Schlüssel, Bridge-Token, Einstellungen | Verbindung zu Diensten | Verschlüsselte Einstellungen (Android Keystore, AES-256) | In den Einstellungen entfernen oder deinstallieren |
 | Geplante Aufgaben | Hintergrundläufe | Android WorkManager | Einstellungen → Autonomy oder deinstallieren |

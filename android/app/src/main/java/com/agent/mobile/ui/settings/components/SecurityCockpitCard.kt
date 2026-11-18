@@ -43,6 +43,9 @@ fun SecurityCockpitCard(
     var newWhitelistPattern by remember { mutableStateOf("") }
     var newBlacklistPattern by remember { mutableStateOf("") }
     var showAuditLogDialog by remember { mutableStateOf(false) }
+    var showUnattendedOptIn by remember { mutableStateOf(false) }
+    var unattendedConsent by remember { mutableIntStateOf(preferenceManager.loadUnattendedConsentVersion()) }
+    var unattendedSettings by remember { mutableStateOf(preferenceManager.loadUnattendedSettings()) }
     var presetDropdownExpanded by remember { mutableStateOf(false) }
 
     Surface(
@@ -173,8 +176,15 @@ fun SecurityCockpitCard(
                                 }
                             },
                             onClick = {
-                                agentEngine.setSecurityPreset(preset)
                                 presetDropdownExpanded = false
+                                // Unattended mode is opt-in: Turbo shows what it will do before it is on.
+                                if (preset == SecurityPreset.TURBO &&
+                                    preferenceManager.loadUnattendedConsentVersion() < com.agent.mobile.unattended.UnattendedPolicy.CONSENT_VERSION
+                                ) {
+                                    showUnattendedOptIn = true
+                                } else {
+                                    agentEngine.setSecurityPreset(preset)
+                                }
                             }
                         )
                     }
@@ -183,7 +193,20 @@ fun SecurityCockpitCard(
 
             // Preset status details
             when (currentPreset) {
-                SecurityPreset.TURBO -> {
+                SecurityPreset.TURBO -> if (unattendedConsent >= com.agent.mobile.unattended.UnattendedPolicy.CONSENT_VERSION) {
+                    UnattendedSettingsPanel(
+                        settings = unattendedSettings,
+                        onChange = {
+                            unattendedSettings = it
+                            preferenceManager.saveUnattendedSettings(it)
+                        },
+                        onTurnOff = {
+                            preferenceManager.saveUnattendedConsent(0)
+                            unattendedConsent = 0
+                            agentEngine.setSecurityPreset(SecurityPreset.AUTONOMOUS)
+                        }
+                    )
+                } else {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         color = DarkSurface,
@@ -442,10 +465,23 @@ fun SecurityCockpitCard(
         }
     }
 
+    if (showUnattendedOptIn) {
+        UnattendedOptInDialog(
+            onAccept = {
+                preferenceManager.saveUnattendedConsent(com.agent.mobile.unattended.UnattendedPolicy.CONSENT_VERSION)
+                unattendedConsent = com.agent.mobile.unattended.UnattendedPolicy.CONSENT_VERSION
+                agentEngine.setSecurityPreset(SecurityPreset.TURBO)
+                showUnattendedOptIn = false
+            },
+            onDecline = { showUnattendedOptIn = false }
+        )
+    }
+
     if (showAuditLogDialog) {
         AuditLogDialog(
             chatRepository = chatRepository,
-            onDismiss = { showAuditLogDialog = false }
+            onDismiss = { showAuditLogDialog = false },
+            preferenceManager = preferenceManager
         )
     }
 }

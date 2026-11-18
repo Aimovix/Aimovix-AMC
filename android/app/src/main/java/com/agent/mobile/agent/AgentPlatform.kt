@@ -49,3 +49,21 @@ fun interface AttachmentSink {
     /** Delivers the file and returns a short status text for the model. */
     suspend fun sendFile(fileName: String, bytes: ByteArray, caption: String): String
 }
+
+/** What started a run. Recorded in the audit log and shown in run reports. */
+object RunTrigger {
+    const val USER = "USER"
+    const val SCHEDULE = "SCHEDULE"
+    const val HEARTBEAT = "HEARTBEAT"
+    const val NOTIFICATION = "NOTIFICATION"
+    const val TELEGRAM = "TELEGRAM"
+    const val SUBAGENT = "SUBAGENT"
+    const val RESUME = "RESUME"
+
+    fun defaultFor(mode: RunMode): String = when (mode) {
+        RunMode.INTERACTIVE -> USER
+        RunMode.UNATTENDED -> SCHEDULE
+        RunMode.REMOTE -> TELEGRAM
+        RunMode.SUBAGENT -> SUBAGENT
+    }
+}

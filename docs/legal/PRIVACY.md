@@ -1,6 +1,6 @@
 # AMC privacy notice
 
-_Version 3. This document is not legal advice._
+_Version 4. This document is not legal advice._
 
 ## 1. Who is responsible
 
@@ -12,7 +12,7 @@ The developers do not receive any of your data: AMC has no servers of its own. F
 
 | Data | Purpose | Where | How to delete |
 | --- | --- | --- | --- |
-| Chats, tool output, audit log | Conversation history, traceability | App database (private app storage) | Delete chats / clear audit log in the app, or uninstall |
+| Chats, tool output, audit log | Conversation history, traceability; the audit log records every agent action (time, run, trigger, tool, redacted arguments, decision and rule, short result) chained by hashes so changes are visible | App database (private app storage) | Delete chats in the app; the audit log is kept for 30, 90 (default) or 365 days as you choose, older entries are removed automatically; uninstall removes everything |
 | Long-term memory (`MEMORY.md`) | Facts the agent should remember | Private app storage | Settings → Autonomy → Memory → Clear all |
 | API keys, bridge token, settings | Connecting to services | Encrypted preferences (Android Keystore, AES-256) | Remove in Settings, or uninstall |
 | Scheduled tasks | Background runs you or the agent scheduled | Android WorkManager | Settings → Autonomy, or uninstall |

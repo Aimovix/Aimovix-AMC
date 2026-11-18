@@ -76,6 +76,12 @@ class PreferenceManager(
         const val DEFAULT_APPROVAL_TIMEOUT_MIN = 10
         private const val KEY_PHONE_BACKGROUND = "key_phone_control_background"
         private const val KEY_NOTIFICATION_TRIGGERS = "key_notification_triggers"
+        private const val KEY_UNATTENDED_CONSENT = "key_unattended_consent_version"
+        private const val KEY_UNATTENDED_CONSENT_AT = "key_unattended_consent_at"
+        private const val KEY_UNATTENDED_SETTINGS = "key_unattended_settings"
+        private const val KEY_AUDIT_RETENTION_DAYS = "key_audit_retention_days"
+        private const val KEY_DAILY_REPORT = "key_daily_report"
+        val AUDIT_RETENTION_CHOICES = listOf(30, 90, 365)
 
         const val DEFAULT_MAX_STEPS = 30
         const val MIN_MAX_STEPS = 5
@@ -378,6 +384,54 @@ class PreferenceManager(
 
     fun saveNotificationTriggers(triggers: List<com.agent.mobile.phone.NotificationTrigger>) {
         prefs.edit().putString(KEY_NOTIFICATION_TRIGGERS, com.agent.mobile.phone.NotificationTriggers.serialize(triggers)).apply()
+    }
+
+    // --- Unattended mode ----------------------------------------------------------------------
+
+    /** Version of the unattended opt-in the user accepted (0: never). */
+    fun loadUnattendedConsentVersion(): Int = prefs.getInt(KEY_UNATTENDED_CONSENT, 0)
+
+    fun saveUnattendedConsent(version: Int) {
+        prefs.edit().putInt(KEY_UNATTENDED_CONSENT, version).putLong(KEY_UNATTENDED_CONSENT_AT, System.currentTimeMillis()).apply()
+    }
+
+    fun loadUnattendedSettings(): com.agent.mobile.unattended.UnattendedSettings =
+        com.agent.mobile.unattended.UnattendedSettings.fromJson(prefs.getString(KEY_UNATTENDED_SETTINGS, null))
+
+    fun saveUnattendedSettings(settings: com.agent.mobile.unattended.UnattendedSettings) {
+        prefs.edit().putString(KEY_UNATTENDED_SETTINGS, settings.toJson()).apply()
+    }
+
+    /**
+     * Unattended mode is the Turbo preset after the user accepted the opt-in. Without the opt-in,
+     * Turbo behaves as before (actions that affect other people still ask).
+     */
+    fun isUnattendedActive(): Boolean =
+        loadSecurityPreset() == SecurityPreset.TURBO &&
+            loadUnattendedConsentVersion() >= com.agent.mobile.unattended.UnattendedPolicy.CONSENT_VERSION
+
+    /** The block list the phone tools apply right now: with the unattended floor while that mode is on. */
+    fun loadEffectivePhoneBlocklist(): com.agent.mobile.phone.PackageBlocklist {
+        val raw = loadPhoneBlocklist()
+        return if (isUnattendedActive()) com.agent.mobile.unattended.SecurityFloor.blocklist(raw) else raw
+    }
+
+    // --- Audit log ----------------------------------------------------------------------------
+
+    fun loadAuditRetentionDays(): Int =
+        prefs.getInt(KEY_AUDIT_RETENTION_DAYS, com.agent.mobile.audit.AuditLogger.DEFAULT_RETENTION_DAYS).let { d ->
+            if (d in AUDIT_RETENTION_CHOICES) d else com.agent.mobile.audit.AuditLogger.DEFAULT_RETENTION_DAYS
+        }
+
+    fun saveAuditRetentionDays(days: Int) {
+        prefs.edit().putInt(KEY_AUDIT_RETENTION_DAYS, days).apply()
+    }
+
+    /** Daily summary of all runs (notification, and Telegram when delivery is on). Off by default. */
+    fun loadDailyReport(): Boolean = prefs.getBoolean(KEY_DAILY_REPORT, false)
+
+    fun saveDailyReport(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_DAILY_REPORT, enabled).apply()
     }
 
     // --- Legal consent ------------------------------------------------------------------------

@@ -29,8 +29,8 @@ enum class SecurityPreset(
         description = "All terminal commands require review. The agent can read or write to any file in the machine."
     ),
     TURBO(
-        title = "Turbo mode",
-        description = "Fully autonomous: nothing asks for approval. Only catastrophic commands stay blocked. Use with care."
+        title = "Unattended (Turbo)",
+        description = "Runs finish without asking anybody: fixed rules allow or refuse each sensitive action, everything is logged and every run ends with a report. Needs a one-time opt-in; the floor (banking apps, security settings, AMC itself) stays blocked."
     ),
     CUSTOM(
         title = "Custom",
