@@ -233,4 +233,37 @@ class UnattendedRunTest {
         assertFalse(result.success)
         assertTrue(RunRegistry.active.value.none { it.runId == result.runId })
     }
+
+    /** #5 and #22: text alone does not end an unattended run; questions are recorded and decided. */
+    @Test
+    fun textDoesNotEndTheRunAndFinishTaskCarriesTheStatus() = runBlocking {
+        llm.reply("I will now check the backup folder.")
+        llm.step { body ->
+            assertTrue("The run was nudged", body.toString().contains("call finish_task"))
+            ScriptedLlm.sse(ScriptedLlm.toolChunk("q1", "ask_user", JSONObject().put("question", "Which folder?")))
+        }
+        llm.step { body ->
+            assertTrue(ScriptedLlm.lastToolResult(body).contains("Nobody can answer"))
+            ScriptedLlm.sse(ScriptedLlm.toolChunk("f1", "finish_task", JSONObject().put("summary", "Backup folder missing; nothing copied.").put("status", "blocked")))
+        }
+        val e = engine()
+        val result = e.runUnattended("⏰ Backup", "Copy my photos to the backup folder")
+        assertEquals("Backup folder missing; nothing copied.", result.summary)
+        assertFalse("blocked is not a success", result.success)
+        assertEquals(3, llm.requests.size)
+        val tools = llm.requests.first().getJSONArray("tools").toString()
+        assertTrue(tools.contains("finish_task"))
+        val report = com.agent.mobile.audit.RunReport.build("t", "g", result.summary, result.success, audit())
+        assertEquals(listOf("Which folder?"), report.questions)
+    }
+
+    @Test
+    fun finishAndAskAreOnlyOfferedInUnattendedMode() = runBlocking {
+        llm.reply("ok")
+        val e = engine(settings = null)
+        e.runUnattended("t", "hi")
+        val tools = llm.requests.first().getJSONArray("tools").toString()
+        assertFalse(tools.contains("finish_task"))
+        assertFalse(tools.contains("ask_user"))
+    }
 }

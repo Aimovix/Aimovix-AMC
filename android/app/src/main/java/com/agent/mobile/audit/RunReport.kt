@@ -21,6 +21,8 @@ data class RunReport(
     val autoDenied: List<String>,
     val blocked: List<String>,
     val errors: List<String>,
+    /** Questions the agent recorded with ask_user (nobody could answer them during the run). */
+    val questions: List<String>,
     val toolCalls: Int,
     val endReason: String?
 ) {
@@ -39,6 +41,7 @@ data class RunReport(
         section("Refused by the unattended rules", autoDenied)
         section("Blocked", blocked)
         section("Errors", errors)
+        section("Questions for you (the agent decided itself)", questions)
     }.trim().take(maxChars)
 
     private fun StringBuilder.section(name: String, items: List<String>) {
@@ -79,12 +82,15 @@ data class RunReport(
             val denied = calls.filter { it.decision == AuditDecision.AUTO_DENIED.name }.map { "${describe(e = it)} — ${it.reason}" }
             val blocked = calls.filter { it.decision == AuditDecision.BLOCKED.name }.map { "${describe(it)} — ${it.reason}" }
             val errors = ran.filter { (it.exitCode ?: 0) != 0 }.map { "${describe(it)} (exit ${it.exitCode}): ${it.resultSummary.take(100)}" }
+            val questions = calls.filter { it.tool == AgentTools.ASK_USER }.map { arg(it, "question") }.filter { it.isNotBlank() }
+            val finish = calls.lastOrNull { it.tool == AgentTools.FINISH_TASK }?.let { arg(it, "status") }
             val outcome = when {
-                !success -> Outcome.BLOCKED
+                !success || finish == "blocked" -> Outcome.BLOCKED
+                finish == "partial" -> Outcome.PARTIAL
                 denied.isNotEmpty() || blocked.isNotEmpty() -> Outcome.PARTIAL
                 else -> Outcome.DONE
             }
-            return RunReport(title, goal, outcome, summary, files, apps, sent, denied, blocked, errors, calls.size, endReason)
+            return RunReport(title, goal, outcome, summary, files, apps, sent, denied, blocked, errors, questions, calls.size, endReason)
         }
 
         private fun describe(e: AuditEventEntity): String {

@@ -32,6 +32,13 @@ object AgentTools {
     const val DELEGATE_TASK = "delegate_task"
     const val SEARCH_HISTORY = "search_history"
     const val SEND_FILE = "send_file"
+    /** Unattended runs only: ends the task with a summary and an honest status (#5). */
+    const val FINISH_TASK = "finish_task"
+    /** Unattended runs only: a question nobody can answer; the agent decides itself (#22). */
+    const val ASK_USER = "ask_user"
+
+    /** Tools offered only in unattended mode. */
+    val UNATTENDED_ONLY: Set<String> = setOf(FINISH_TASK, ASK_USER)
 
     enum class ParamType(val jsonType: String, val geminiType: String) {
         STRING("string", "STRING"),
@@ -174,6 +181,21 @@ object AgentTools {
             CANCEL_SCHEDULED_TASK,
             "Cancel a scheduled background task.",
             listOf(Param("task_id", ParamType.STRING, "The id returned by schedule_task or list_scheduled_tasks."))
+        ),
+        Definition(
+            FINISH_TASK,
+            "End this unattended run. Call it exactly once, when the task is complete or cannot be completed. " +
+                "The summary is the report the user reads, so say what was done, what was refused or skipped and why.",
+            listOf(
+                Param("summary", ParamType.STRING, "Short final report for the user."),
+                Param("status", ParamType.STRING, "'done' (everything finished), 'partial' (some parts left) or 'blocked' (could not do the task).")
+            )
+        ),
+        Definition(
+            ASK_USER,
+            "Record a question for the user. Nobody can answer during an unattended run: you get no answer, so decide " +
+                "yourself with the most reasonable assumption (and state it in the summary) or skip that part.",
+            listOf(Param("question", ParamType.STRING, "The question you would ask."))
         )
     )
 
@@ -190,7 +212,7 @@ object AgentTools {
      * and small models choose more reliably from a short list.
      */
     val LOCAL_PROFILE: Set<String> = setOf(
-        EXECUTE_COMMAND, READ_FILE, WRITE_FILE, REMEMBER, NOTIFY_USER, WEB_SEARCH,
+        EXECUTE_COMMAND, READ_FILE, WRITE_FILE, REMEMBER, NOTIFY_USER, WEB_SEARCH, FINISH_TASK,
         PhoneTools.SCREEN_READ, PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL,
         PhoneTools.SCREEN_GLOBAL, PhoneTools.OPEN_APP
     )
@@ -295,6 +317,8 @@ object AgentTools {
             DELEGATE_TASK -> "delegate_task: ${a["task"].orEmpty().replace('\n', ' ').take(160)}"
             SEARCH_HISTORY -> "search_history: ${a["query"].orEmpty().take(120)}"
             SEND_FILE -> "send_file ${a["path"].orEmpty()}"
+            FINISH_TASK -> "finish_task (${a["status"].orEmpty()})"
+            ASK_USER -> "ask_user: ${a["question"].orEmpty().take(160)}"
             else -> "${call.name} ${JSONObject(a as Map<*, *>)}"
         }
     }
@@ -401,6 +425,9 @@ object AgentTools {
                 }
             }
             CANCEL_SCHEDULED_TASK -> SecurityAssessment(RiskLevel.LOW, "Cancelling a background task")
+            FINISH_TASK -> if (a["summary"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A summary is required.")
+                else SecurityAssessment(RiskLevel.LOW, "Ends the run with a report")
+            ASK_USER -> SecurityAssessment(RiskLevel.LOW, "Records a question (nobody can answer unattended)")
             SCHEDULE_TASK -> {
                 if (a["prompt"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A prompt is required.")
                 else SecurityAssessment(RiskLevel.MEDIUM, "Scheduling unattended background work")

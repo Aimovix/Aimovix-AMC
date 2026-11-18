@@ -86,6 +86,9 @@ class AutonomousAgentEngine(
             skillsCache = null
         }
 
+        /** Reminders per unattended run to end with finish_task instead of plain text. */
+        const val MAX_FINISH_NUDGES = 2
+
         /** Consecutive failed tool calls after which the agent is told to rethink its approach. */
         private const val REFLECTION_THRESHOLD = 3
         private const val MAX_CONSECUTIVE_ERRORS = 5
@@ -283,6 +286,14 @@ class AutonomousAgentEngine(
     /** Tools hidden from the model in the current run (base exclusions plus phone control rules for the mode). */
     @Volatile
     private var excludedTools: Set<String> = baseExcludedTools + PhoneTools.ALL_NAMES
+
+    /** True while the current run is in unattended mode (offers finish_task and ask_user). */
+    @Volatile
+    private var unattendedRun = false
+
+    /** The final reply finish_task produced in the current step (added after the tool results). */
+    @Volatile
+    private var pendingFinal: ChatMessage? = null
 
     /** Job of the running headless loop, cancelled by the phone control Stop button. */
     @Volatile
@@ -716,6 +727,7 @@ class AutonomousAgentEngine(
         val lastThought = turn.lastOrNull { it.role == MessageRole.ASSISTANT && it.text.isNotBlank() }
         if (finalReply == null) success = false
         if (state.limitReached != null) success = false
+        if (state.finishStatus == "blocked") success = false
         val summary = finalReply?.text?.trim()
             ?: listOfNotNull(lastThought?.text?.trim(), lastSystem?.text).joinToString("\n\n").ifBlank { null }
             ?: "The task finished without a summary."
@@ -848,6 +860,12 @@ class AutonomousAgentEngine(
         var limitReached: String? = null
         /** Actions the unattended rules refused ("what — why"), for the run report. */
         val autoDenied = mutableListOf<String>()
+        /** Running summary of steps that no longer fit into the context (#4). */
+        var contextSummary: ContextCompactor.Summary? = null
+        /** finish_task was called: "done", "partial" or "blocked" (#5). */
+        var finishStatus: String? = null
+        /** Reminders to call finish_task after a text-only reply (at most two per run). */
+        var finishNudges = 0
     }
 
     /** Unattended settings when unattended mode is on for this engine right now, else null. */
@@ -900,6 +918,11 @@ class AutonomousAgentEngine(
 
     /** Tools the model may not use in [mode]. */
     private fun excludedFor(mode: RunMode): Set<String> {
+        val modeOnly = if (unattendedRun) emptySet() else AgentTools.UNATTENDED_ONLY
+        return excludedForPhone(mode) + modeOnly
+    }
+
+    private fun excludedForPhone(mode: RunMode): Set<String> {
         val p = phone ?: return baseExcludedTools + PhoneTools.ALL_NAMES + localProfileExcluded()
         val phoneExcluded = try {
             p.excludedTools(mode)
@@ -952,6 +975,8 @@ class AutonomousAgentEngine(
         state.mode = mode
         if (mode == RunMode.INTERACTIVE) state.unattended = unattendedSettings()
         if (state.unattended != null) state.guard = inheritedGuard?.fork() ?: buildGuard()
+        unattendedRun = state.unattended != null
+        state.contextSummary = ContextCompactor.latest(_messages.value)
         // Built once per run so the prompt prefix stays identical between steps (prompt caching).
         val systemPrompt = AgentPrompts.build(
             memory = memoryStore?.asPromptText().orEmpty(),
@@ -1058,6 +1083,52 @@ class AutonomousAgentEngine(
         appendSystemMessage("📋 Run report (unattended mode)\n" + report.toText(2_000), sessionId)
     }
 
+    /**
+     * Folds steps that fell out of the context window into the running summary (#4): once enough
+     * new ones dropped, one model call without tools writes the summary (an extractive one when
+     * that fails). The summary is stored in the session and appended to the pinned task.
+     */
+    private suspend fun maybeCompact(sessionId: String, state: LoopState, history: List<ChatMessage>) {
+        val nonSystem = history.filter { it.role != MessageRole.SYSTEM }
+        val root = taskRootIndex(nonSystem)
+        if (root < 0) return
+        val window = prepareContextMessages(history)
+        val dropped = ContextCompactor.uncoveredDropped(nonSystem, root, window, state.contextSummary)
+        if (dropped.size < ContextCompactor.MIN_NEW_DROPPED) return
+        val previous = state.contextSummary
+        val text = try {
+            summarizeWithModel(ContextCompactor.transcript(previous, dropped))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Context summary failed: ${e.message}")
+            null
+        } ?: ContextCompactor.extractive(previous, dropped)
+        val summary = ContextCompactor.Summary(text.take(ContextCompactor.MAX_SUMMARY_CHARS), dropped.last().id)
+        state.contextSummary = summary
+        appendSystemMessage(ContextCompactor.stored(summary), sessionId)
+    }
+
+    /** One model call without tools; null when it fails or returns nothing. */
+    private suspend fun summarizeWithModel(transcript: String): String? = withTimeoutOrNull(90_000L) {
+        var text: String? = null
+        llmClient.streamRequest(
+            config = _modelConfig.value,
+            systemPrompt = ContextCompactor.SYSTEM_PROMPT,
+            messages = listOf(ChatMessage(role = MessageRole.USER, text = transcript)),
+            excludedTools = AgentTools.ALL.map { it.name }.toSet()
+        ).collect { event ->
+            when (event) {
+                is LlmClient.LlmStreamEvent.Completed -> {
+                    text = event.fullText
+                    recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd)
+                }
+                else -> Unit
+            }
+        }
+        text?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
     /** Lists installed skills through the bridge (cached for a few minutes; empty when offline). */
     private suspend fun loadSkillsIndex(): String {
         val cached = skillsCache
@@ -1119,7 +1190,10 @@ class AutonomousAgentEngine(
         while (!streamCompleted && currentCoroutineContext().isActive) {
             attemptOnProvider++
             try {
-                val contextMessages = prepareContextMessages(_messages.value.filter { it.id != assistantMsgId })
+                val history = _messages.value.filter { it.id != assistantMsgId }
+                if (attemptOnProvider == 1 && !isUsingFallback) maybeCompact(executionSessionId, state, history)
+                val pinned = state.contextSummary?.let { ContextCompactor.pinnedBlock(it.text, _plan.value) }
+                val contextMessages = prepareContextMessages(history, pinned = pinned)
                 llmClient.streamRequest(
                     config = activeConfig,
                     systemPrompt = systemPrompt,
@@ -1214,6 +1288,21 @@ class AutonomousAgentEngine(
 
         if (detectedTools.isEmpty()) {
             _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
+            if (state.unattended != null && state.finishStatus == null && state.finishNudges < MAX_FINISH_NUDGES) {
+                // Unattended: a reply without tools is not the end yet (it may announce work or ask a
+                // question nobody can answer). Ask once or twice for finish_task or the next action (#5).
+                state.finishNudges++
+                val nudge = ChatMessage(
+                    role = MessageRole.USER,
+                    text = "$AGENT_NOTE_PREFIX Unattended run: nobody reads replies until the run ends and nobody can answer " +
+                        "questions. If work is left, continue with your tools now (decide open questions yourself and state your " +
+                        "assumption). If the task is complete or cannot be completed, call finish_task with the summary and the status.",
+                    status = MessageStatus.COMPLETED
+                )
+                _messages.value = _messages.value + nudge
+                chatRepository?.saveMessage(executionSessionId, nudge)
+                return StepOutcome.CONTINUE
+            }
             if (textCutOff && !state.continuedAfterCutOff) {
                 // The reply hit the output limit mid-way: let the model finish it once instead of ending here.
                 state.continuedAfterCutOff = true
@@ -1265,6 +1354,13 @@ class AutonomousAgentEngine(
             chatRepository?.saveMessage(executionSessionId, vision)
         }
         _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
+        pendingFinal?.let { final ->
+            // finish_task: its summary closes the turn as a normal final reply.
+            pendingFinal = null
+            val msg = final.copy(timestamp = System.currentTimeMillis())
+            _messages.value = _messages.value + msg
+            chatRepository?.saveMessage(executionSessionId, msg)
+        }
 
         return if (state.stopRequested) StepOutcome.STOP else StepOutcome.CONTINUE
     }
@@ -1911,6 +2007,20 @@ class AutonomousAgentEngine(
             }
             AgentTools.DELEGATE_TASK -> runSubAgent(call, assistantMsgId, mode, skippedApprovals, state)
             AgentTools.SEND_FILE -> sendFile(call)
+            AgentTools.FINISH_TASK -> {
+                val status = a["status"].orEmpty().trim().lowercase().takeIf { it in setOf("done", "partial", "blocked") } ?: "done"
+                state.finishStatus = status
+                state.stopRequested = true
+                // The summary becomes the run's final reply (notification, Telegram, report).
+                val summary = a["summary"].orEmpty().trim()
+                val reply = ChatMessage(role = MessageRole.ASSISTANT, text = summary, status = MessageStatus.COMPLETED)
+                pendingFinal = reply
+                ok("Run finished with status '$status'.")
+            }
+            AgentTools.ASK_USER -> ok(
+                "Nobody can answer during this unattended run. Decide yourself with the most reasonable assumption and " +
+                    "state it in your summary, or skip this part. The question is recorded for the user's report."
+            )
             else -> fail("Unknown tool '${call.name}'.")
         }
     }
@@ -2310,7 +2420,9 @@ class AutonomousAgentEngine(
     internal fun prepareContextMessages(
         allMessages: List<ChatMessage>,
         maxMessages: Int = 40,
-        maxCharBudget: Int = 120_000
+        maxCharBudget: Int = 120_000,
+        /** Summary of dropped steps and the current plan, appended to the pinned task (#4). */
+        pinned: String? = null
     ): List<ChatMessage> {
         val nonSystem = repairToolPairs(allMessages.filter { it.role != MessageRole.SYSTEM })
         if (nonSystem.isEmpty()) return emptyList()
@@ -2359,6 +2471,11 @@ class AutonomousAgentEngine(
         }
 
         maskSupersededScreens(window)
+
+        // The record of earlier steps travels with the pinned task, so it survives every trim.
+        if (pinned != null && root >= 0 && window.isNotEmpty() && window[0].id == nonSystem[root].id) {
+            window[0] = window[0].copy(text = window[0].text + pinned)
+        }
 
         // Keep images only on the most recent messages.
         val imageIndices = window.indices.filter { window[it].imageBase64 != null }

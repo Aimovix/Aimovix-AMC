@@ -366,7 +366,8 @@ class LlmClient(
             msgs.put(mObj)
         }
         root.put("messages", msgs)
-        root.put("tools", com.agent.mobile.agent.AgentTools.openAiTools(excludedTools))
+        // A request without tools (e.g. the context summary) must not send an empty list: providers reject it.
+        com.agent.mobile.agent.AgentTools.openAiTools(excludedTools).takeIf { it.length() > 0 }?.let { root.put("tools", it) }
 
         val trimmedBase = config.baseUrl.trimEnd('/')
         val url = if (trimmedBase.endsWith("/chat/completions")) {
@@ -621,7 +622,7 @@ class LlmClient(
         root.put("contents", contents)
 
         val funcDecls = com.agent.mobile.agent.AgentTools.geminiFunctionDeclarations(excludedTools)
-        root.put("tools", JSONArray().put(JSONObject().put("function_declarations", funcDecls)))
+        if (funcDecls.length() > 0) root.put("tools", JSONArray().put(JSONObject().put("function_declarations", funcDecls)))
 
         val cleanKey = config.apiKey.removePrefix("Bearer ").removePrefix("bearer ").trim()
         if (cleanKey.isEmpty()) {
@@ -830,7 +831,7 @@ class LlmClient(
         root.put("stream", true)
 
         val toolsArr = com.agent.mobile.agent.AgentTools.claudeTools(excludedTools)
-        root.put("tools", toolsArr)
+        if (toolsArr.length() > 0) root.put("tools", toolsArr)
 
         val msgs = JSONArray()
         for (m in messages) {
