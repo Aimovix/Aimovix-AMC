@@ -35,3 +35,21 @@ Reihenfolge laut Auftrag: Teil D (Fehlerprüfung) → Teil A + B (Unattended-Mod
 **Tests:** nur Doku geändert, kein Build nötig.
 
 **Offen:** Behebung in Reihenfolge der Schwere (nächste Einträge).
+
+## 2026-11-18 22:45 – Teil D: Fehler #29–#37 und #39 behoben
+
+**Was:** Zehn Befunde mit je einem Regressionstest behoben, jeweils ein eigener Commit:
+- #29 Batch-Aktionen nutzen jetzt die Sperrliste aus den Einstellungen (ca1b6f5).
+- #30 Shell-Befehle, die das Bridge-Token lesen/kopieren/ändern oder `amc token` aufrufen, sind in jedem Modus gesperrt – auch in Skripten (623b2f9). Das ist bereits Teil der „Untergrenze" aus Teil A.
+- #34 Entfernte eigene Regeln wirken sofort nicht mehr (623b2f9).
+- #31/#32 Gemini: abgerissene Antworten werden wiederholt statt als fertig gewertet, Überlastung wird wiederholt, API-Schlüssel nur noch im Header (d088cab).
+- #33 Stopp beendet nur noch den eigenen Befehl des Agenten, nicht mehr den im Terminal-Tab (80de080). Dafür gibt es jetzt einen Fake-Bridge-Daemon für Engine-Tests.
+- #37 `web_fetch http://…` wird für fremde Server automatisch über https geholt (bea891f).
+- #35/#36 Tab bleibt beim Drehen erhalten; Regel-Chips sind mit 48-dp-Fläche und TalkBack-Text entfernbar (ba575f1). Dafür Compose-UI-Tests unter Robolectric eingerichtet.
+- #39 Entkoppeln eines Telegram-Kontos in der App stoppt dessen laufende Aufgabe (a658e72).
+
+**Warum so:** Jeweils der kleinste Eingriff, der den Auslöser beseitigt (z. B. Sperrliste durchreichen statt Executor umbauen).
+
+**Tests:** Gradle 372 Unit-Tests grün (vorher 361, +11 neue), Debug-APK gebaut; Python 51 grün; `bash -n` ok; E2E 236 grün.
+
+**Offen:** #38 (Audit-Tabelle unbegrenzt) wird mit dem neuen Audit in Teil B behoben.
