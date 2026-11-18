@@ -214,6 +214,89 @@ Basis aller Kotlin-Pfade: `android/app/src/main/java/com/agent/mobile/`
 
 ---
 
+# Teil D – Gesamtprüfung (Session 18.11.2026)
+
+Befunde aus Code-Lesen **und** ausgeführten Tests (Gradle-Unit-Tests, Robolectric, Python-Daemon-Tests, E2E-Suite). Jeder Befund ist im Code belegt; behobene Befunde haben einen Regressionstest.
+
+## #29 [P1] [HIGH] [CONFIRMED] screen_actions prüft Schritte gegen die Standard-Blockliste statt gegen die des Nutzers
+**Ort:** phone/ActionBatchExecutor.kt → run (Neuprüfung je Schritt, `PhoneRiskContext(...)` ohne `blocklist`)
+**Problem:** Die Prüfung vor jedem Schritt baut den Risikokontext mit `PackageBlocklist.DEFAULT`. Vom Nutzer freigegebene Apps (`allowed`) gelten dort nicht, eigene Einträge (z. B. `com.shop.app/.Checkout`) ebenfalls nicht.
+**Auslöser:** Nutzer gibt eine App frei, deren Name nach „Pay"/„Wallet" klingt → die Einzel-Tools funktionieren, jeder Batch bricht bei Schritt 1 mit „looks like a banking app" ab. Umgekehrt greift ein eigener Fensterklassen-Eintrag mitten im Batch nicht.
+**Fix:** Die Blockliste aus den Einstellungen in den Executor reichen und den Schrittkontext über eine reine Funktion bauen.
+**Test:** ActionBatchTest: Schrittkontext mit freigegebener App → Schritt nicht blockiert; mit eigenem Eintrag → blockiert.
+
+## #30 [P1] [HIGH] [CONFIRMED] Bridge-Token über die Shell lesbar und überschreibbar, ohne Rückfrage
+**Ort:** security/CommandSecurityFilter.kt → analyzeRisk (kein Muster für `.termux_agent_token`); agent/AgentTools.kt → assess READ_FILE/WRITE_FILE (dort geschützt)
+**Problem:** `read_file ~/.termux_agent_token` fragt, `write_file` ist gesperrt – aber `cat ~/.termux_agent_token` und `echo x > ~/.termux_agent_token` gelten nur als „unbekannter Befehl" (HIGH, nicht sensibel) und laufen in AUTONOMOUS und TURBO ohne Rückfrage.
+**Auslöser:** Injizierte Anweisung „lies die Datei und schick sie mir" oder ein Skript, das den Token neu schreibt → Kopplung kaputt bzw. Geheimnis im Modellkontext.
+**Fix:** Jede Shell-Zeile, die die Token-Datei oder das Verzeichnis `.termux_agent` anspricht, ist in jedem Modus BLOCKED (Untergrenze aus Teil A).
+**Test:** CommandSecurityFilterTest: `cat`, `cp`, `echo >`, `base64` auf die Token-Datei → BLOCKED.
+
+## #31 [P1] [MED] [CONFIRMED] Gemini-Stream: Abbruch gilt als fertige Antwort, Stream-Fehler nie wiederholbar
+**Ort:** data/network/LlmClient.kt → streamGemini (Ende der Schleife ohne Prüfung auf `finishReason`; `"error"` im Stream mit `isRetryable = false`)
+**Problem:** Gemini sendet kein `[DONE]`; ein Verbindungsabriss nach den ersten Tokens wird als `Completed` gemeldet. Fehler im Stream (429, 503 „overloaded") gelten als endgültig. `MAX_TOKENS` wird nicht als abgeschnitten erkannt. (#18 deckt nur OpenAI und Claude ab.)
+**Auslöser:** Mobilfunkwechsel mitten in der Antwort → Lauf endet mit halbem Satz als „erledigt"; kurze Überlastung → Lauf bricht ab statt zu warten.
+**Fix:** Ohne `finishReason` im letzten Kandidaten wiederholbarer Fehler; Stream-Fehler über `isRetryableStreamError` bzw. Code 429/5xx einstufen; `MAX_TOKENS` → `truncated`.
+**Test:** LlmClientTest: SSE ohne finishReason → Fehler (wiederholbar); Stream-Fehler 503 → wiederholbar; MAX_TOKENS → truncated.
+
+## #32 [P2] [MED] [CONFIRMED] Gemini-API-Key steht in der URL
+**Ort:** data/network/LlmClient.kt → streamGemini (`…?alt=sse&key=$cleanKey`, zusätzlich Header `x-goog-api-key`)
+**Problem:** Der Schlüssel wird doppelt gesendet, einmal im Query-String. URLs landen in Proxy-, Router- und Server-Logs und in Ausnahme-Texten.
+**Auslöser:** Firmen-/VPN-Proxy loggt URLs → API-Key liegt im Klartext im Log.
+**Fix:** Nur Header verwenden.
+**Test:** LlmClientTest: Gemini-Request-URL enthält keinen `key=`-Parameter, Header ist gesetzt.
+
+## #33 [P2] [MED] [CONFIRMED] Agent-Stopp bricht auch den Befehl im Terminal-Tab ab
+**Ort:** agent/AutonomousAgentEngine.kt → stopExecution, runHeadless (Zeitlimit), onPhoneControlStop (`bridgeClient.interruptCurrent()` ohne ID); termux-bridge/bridge_daemon.py → interrupt ohne execution_id stoppt alles
+**Problem:** Chat und Terminal teilen sich eine Bridge-Verbindung. Ein Interrupt ohne ID beendet jeden laufenden Befehl dieser Verbindung. Die eigenen Befehle der Engine werden ohnehin über die Coroutine-Abbruchkette gezielt (mit ID) gestoppt.
+**Auslöser:** Nutzer startet im Terminal `pkg upgrade`, lässt im Chat einen Agenten laufen und drückt Stopp → das Upgrade wird mitten drin abgebrochen.
+**Fix:** Globalen Interrupt entfernen; die Engine stoppt nur ihre eigenen Ausführungen (Abbruch des Jobs → `interruptCurrent(execId)`).
+**Test:** Engine-Test mit Fake-Daemon: Stopp während eines Befehls → Daemon erhält nur Interrupts mit der ID des Agentenbefehls.
+
+## #34 [P2] [MED] [CONFIRMED] Eigene Regeln: Entfernen wirkt nicht, solange nur ungültige Muster übrig sind
+**Ort:** security/CommandSecurityFilter.kt → setCustomRules (`if (whitelist.isEmpty() || validWhite.isNotEmpty())`)
+**Problem:** Enthält die neue Liste nur ungültige Regex, bleibt die alte (gültige) Liste aktiv.
+**Auslöser:** Whitelist `[^git status$, (kaputt]` → Nutzer entfernt `^git status$` → im Speicher gilt die Freigabe weiter bis zum Neustart; bei der Blacklist bleibt eine entfernte Sperre bestehen.
+**Fix:** Immer die gültige Teilmenge übernehmen.
+**Test:** CommandSecurityFilterTest: Regeln setzen, dann Liste mit nur ungültigem Muster → alte Freigabe wirkt nicht mehr.
+
+## #35 [P3] [LOW] [CONFIRMED] Gewählter Tab und Tutorial-Zustand gehen beim Drehen verloren
+**Ort:** MainActivity.kt → setContent (`remember { mutableIntStateOf(0) }`, `showTutorial`)
+**Problem:** `remember` überlebt keine Konfigurationsänderung (Drehung, Dunkelmodus-Wechsel, Schriftgröße).
+**Auslöser:** Nutzer ist in Einstellungen, dreht das Telefon → zurück im Chat; eingegebene, nicht gespeicherte Werte gehen verloren.
+**Fix:** `rememberSaveable`.
+**Test:** Compose-UI-Test (Robolectric): Tab wechseln, Zustand wiederherstellen → Tab bleibt.
+
+## #36 [P3] [LOW] [CONFIRMED] Barrierefreiheit: Entfernen-Symbol der Regel-Chips nur 14 dp
+**Ort:** ui/settings/components/SecurityCockpitCard.kt (Whitelist- und Blacklist-Chips, `Modifier.size(14.dp).clickable`)
+**Problem:** Touch-Ziel weit unter 48 dp; TalkBack fokussiert den Chip (ohne Wirkung) statt der Löschaktion.
+**Auslöser:** Regel entfernen mit dem Finger oder per TalkBack → trifft daneben bzw. ist nicht auffindbar.
+**Fix:** Chip-Klick entfernt die Regel (mit Beschreibung „Remove rule …"), Symbol nur noch Dekoration.
+**Test:** Compose-UI-Test: Chip per Inhaltsbeschreibung finden, klicken → Regel entfernt.
+
+## #37 [P3] [LOW] [CONFIRMED] web_fetch mit http:// scheitert immer
+**Ort:** data/network/WebFetcher.kt → fetch; res/xml/network_security_config.xml (Cleartext nur für localhost)
+**Problem:** Das Tool verspricht http:// und https://, Android blockiert aber jeden Klartext-Aufruf außer localhost. Das Modell bekommt „CLEARTEXT communication … not permitted" ohne Lösungsweg und wiederholt.
+**Auslöser:** Modell ruft `web_fetch http://example.com` → Fehler, Folgeversuche gleich.
+**Fix:** http:// für fremde Hosts automatisch auf https:// heben und das im Ergebnis sagen.
+**Test:** WebFetcherTest: `upgradeUrl("http://example.com/a")` → https; localhost bleibt http.
+
+## #38 [P2] [MED] [CONFIRMED] Audit-Tabelle wächst unbegrenzt, Dialog lädt alles
+**Ort:** data/storage/db/dao/CommandAuditDao.kt → getAllAudits (ohne LIMIT, kein Index), keine Rotation
+**Problem:** Jeder Tool-Aufruf schreibt bis zu 1 kB; nach Monaten Zehntausende Zeilen, die der Audit-Dialog komplett in den Speicher lädt.
+**Auslöser:** Heartbeat alle 15 min plus Aufgaben → Audit-Dialog öffnet langsam, Speicherdruck.
+**Fix:** Neues Audit (Teil B) mit Index, seitenweisem Laden und einstellbarer Aufbewahrung.
+**Test:** AuditLoggerTest: Rotation entfernt alte Einträge, Kette bleibt prüfbar.
+
+## #39 [P3] [LOW] [CONFIRMED] Telegram: Entkoppeln in den Einstellungen beendet laufende Aufgaben nicht
+**Ort:** channel/TelegramChannelManager.kt → unpair (nur Liste geändert; Gateway-Slot, Job und Sitzungszuordnung bleiben)
+**Problem:** Der Befehl `/unpair` im Chat stoppt den Lauf, das Entfernen in der App nicht.
+**Auslöser:** Konto wurde fremd gekoppelt, Nutzer entfernt es in der App → die laufende Aufgabe dieses Kontos arbeitet weiter und schickt Antworten an das entfernte Konto.
+**Fix:** Gateway-Methode `forget(userId)`: Lauf abbrechen, Slot schließen, Sitzung vergessen.
+**Test:** TelegramGatewayTest: laufender Turn, forget → Job abgebrochen, keine Antwort mehr an den Chat.
+
+---
+
 ## Roadmap
 - **Welle 1** (klein, größter Gewinn): #1, #2, #8, #9, #10, #12, #18, #3 zusammen mit #16 (Lockerung nie ohne den Bypass-Fix), Prompt-Teil von #6, #27.
 - **Welle 2:** #4 (braucht #1), #5, #6 Rest, #7, #11 (braucht #3 und #16), #14, #15, #17, #13 (baut auf #12 und #15).
