@@ -184,6 +184,7 @@ class TelegramGateway(
                     }
                     initialized = true
                     _status.value = Status.Running(me.username)
+                    resumePendingTurns()
                 }
                 val updates = api.getUpdates(store.get().offset, pollTimeoutSeconds)
                 backoffMs = 2_000L
@@ -226,6 +227,22 @@ class TelegramGateway(
     }
 
     private suspend fun currentCoroutineIsActive(): Boolean = currentCoroutineContext().isActive
+
+    /** Messages that were in work when AMC stopped (#7): continue them in their conversation. */
+    internal suspend fun resumePendingTurns() {
+        val pending = store.get().pendingTurns
+        for ((chatId, text) in pending) {
+            if (!store.get().isPaired(chatId) || chats[chatId]?.job?.isActive == true) {
+                store.update { it.copy(pendingTurns = it.pendingTurns - chatId) }
+                continue
+            }
+            send(chatId, "♻️ AMC was restarted while working on your message. Continuing it now.")
+            val m = TelegramBotApi.Message(messageId = 0, chatId = chatId, chatType = "private", fromId = chatId, fromName = "", text = "")
+            val note = "${com.agent.mobile.agent.ResumeRequest.RESTART_NOTE}\n\nThe message you were working on: $text"
+            val slot = chats.getOrPut(chatId) { ChatSlot(agentFactory(chatId)) }
+            slot.job = scope.launch { runTurn(m, note, slot) }
+        }
+    }
 
     // -------------------------------------------------------------------------------------------
     // Updates
@@ -372,6 +389,9 @@ class TelegramGateway(
                 delay(4_500L)
             }
         }
+        // Remembered until the turn ends: if AMC dies meanwhile, the next start continues it (#7).
+        store.update { it.copy(pendingTurns = it.pendingTurns + (chatId to text.ifBlank { "(photo)" }.take(2_000))) }
+        var finishedNormally = false
         try {
             var imageBase64: String? = null
             m.photoFileId?.let { fileId ->
@@ -415,14 +435,19 @@ class TelegramGateway(
                 result.limitReached?.let { append("\n\nRun ended: limit reached ($it).") }
             }
             sendReply(chatId, reply)
+            finishedNormally = true
         } catch (e: CancellationException) {
+            // /stop or unpairing: the user ended it, nothing to continue later.
+            finishedNormally = true
             if (store.get().isPaired(m.fromId)) withContext(NonCancellable) { trySend(chatId, "🛑 Stopped.") }
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Telegram turn failed: ${e.message}", e)
             trySend(chatId, "⚠️ Something went wrong: ${e.message}")
+            finishedNormally = true
         } finally {
             typing.cancel()
+            if (finishedNormally) store.update { it.copy(pendingTurns = it.pendingTurns - chatId) }
             onTurnActive(false)
         }
     }

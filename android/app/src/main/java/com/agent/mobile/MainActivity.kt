@@ -66,6 +66,15 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
             personaStore = runtime.personaStore,
             phone = runtime.phoneController
         )
+        // Chat runs survive the app being closed or killed (#7): checkpoint them, continue stale ones.
+        agentEngine.runCheckpointer = runtime.runCheckpointer
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                runtime.runCheckpointer.resumeInterrupted(com.agent.mobile.agent.RunRegistry.active.value.map { it.runId }.toSet())
+            } catch (e: Exception) {
+                android.util.Log.w("MainViewModel", "Could not continue interrupted runs: ${e.message}")
+            }
+        }
         // A finished local model setup changes the model; also continue a setup that stopped half-way.
         viewModelScope.launch {
             com.agent.mobile.service.scheduler.LocalModelSetupWorker.activated.collect { agentEngine.reloadSettings() }
@@ -113,7 +122,8 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
     override fun onCleared() {
         super.onCleared()
         if (::agentEngine.isInitialized) {
-            agentEngine.close()
+            // A running chat task continues in the background instead of being lost (#7).
+            agentEngine.handOffAndClose()
         }
         // Note: bridgeClient is decoupled from ViewModel/Activity lifecycle so that
         // background operations and AgentForegroundService maintain bridge persistence.

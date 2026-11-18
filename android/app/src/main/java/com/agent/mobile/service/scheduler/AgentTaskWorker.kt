@@ -38,6 +38,8 @@ class AgentTaskWorker(
         const val KEY_ORIGIN_KIND = "agent_task_origin_kind"
         /** What started the task (RunTrigger): SCHEDULE by default, NOTIFICATION for notification triggers. */
         const val KEY_TRIGGER = "agent_task_trigger"
+        /** Note a continuation starts with (restart or hand-off of a chat run, #7). */
+        const val KEY_NOTE = "agent_task_note"
         const val KIND_TASK = "task"
         const val KIND_HEARTBEAT = "heartbeat"
         const val KIND_RESUME = "resume"
@@ -194,7 +196,7 @@ class AgentTaskWorker(
                 Plan(
                     title = inputData.getString(KEY_TITLE) ?: "Background task",
                     originKind = inputData.getString(KEY_ORIGIN_KIND) ?: KIND_TASK,
-                    resume = ResumeRequest(sessionId, ResumeRequest.CONTINUE_NOTE, chain = inputData.getInt(KEY_CHAIN, 1)),
+                    resume = ResumeRequest(sessionId, inputData.getString(KEY_NOTE) ?: ResumeRequest.CONTINUE_NOTE, chain = inputData.getInt(KEY_CHAIN, 1)),
                     trigger = inputData.getString(KEY_TRIGGER) ?: com.agent.mobile.agent.RunTrigger.SCHEDULE
                 )
             }

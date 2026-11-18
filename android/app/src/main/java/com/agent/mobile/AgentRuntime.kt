@@ -42,6 +42,14 @@ class AgentRuntime private constructor(context: Context) {
     ) { approvalId -> scheduler.enqueueResume(approvalId) }.also { queue ->
         queue.remoteAsker = { entity -> telegram.askParkedApproval(entity) }
     }
+    /** Checkpoints of chat runs: hand-off when the app closes, continuation after a restart (#7). */
+    val runCheckpointer = com.agent.mobile.agent.RoomRunCheckpointer(database.agentQueueDao()) { sessionId, title, note ->
+        scheduler.enqueueContinuation(
+            sessionId, title, chain = 1, originKind = com.agent.mobile.agent.RoomRunCheckpointer.KIND,
+            trigger = com.agent.mobile.agent.RunTrigger.RESUME, note = note
+        )
+    }
+
     /** Starts the Termux bridge through RUN_COMMAND when it is not reachable. */
     val bridgeStarter = com.agent.mobile.core.termux.BridgeStarter(appContext)
 

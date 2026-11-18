@@ -349,4 +349,35 @@ class TelegramGatewayTest {
         delay(200)
         assertTrue("No reply after unpairing", sentTexts(owner).none { it.contains("Stopped") || it.contains("Done") })
     }
+
+    /** #7: a message the agent was working on when AMC died is continued after the restart. */
+    @Test
+    fun aTurnInterruptedByARestartIsContinued() = runBlocking {
+        pairOwner()
+        store.update { it.copy(pendingTurns = mapOf(owner to "Sort my downloads")) }
+        gateway.resumePendingTurns()
+        waitUntil { agent.requests.isNotEmpty() && store.get().pendingTurns.isEmpty() }
+        val request = agent.requests.single()
+        assertTrue(request.text.contains("Sort my downloads"))
+        assertTrue(request.text.contains("restarted"))
+        assertTrue(sentTexts(owner).any { it.contains("AMC was restarted") })
+    }
+
+    @Test
+    fun aRunningTurnIsRememberedUntilItEnds() = runBlocking {
+        pairOwner()
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        agent.behaviour = { req ->
+            started.complete(Unit)
+            release.await()
+            AutonomousAgentEngine.UnattendedResult("s", "ok", true, emptyList())
+        }
+        gateway.handleUpdate(message(owner, "Back up my photos"))
+        withTimeout(5_000) { started.await() }
+        assertEquals("Back up my photos", store.get().pendingTurns[owner])
+        release.complete(Unit)
+        waitUntil { store.get().pendingTurns.isEmpty() }
+        assertEquals("State survives a restart", emptyMap<Long, String>(), TelegramState.fromJson(savedState).pendingTurns)
+    }
 }

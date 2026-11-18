@@ -281,6 +281,14 @@ class AutonomousAgentEngine(
     @Volatile
     var attachmentSink: AttachmentSink? = null
 
+    /** Checkpoints of chat runs (#7): resume after the app was closed or the phone restarted. */
+    @Volatile
+    var runCheckpointer: RunCheckpointer? = null
+
+    /** Set while the chat run is handed to the background because the app goes away (#7). */
+    @Volatile
+    private var handingOff = false
+
     /** Called with a one-line description whenever a tool starts (progress for sub-agents and channels). */
     @Volatile
     var activityListener: ((String) -> Unit)? = null
@@ -327,6 +335,41 @@ class AutonomousAgentEngine(
             _isInitialized.value = true
         } else {
             scope.launch { initSession() }
+        }
+    }
+
+    /**
+     * The app is going away (ViewModel cleared) while a chat run works: hand the task to a
+     * background run of the same session instead of losing it (#7), then [close].
+     */
+    fun handOffAndClose() {
+        val sessionId = _currentSession.value?.id
+        val runId = interactiveRunId
+        val checkpointer = runCheckpointer
+        if (_isBusy.value && sessionId != null && runId != null && checkpointer != null && !_isStopping.value) {
+            handingOff = true
+            runBlocking {
+                withTimeoutOrNull(2_000L) {
+                    try {
+                        checkpointer.finished(runId, com.agent.mobile.data.storage.db.entity.AgentRunEntity.STATUS_CONTINUED)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Checkpoint failed: ${e.message}")
+                    }
+                }
+            }
+            checkpointer.handOff(runId, sessionId, _currentSession.value?.title ?: "Chat task")
+        }
+        close()
+    }
+
+    private suspend fun checkpoint(block: suspend (RunCheckpointer) -> Unit) {
+        val c = runCheckpointer ?: return
+        try {
+            block(c)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Run checkpoint failed: ${e.message}")
         }
     }
 
@@ -536,11 +579,24 @@ class AutonomousAgentEngine(
                     chatRepository?.updateSessionTitle(executionSessionId, generatedTitle)
                 }
                 chatRepository?.saveMessage(executionSessionId, userMessage)
+                checkpoint { it.started(state.runId, executionSessionId, state.runTitle) }
                 runAgentLoop(executionSessionId, RunMode.INTERACTIVE, state = state)
                 if (state.unattended != null) appendRunReport(executionSessionId, state, userPrompt)
+                checkpoint { it.finished(state.runId, com.agent.mobile.data.storage.db.entity.AgentRunEntity.STATUS_DONE) }
             } catch (e: CancellationException) {
-                recoverAbortedToolCalls(executionSessionId, "Execution canceled by the user.")
-                appendSystemMessage("🛑 Execution canceled by the user.", executionSessionId)
+                if (handingOff) {
+                    // Not the user's decision: the app closed and the task goes on in the background.
+                    withContext(NonCancellable) {
+                        recoverAbortedToolCalls(executionSessionId, "Interrupted because the app was closed; the task continues in the background.")
+                        appendSystemMessage("📤 The app was closed: the task continues in the background.", executionSessionId)
+                    }
+                } else {
+                    recoverAbortedToolCalls(executionSessionId, "Execution canceled by the user.")
+                    appendSystemMessage("🛑 Execution canceled by the user.", executionSessionId)
+                    withContext(NonCancellable) {
+                        checkpoint { it.finished(state.runId, com.agent.mobile.data.storage.db.entity.AgentRunEntity.STATUS_FAILED) }
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Agent loop error: ${e.message}", e)
                 recoverAbortedToolCalls(executionSessionId, "Agent loop error: ${e.localizedMessage}")
@@ -1046,6 +1102,7 @@ class AutonomousAgentEngine(
             iterations++
             _currentStep.value = iterations
             if (iterations > 1) excludedTools = excludedFor(mode)
+            if (mode == RunMode.INTERACTIVE && iterations % 5 == 0) checkpoint { it.progressed(state.runId) }
             if (unattendedLimitHit(executionSessionId, state)) break
 
             val outcome = runSingleStep(executionSessionId, systemPrompt, mode, state, skippedApprovals)

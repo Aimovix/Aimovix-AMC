@@ -173,7 +173,9 @@ class SchedulerManager(private val context: Context) {
         chain: Int,
         originKind: String,
         delayMinutes: Long = 0,
-        trigger: String = com.agent.mobile.agent.RunTrigger.SCHEDULE
+        trigger: String = com.agent.mobile.agent.RunTrigger.SCHEDULE,
+        /** The note the continued run starts with (default: the budget continuation note). */
+        note: String? = null
     ) {
         val request = OneTimeWorkRequestBuilder<AgentTaskWorker>()
             .setInitialDelay(delayMinutes.coerceAtLeast(0), TimeUnit.MINUTES)
@@ -185,7 +187,8 @@ class SchedulerManager(private val context: Context) {
                     AgentTaskWorker.KEY_TITLE to title.take(80),
                     AgentTaskWorker.KEY_CHAIN to chain,
                     AgentTaskWorker.KEY_ORIGIN_KIND to originKind,
-                    AgentTaskWorker.KEY_TRIGGER to trigger
+                    AgentTaskWorker.KEY_TRIGGER to trigger,
+                    AgentTaskWorker.KEY_NOTE to note
                 )
             )
             .addTag(AGENT_TASK_TAG)

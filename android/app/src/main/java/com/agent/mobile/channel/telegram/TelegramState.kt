@@ -17,7 +17,9 @@ data class TelegramState(
     val sessions: Map<Long, String> = emptyMap(),
     val pairingCode: String? = null,
     val pairingExpiresAt: Long = 0,
-    val pairingAttempts: Int = 0
+    val pairingAttempts: Int = 0,
+    /** Messages the agent was working on (chat id → text). Kept until the turn ends, so a restart can continue them (#7). */
+    val pendingTurns: Map<Long, String> = emptyMap()
 ) {
     fun isPaired(userId: Long) = paired.any { it.id == userId }
 
@@ -30,6 +32,7 @@ data class TelegramState(
         pairingCode?.let { put("pairingCode", it) }
         put("pairingExpiresAt", pairingExpiresAt)
         put("pairingAttempts", pairingAttempts)
+        put("pendingTurns", JSONObject().apply { pendingTurns.forEach { (chat, text) -> put(chat.toString(), text) } })
     }.toString()
 
     companion object {
@@ -45,13 +48,18 @@ data class TelegramState(
                 val sessions = sessionsObj.keys().asSequence().mapNotNull { k ->
                     k.toLongOrNull()?.let { it to sessionsObj.optString(k) }
                 }.filter { it.second.isNotEmpty() }.toMap()
+                val pendingObj = o.optJSONObject("pendingTurns") ?: JSONObject()
+                val pending = pendingObj.keys().asSequence().mapNotNull { k ->
+                    k.toLongOrNull()?.let { it to pendingObj.optString(k) }
+                }.filter { it.second.isNotEmpty() }.toMap()
                 TelegramState(
                     offset = o.optLong("offset", 0),
                     paired = paired,
                     sessions = sessions,
                     pairingCode = o.optString("pairingCode").ifEmpty { null },
                     pairingExpiresAt = o.optLong("pairingExpiresAt", 0),
-                    pairingAttempts = o.optInt("pairingAttempts", 0)
+                    pairingAttempts = o.optInt("pairingAttempts", 0),
+                    pendingTurns = pending
                 )
             } catch (e: Exception) {
                 TelegramState()
