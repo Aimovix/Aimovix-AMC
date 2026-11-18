@@ -12,6 +12,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -351,36 +353,16 @@ fun SecurityCockpitCard(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 whitelist.forEach { pattern ->
-                                    val isValid = CommandSecurityFilter.isValidRegex(pattern)
-                                    InputChip(
-                                        selected = false,
-                                        onClick = {},
-                                        label = {
-                                            Text(
-                                                if (isValid) pattern else "$pattern (inactive)",
-                                                fontSize = 11.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = if (isValid) TextWhite else YellowWarning
-                                            )
-                                        },
-                                        trailingIcon = {
-                                            Icon(
-                                                Icons.Default.Close,
-                                                contentDescription = "Remove",
-                                                modifier = Modifier
-                                                    .size(14.dp)
-                                                    .clickable {
-                                                        val updated = whitelist - pattern
-                                                        whitelist = updated
-                                                        preferenceManager.saveWhitelist(updated)
-                                                        agentEngine.reloadSecurityRules()
-                                                    },
-                                                tint = TextMuted
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(6.dp),
-                                        colors = InputChipDefaults.inputChipColors(containerColor = DarkSurface),
-                                        border = InputChipDefaults.inputChipBorder(enabled = true, selected = false, borderColor = if (isValid) BorderSubtle else YellowWarning)
+                                    RuleChip(
+                                        pattern = pattern,
+                                        isValid = CommandSecurityFilter.isValidRegex(pattern),
+                                        invalidColor = YellowWarning,
+                                        onRemove = {
+                                            val updated = whitelist - pattern
+                                            whitelist = updated
+                                            preferenceManager.saveWhitelist(updated)
+                                            agentEngine.reloadSecurityRules()
+                                        }
                                     )
                                 }
                             }
@@ -440,36 +422,16 @@ fun SecurityCockpitCard(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 blacklist.forEach { pattern ->
-                                    val isValid = CommandSecurityFilter.isValidRegex(pattern)
-                                    InputChip(
-                                        selected = false,
-                                        onClick = {},
-                                        label = {
-                                            Text(
-                                                if (isValid) pattern else "$pattern (inactive)",
-                                                fontSize = 11.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = if (isValid) TextWhite else RedEmergency
-                                            )
-                                        },
-                                        trailingIcon = {
-                                            Icon(
-                                                Icons.Default.Close,
-                                                contentDescription = "Remove",
-                                                modifier = Modifier
-                                                    .size(14.dp)
-                                                    .clickable {
-                                                        val updated = blacklist - pattern
-                                                        blacklist = updated
-                                                        preferenceManager.saveBlacklist(updated)
-                                                        agentEngine.reloadSecurityRules()
-                                                    },
-                                                tint = TextMuted
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(6.dp),
-                                        colors = InputChipDefaults.inputChipColors(containerColor = DarkSurface),
-                                        border = InputChipDefaults.inputChipBorder(enabled = true, selected = false, borderColor = if (isValid) BorderSubtle else RedEmergency)
+                                    RuleChip(
+                                        pattern = pattern,
+                                        isValid = CommandSecurityFilter.isValidRegex(pattern),
+                                        invalidColor = RedEmergency,
+                                        onRemove = {
+                                            val updated = blacklist - pattern
+                                            blacklist = updated
+                                            preferenceManager.saveBlacklist(updated)
+                                            agentEngine.reloadSecurityRules()
+                                        }
                                     )
                                 }
                             }
@@ -486,4 +448,31 @@ fun SecurityCockpitCard(
             onDismiss = { showAuditLogDialog = false }
         )
     }
+}
+
+/**
+ * One custom rule. Tapping the chip removes it: the whole chip is the touch target (at least
+ * 48 dp, #36) and TalkBack reads "Remove rule …" instead of a 14 dp icon nobody could hit.
+ */
+@Composable
+internal fun RuleChip(pattern: String, isValid: Boolean, invalidColor: Color, onRemove: () -> Unit) {
+    InputChip(
+        selected = false,
+        onClick = onRemove,
+        modifier = Modifier.semantics { contentDescription = "Remove rule $pattern" },
+        label = {
+            Text(
+                if (isValid) pattern else "$pattern (inactive)",
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = if (isValid) TextWhite else invalidColor
+            )
+        },
+        trailingIcon = {
+            Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp), tint = TextMuted)
+        },
+        shape = RoundedCornerShape(6.dp),
+        colors = InputChipDefaults.inputChipColors(containerColor = DarkSurface),
+        border = InputChipDefaults.inputChipBorder(enabled = true, selected = false, borderColor = if (isValid) BorderSubtle else invalidColor)
+    )
 }

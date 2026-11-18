@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -34,6 +35,10 @@ import com.agent.mobile.ui.theme.*
 import com.agent.mobile.ui.legal.LegalConsentScreen
 import com.agent.mobile.ui.legal.LegalTexts
 
+
+/** The selected bottom tab. Saveable, so rotation or a theme change does not jump back to the chat (#35). */
+@Composable
+internal fun rememberSelectedTab(initial: Int = 0): MutableIntState = rememberSaveable { mutableIntStateOf(initial) }
 
 class MainViewModel : androidx.lifecycle.ViewModel() {
     lateinit var bridgeClient: TermuxBridgeClient
@@ -165,9 +170,10 @@ class MainActivity : ComponentActivity() {
                         onDecline = { finish() }
                     )
                 } else {
-                var selectedTab by remember { mutableIntStateOf(0) }
+                var selectedTab by rememberSelectedTab()
+                // Not saveable on purpose: the token must not end up in the saved instance state.
                 var currentToken by remember { mutableStateOf(savedToken) }
-                var showTutorial by remember {
+                var showTutorial by rememberSaveable {
                     mutableStateOf(!preferenceManager.hasCompletedTutorial())
                 }
 
