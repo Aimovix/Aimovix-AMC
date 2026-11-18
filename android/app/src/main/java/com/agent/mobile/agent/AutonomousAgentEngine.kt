@@ -626,7 +626,8 @@ class AutonomousAgentEngine(
             } else if (finished == null) {
                 success = false
                 state.budgetExhausted = true
-                bridgeClient.interruptCurrent()
+                // The cancelled loop already stopped its own command (by execution id); a bare
+                // interrupt would also stop the user's commands on a shared connection (#33).
                 recoverAbortedToolCalls(activeSessionId, "Time limit reached.")
                 appendSystemMessage("⏱️ Time limit reached. The task was stopped.", activeSessionId)
             }
@@ -807,7 +808,6 @@ class AutonomousAgentEngine(
     private fun onPhoneControlStop() {
         if (headless) {
             stoppedByUser = true
-            bridgeClient.interruptCurrent()
             headlessLoopJob?.cancel()
         } else {
             emergencyStop()
@@ -2359,7 +2359,8 @@ class AutonomousAgentEngine(
     suspend fun stopExecution(silent: Boolean = false) {
         _isStopping.value = true
         approvalContinuation?.cancel()
-        bridgeClient.interruptCurrent()
+        // Cancelling the run below stops the agent's own command by its execution id. No bare
+        // interrupt: the terminal tab shares this connection and its command must keep running (#33).
         _pendingApproval.value = null
         if (!silent) {
             appendSystemMessage("🛑 Emergency stop requested. Waiting for the bridge to stop execution.", _currentSession.value?.id)
