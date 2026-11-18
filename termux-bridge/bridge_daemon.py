@@ -313,7 +313,105 @@ MAX_FRAME_BYTES = 10 * 1024 * 1024
 # Largest file written through write_file in total (all chunks).
 MAX_WRITE_FILE_BYTES = 64 * 1024 * 1024
 LLM_SCRIPT = Path(__file__).with_name("local_model_manager.sh")
+# Background jobs (#13): detached from any connection, output in a log file the agent can read.
+JOBS_DIR = Path(os.environ.get("BRIDGE_JOBS_DIR", str(Path.home() / ".amc" / "jobs")))
+MAX_RUNNING_JOBS = int(os.environ.get("BRIDGE_MAX_JOBS", 8))
+MAX_JOB_OUTPUT_CHUNK = 8 * 1024
+JOB_ACTIONS = ("job_start", "job_status", "job_stop", "job_list")
 LLM_ACTIONS = ("llm_status", "llm_install", "llm_start", "llm_stop", "llm_cancel", "llm_delete")
+
+
+class Job:
+    """A command running in the background, independent of connections (#13)."""
+
+    def __init__(self, job_id: str, name: str, command: str, cwd: str):
+        self.job_id = job_id
+        self.name = name
+        self.command = command
+        self.cwd = cwd
+        self.log_path = JOBS_DIR / f"{job_id}.log"
+        self.process = None
+        self.started_at = time.time()
+        self.finished_at = None
+        self.exit_code = None
+        self.read_offset = 0
+        self.waiter = None
+        self.stopped = False
+
+    def running(self) -> bool:
+        return self.exit_code is None and self.process is not None
+
+    def state(self) -> str:
+        if self.exit_code is None:
+            return "running"
+        return "stopped" if self.stopped else ("done" if self.exit_code == 0 else "failed")
+
+    def describe(self, new_output: str | None = None) -> dict:
+        info = {
+            "job_id": self.job_id, "name": self.name, "command": self.command[:300], "state": self.state(),
+            "exit_code": self.exit_code, "started_at": int(self.started_at),
+            "runtime_s": int((self.finished_at or time.time()) - self.started_at), "log": str(self.log_path),
+        }
+        if new_output is not None:
+            info["new_output"] = new_output
+        return info
+
+    def read_new_output(self) -> str:
+        """Output since the last read (at most 8 KiB; the newest part when there is more)."""
+        try:
+            size = self.log_path.stat().st_size
+        except FileNotFoundError:
+            return ""
+        previous = self.read_offset
+        start = max(previous, size - MAX_JOB_OUTPUT_CHUNK)
+        with open(self.log_path, "rb") as f:
+            f.seek(start)
+            data = f.read(size - start)
+        self.read_offset = size
+        text = data.decode("utf-8", errors="replace")
+        if start > previous:
+            text = f"[... {start - previous} bytes skipped, see {self.log_path} ...]\n" + text
+        return text
+
+
+JOBS: dict[str, Job] = {}
+
+
+async def start_job(command: str, name: str, cwd: str) -> Job:
+    running = sum(1 for j in JOBS.values() if j.running())
+    if running >= MAX_RUNNING_JOBS:
+        raise ValueError(f"Too many background jobs are running ({running}). Stop one first.")
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    job = Job(secrets.token_hex(4), (name or command)[:60], command, cwd)
+    log = open(job.log_path, "wb")
+    try:
+        shell = shutil.which("bash", path=ENV.get("PATH")) or shutil.which("sh") or "sh"
+        job.process = await asyncio.create_subprocess_shell(
+            command, stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=asyncio.subprocess.STDOUT,
+            cwd=cwd, executable=shell if sys.platform != "win32" else None, env=ENV,
+            start_new_session=sys.platform != "win32"
+        )
+    finally:
+        log.close()
+    JOBS[job.job_id] = job
+
+    async def wait():
+        code = await job.process.wait()
+        job.exit_code = code
+        job.finished_at = time.time()
+        cleanup_process_resources(job.process)
+
+    job.waiter = asyncio.create_task(wait())
+    return job
+
+
+async def stop_job(job: Job):
+    if job.running():
+        job.stopped = True
+        await terminate_process_tree(job.process)
+        if job.waiter is not None:
+            with suppress(asyncio.TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(job.waiter), timeout=3)
 
 
 def register_detached_session(session: "BridgeSession"):
@@ -327,6 +425,23 @@ def unregister_detached_session(session: "BridgeSession"):
     for k in list(DETACHED_SESSIONS.keys()):
         if DETACHED_SESSIONS[k] is session:
             del DETACHED_SESSIONS[k]
+
+def pop_detached_session_for(execution_ids) -> "BridgeSession | None":
+    """A client that claims only its own executions (#15): reattach the session that runs one of
+    them, never someone else's session."""
+    ids = [str(i) for i in (execution_ids or []) if i]
+    for execution_id in ids:
+        sess = DETACHED_SESSIONS.get(execution_id)
+        if sess is None:
+            for candidate in list(DETACHED_SESSIONS.values()):
+                if execution_id in getattr(candidate, "executions", {}):
+                    sess = candidate
+                    break
+        if sess is not None:
+            unregister_detached_session(sess)
+            return sess
+    return None
+
 
 def pop_detached_session(execution_id: str | None = None) -> "BridgeSession | None":
     """Retrieve and unregister a detached session by execution_id or most recent."""
@@ -757,16 +872,21 @@ async def handle_connection(websocket):
                     token.encode("utf-8"), AUTH_TOKEN.encode("utf-8")
                 ):
                     authenticated = True
-                    matched_session = pop_detached_session(msg.get("execution_id"))
+                    if msg.get("claim") == "own":
+                        matched_session = pop_detached_session_for(msg.get("execution_ids"))
+                    else:
+                        matched_session = pop_detached_session(msg.get("execution_id"))
                     if matched_session is not None:
                         session = matched_session
                         await session.attach(websocket)
                     else:
                         session = BridgeSession(websocket)
                     info = await asyncio.to_thread(get_system_info, session.cwd)
+                    reattached = sorted(session.executions.keys()) if matched_session is not None else []
                     await session.send("auth_ok", system=info, cwd=session.cwd,
-                                       capabilities=["concurrent_execute", "write_append", "llm", "llm_background_install"],
-                                       max_frame_bytes=MAX_FRAME_BYTES)
+                                       capabilities=["concurrent_execute", "write_append", "llm", "llm_background_install",
+                                                     "claim_own", "jobs"],
+                                       max_frame_bytes=MAX_FRAME_BYTES, reattached=reattached)
                 else:
                     err_msg = json.dumps({"type": "auth_fail", "error": "Authentication failed: invalid token."})
                     with suppress(websockets.exceptions.ConnectionClosed):
@@ -844,6 +964,31 @@ async def handle_connection(websocket):
                 ftask = asyncio.create_task(session.transfer_file(action, msg))
                 session.file_tasks.add(ftask)
                 ftask.add_done_callback(session.file_tasks.discard)
+            elif action in JOB_ACTIONS:
+                request_id = msg.get("request_id")
+                extra = {"request_id": request_id} if request_id is not None else {}
+                try:
+                    if action == "job_start":
+                        command = msg.get("command")
+                        if not isinstance(command, str) or not command.strip():
+                            raise ValueError("Command must be a nonempty string.")
+                        raw_cwd = msg.get("cwd")
+                        cwd = raw_cwd if isinstance(raw_cwd, str) and raw_cwd.strip() and os.path.isdir(raw_cwd) else session.cwd
+                        job = await start_job(command.strip(), str(msg.get("name") or ""), cwd)
+                        await session.send("job_result", ok=True, job=job.describe(), **extra)
+                    elif action == "job_list":
+                        await session.send("job_result", ok=True, jobs=[j.describe() for j in JOBS.values()], **extra)
+                    else:
+                        job = JOBS.get(str(msg.get("job_id") or ""))
+                        if job is None:
+                            raise ValueError("No background job with this id. Use job_list to see the jobs.")
+                        if action == "job_stop":
+                            await stop_job(job)
+                            await session.send("job_result", ok=True, job=job.describe(job.read_new_output()), **extra)
+                        else:
+                            await session.send("job_result", ok=True, job=job.describe(job.read_new_output()), **extra)
+                except Exception as error:
+                    await session.send("job_result", ok=False, error=str(error), **extra)
             elif action in LLM_ACTIONS:
                 ltask = asyncio.create_task(session.llm_action(action, msg))
                 session.file_tasks.add(ltask)
@@ -934,6 +1079,9 @@ async def main():
             for s in list(DETACHED_SESSIONS.values()):
                 await s.stop()
             DETACHED_SESSIONS.clear()
+            for job in list(JOBS.values()):
+                with suppress(Exception):
+                    await stop_job(job)
             remove_termux_notification()
             release_wake_lock()
             remove_owned_pid_file()

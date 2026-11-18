@@ -305,6 +305,13 @@ Befunde aus Code-Lesen **und** ausgeführten Tests (Gradle-Unit-Tests, Robolectr
 **Test:** TelegramGatewayTest: laufender Turn, forget → Job abgebrochen, keine Antwort mehr an den Chat.
 **Status:** behoben in a658e72
 
+## #40 [P2] [MED] [CONFIRMED] Sauberes Schließen durch den Daemon wird erst nach bis zu 25 s bemerkt
+**Ort:** data/network/TermuxBridgeClient.kt → WebSocketListener in doConnect (kein `onClosing`)
+**Problem:** Schickt der Daemon einen Close-Frame (Neustart, `amc restart`, Auth-Abbruch), ruft OkHttp nur `onClosing` auf; ohne Antwort bleibt die Verbindung halb offen, `onClosed` kommt nie, der Status bleibt „Connected", bis der Heartbeat nach 15 + 10 s scheitert.
+**Auslöser:** `amc restart` während eines Laufs → Befehle schlagen bis zu 25 s lang mit „socket closed" fehl, statt sofort neu zu verbinden. Gefunden beim Schreiben des Reconnect-Tests für #15.
+**Fix:** `onClosing` beantwortet den Close und behandelt die Verbindung sofort als verloren (Reconnect, Ausführungen werden gehalten).
+**Test:** BridgeContinuityTest: Daemon schließt die Verbindung → Client verbindet neu, laufender Befehl liefert sein echtes Ergebnis genau einmal.
+
 ---
 
 ## Roadmap

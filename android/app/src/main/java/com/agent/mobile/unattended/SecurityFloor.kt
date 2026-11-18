@@ -41,13 +41,13 @@ object SecurityFloor {
         if (base.isBlocked) return null
         val a = call.arguments
         when (call.name) {
-            AgentTools.EXECUTE_COMMAND -> {
+            AgentTools.EXECUTE_COMMAND, AgentTools.JOB_START -> {
                 val cmd = a["command"].orEmpty()
                 if (OWN_PACKAGE.containsMatchIn(cmd) || OWN_DATA_DIR.containsMatchIn(cmd)) {
                     return blocked("amc_self", "commands that address AMC itself (its app, data or settings) are never run unattended.")
                 }
             }
-            AgentTools.READ_FILE, AgentTools.WRITE_FILE, AgentTools.SEND_FILE -> {
+            AgentTools.READ_FILE, AgentTools.WRITE_FILE, AgentTools.EDIT_FILE, AgentTools.SEND_FILE -> {
                 val path = a["path"].orEmpty()
                 if (OWN_DATA_DIR.containsMatchIn(path) || path.contains("/" + PhoneRiskContext.OWN_PACKAGE + "/")) {
                     return blocked("amc_self", "AMC's own files (settings, persona, memory) are off limits for the agent.")

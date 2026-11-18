@@ -29,6 +29,14 @@ class FakeBridgeDaemon(
     private val sockets = CopyOnWriteArrayList<WebSocket>()
     @Volatile
     var acceptConnections = true
+    /** Commands left running (onExecute returned null), by execution id. */
+    val running = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** Output a reattached running command finishes with (null: it keeps running). */
+    @Volatile
+    var finishOnReattach: String? = "finished after reconnect\n"
+    @Volatile
+    var cwd = "/home"
+    val jobs = ConcurrentHashMap<String, String>()
 
     val host: String get() = server.hostName
     val port: Int get() = server.port
@@ -50,7 +58,8 @@ class FakeBridgeDaemon(
 
     /** Closes every open connection (like the daemon being restarted). */
     fun dropConnections() {
-        sockets.forEach { runCatching { it.cancel() } }
+        // Server-side sockets of MockWebServer have no call to cancel: close them instead.
+        sockets.forEach { runCatching { it.close(1001, "bridge restart") } }
         sockets.clear()
     }
 
@@ -69,19 +78,39 @@ class FakeBridgeDaemon(
             received += msg
             when (msg.optString("action")) {
                 "auth" -> if (msg.optString("token") == token) {
+                    val claimed = msg.optJSONArray("execution_ids")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+                    val back = if (msg.optString("claim") == "own") claimed.filter { running.containsKey(it) } else emptyList()
                     webSocket.send(
                         JSONObject().put("type", "auth_ok").put("cwd", "/home")
                             .put("system", JSONObject().put("os", "linux").put("cwd", "/home"))
-                            .put("capabilities", org.json.JSONArray().put("concurrent_execute").put("write_append"))
+                            .put("capabilities", org.json.JSONArray().put("concurrent_execute").put("write_append").put("claim_own").put("jobs"))
+                            .put("reattached", org.json.JSONArray(back))
                             .toString()
                     )
+                    val out = finishOnReattach
+                    if (out != null) back.forEach { id ->
+                        running.remove(id)
+                        webSocket.send(JSONObject().put("type", "stdout").put("execution_id", id).put("data", out).toString())
+                        webSocket.send(JSONObject().put("type", "completed").put("execution_id", id).put("exit_code", 0).toString())
+                    }
                 } else {
                     webSocket.send(JSONObject().put("type", "auth_fail").put("error", "bad token").toString())
                 }
                 "ping" -> webSocket.send(JSONObject().put("type", "pong").put("ping_id", msg.optString("ping_id")).toString())
                 "execute" -> {
                     val id = msg.optString("execution_id")
-                    val result = onExecute(msg.optString("command")) ?: return
+                    val command = msg.optString("command")
+                    if (command.startsWith("cd ")) {
+                        cwd = command.removePrefix("cd ").trim()
+                        webSocket.send(JSONObject().put("type", "stdout").put("execution_id", id).put("data", "Directory changed to: $cwd\n").toString())
+                        webSocket.send(JSONObject().put("type", "completed").put("execution_id", id).put("exit_code", 0).put("cwd", cwd).toString())
+                        return
+                    }
+                    val result = onExecute(command)
+                    if (result == null) {
+                        running[id] = command
+                        return
+                    }
                     if (result.first.isNotEmpty()) {
                         webSocket.send(JSONObject().put("type", "stdout").put("execution_id", id).put("data", result.first).toString())
                     }
@@ -114,6 +143,29 @@ class FakeBridgeDaemon(
                     webSocket.send(JSONObject().put("type", "file_written").put("request_id", msg.optString("request_id")).put("path", path).put("success", true).toString())
                 }
                 "sys_info" -> webSocket.send(JSONObject().put("type", "sys_info").put("cwd", "/home").toString())
+                "job_start", "job_status", "job_stop", "job_list" -> {
+                    val reply = JSONObject().put("type", "job_result").put("request_id", msg.optString("request_id")).put("ok", true)
+                    when (msg.optString("action")) {
+                        "job_start" -> {
+                            val jobId = "j${jobs.size + 1}"
+                            jobs[jobId] = msg.optString("command")
+                            reply.put("job", JSONObject().put("job_id", jobId).put("name", msg.optString("name")).put("state", "running")
+                                .put("log", "/home/.amc/jobs/$jobId.log").put("runtime_s", 0))
+                        }
+                        "job_list" -> reply.put("jobs", org.json.JSONArray(jobs.keys.map { JSONObject().put("job_id", it).put("name", it).put("state", "running") }))
+                        else -> {
+                            val jobId = msg.optString("job_id")
+                            if (!jobs.containsKey(jobId)) {
+                                reply.put("ok", false).put("error", "No background job with this id.")
+                            } else {
+                                val state = if (msg.optString("action") == "job_stop") "stopped" else "done"
+                                reply.put("job", JSONObject().put("job_id", jobId).put("name", jobId).put("state", state).put("exit_code", 0)
+                                    .put("log", "/home/.amc/jobs/$jobId.log").put("runtime_s", 3).put("new_output", "server ready on :8080\n"))
+                            }
+                        }
+                    }
+                    webSocket.send(reply.toString())
+                }
             }
         }
 

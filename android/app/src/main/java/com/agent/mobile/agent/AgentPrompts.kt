@@ -46,6 +46,8 @@ on tasks until they are actually done.
 ### TOOLS
 - execute_command: any Bash/Termux command. Set timeout_seconds for long installs or builds.
 - read_file / write_file: read and write text files (write_file is best for scripts and multi-line content).
+  Large files come in windows (offset/limit); edit_file replaces one exact piece of a file instead of rewriting it.
+- job_start / job_status / job_stop: run long work (servers, downloads, builds) in the background and check on it later.
 - web_search: search the web (no key needed), then read the best results with web_fetch.
 - web_fetch: read a web page or JSON API as text.
 - search_history: find something discussed in earlier conversations with the user.

@@ -20,6 +20,10 @@ object AgentTools {
     const val EXECUTE_COMMAND = "execute_command"
     const val READ_FILE = "read_file"
     const val WRITE_FILE = "write_file"
+    const val EDIT_FILE = "edit_file"
+    const val JOB_START = "job_start"
+    const val JOB_STATUS = "job_status"
+    const val JOB_STOP = "job_stop"
     const val WEB_FETCH = "web_fetch"
     const val REMEMBER = "remember"
     const val FORGET = "forget"
@@ -76,8 +80,23 @@ object AgentTools {
         ),
         Definition(
             READ_FILE,
-            "Read a UTF-8 text file from the Termux home directory or shared storage (max 5 MiB).",
-            listOf(Param("path", ParamType.STRING, "Absolute path or path relative to the Termux home directory."))
+            "Read a UTF-8 text file from the Termux home directory or shared storage (max 5 MiB). Large files come in " +
+                "windows of lines: the result says the total and the offset of the next window.",
+            listOf(
+                Param("path", ParamType.STRING, "Absolute path or path relative to the Termux home directory."),
+                Param("offset", ParamType.INTEGER, "First line to read (1-based, default 1).", required = false),
+                Param("limit", ParamType.INTEGER, "Number of lines to read (default: the whole file if it is small, else 300; max 2000).", required = false)
+            )
+        ),
+        Definition(
+            EDIT_FILE,
+            "Change part of a text file: replaces old_text with new_text. old_text must occur exactly once (include a few " +
+                "surrounding lines to make it unique). Use it instead of rewriting a whole file.",
+            listOf(
+                Param("path", ParamType.STRING, "Absolute path or path relative to the Termux home directory."),
+                Param("old_text", ParamType.STRING, "The exact text to replace (whitespace matters)."),
+                Param("new_text", ParamType.STRING, "The replacement text (may be empty to delete old_text).")
+            )
         ),
         Definition(
             WRITE_FILE,
@@ -90,9 +109,34 @@ object AgentTools {
             )
         ),
         Definition(
+            JOB_START,
+            "Start a long-running command in the background (server, download, build, sync). It keeps running after this " +
+                "call returns, across reconnects and later runs; its output goes to a log file. Returns a job id.",
+            listOf(
+                Param("command", ParamType.STRING, "The Bash command to run in the background."),
+                Param("name", ParamType.STRING, "Short name for the job.", required = false)
+            )
+        ),
+        Definition(
+            JOB_STATUS,
+            "State of a background job (running, done, failed, stopped, exit code) and its new output since the last check. " +
+                "Without job_id: list all jobs.",
+            listOf(Param("job_id", ParamType.STRING, "The id from job_start (omit to list all jobs).", required = false))
+        ),
+        Definition(
+            JOB_STOP,
+            "Stop a background job (the whole process group).",
+            listOf(Param("job_id", ParamType.STRING, "The id from job_start."))
+        ),
+        Definition(
             WEB_FETCH,
-            "Download a web page or API response over HTTP(S) and return it as readable text (HTML is converted to text).",
-            listOf(Param("url", ParamType.STRING, "The http:// or https:// URL to fetch."))
+            "Download a web page or API response over HTTP(S) and return it as readable text (HTML is converted to text). " +
+                "Long pages come in windows of characters: the result says the total and where the next window starts.",
+            listOf(
+                Param("url", ParamType.STRING, "The http:// or https:// URL to fetch."),
+                Param("start", ParamType.INTEGER, "Character offset to start from (default 0).", required = false),
+                Param("length", ParamType.INTEGER, "Number of characters (default 12000, max 20000).", required = false)
+            )
         ),
         Definition(
             WEB_SEARCH,
@@ -212,7 +256,7 @@ object AgentTools {
      * and small models choose more reliably from a short list.
      */
     val LOCAL_PROFILE: Set<String> = setOf(
-        EXECUTE_COMMAND, READ_FILE, WRITE_FILE, REMEMBER, NOTIFY_USER, WEB_SEARCH, FINISH_TASK,
+        EXECUTE_COMMAND, READ_FILE, WRITE_FILE, EDIT_FILE, REMEMBER, NOTIFY_USER, WEB_SEARCH, FINISH_TASK,
         PhoneTools.SCREEN_READ, PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL,
         PhoneTools.SCREEN_GLOBAL, PhoneTools.OPEN_APP
     )
@@ -293,12 +337,16 @@ object AgentTools {
         PhoneTools.describe(call, redact)?.let { return it }
         return when (call.name) {
             EXECUTE_COMMAND -> a["command"]?.trim().orEmpty()
-            READ_FILE -> "read_file ${a["path"].orEmpty()}"
+            READ_FILE -> "read_file ${a["path"].orEmpty()}" + (a["offset"]?.takeIf { it.isNotBlank() }?.let { " from line $it" } ?: "")
+            JOB_START -> "job_start: ${a["command"]?.trim().orEmpty()}"
+            JOB_STATUS -> "job_status ${a["job_id"].orEmpty()}".trim()
+            JOB_STOP -> "job_stop ${a["job_id"].orEmpty()}"
+            EDIT_FILE -> "edit_file ${a["path"].orEmpty()} [${a["old_text"]?.length ?: 0} → ${a["new_text"]?.length ?: 0} chars]"
             WRITE_FILE -> {
                 val mode = if (a["mode"].equals("append", ignoreCase = true)) " (append)" else ""
                 "write_file ${a["path"].orEmpty()}$mode [${a["content"]?.length ?: 0} chars]"
             }
-            WEB_FETCH -> "web_fetch ${a["url"].orEmpty()}"
+            WEB_FETCH -> "web_fetch ${a["url"].orEmpty()}" + (a["start"]?.takeIf { it.isNotBlank() && it != "0" }?.let { " from $it" } ?: "")
             REMEMBER -> "remember: ${a["note"].orEmpty().take(120)}"
             FORGET -> "forget: ${a["text"].orEmpty().take(120)}"
             UPDATE_PLAN -> "update_plan"
@@ -336,6 +384,7 @@ object AgentTools {
                 }
             }
             SCHEDULE_TASK -> describe(call) + "\n---\n" + a["prompt"].orEmpty().take(1500)
+            EDIT_FILE -> describe(call) + "\n--- old\n" + a["old_text"].orEmpty().take(700) + "\n--- new\n" + a["new_text"].orEmpty().take(700)
             DELEGATE_TASK -> "delegate_task\n---\n" + a["task"].orEmpty().take(1500) +
                 a["context"]?.takeIf { it.isNotBlank() }?.let { "\n\nContext: " + it.take(800) }.orEmpty()
             else -> describe(call)
@@ -366,11 +415,14 @@ object AgentTools {
         val a = call.arguments
         if (PhoneTools.isPhoneTool(call.name)) return PhoneToolPolicy.assess(call, phone ?: PhoneRiskContext())
         return when (call.name) {
-            EXECUTE_COMMAND -> {
+            EXECUTE_COMMAND, JOB_START -> {
                 val cmd = a["command"]?.trim().orEmpty()
                 if (cmd.isEmpty()) SecurityAssessment(RiskLevel.BLOCKED, "Empty command.")
                 else CommandSecurityFilter.analyze(cmd)
             }
+            JOB_STATUS -> SecurityAssessment(RiskLevel.LOW, "Reads the state and output of a background job")
+            JOB_STOP -> if (a["job_id"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A job id is required.")
+                else SecurityAssessment(RiskLevel.MEDIUM, "Stops a background job the agent started")
             READ_FILE -> {
                 val path = a["path"].orEmpty()
                 when {
@@ -380,9 +432,11 @@ object AgentTools {
                     else -> SecurityAssessment(RiskLevel.LOW, "Read-only file access")
                 }
             }
-            WRITE_FILE -> {
+            WRITE_FILE, EDIT_FILE -> {
                 val path = a["path"].orEmpty()
                 when {
+                    call.name == EDIT_FILE && a["old_text"].isNullOrEmpty() ->
+                        SecurityAssessment(RiskLevel.BLOCKED, "old_text is required (the exact text to replace).")
                     path.isBlank() -> SecurityAssessment(RiskLevel.BLOCKED, "A file path is required.")
                     path.contains(".termux_agent_token") ->
                         SecurityAssessment(RiskLevel.BLOCKED, "Writing the bridge token file is not allowed.")

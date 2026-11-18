@@ -133,9 +133,12 @@ class AutonomousAgentEngine(
         private const val IMAGE_CHAR_WEIGHT = 4_000
 
         private val UNTRUSTED_OUTPUT_TOOLS = setOf(
-            AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH,
+            AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH, AgentTools.JOB_STATUS, AgentTools.JOB_STOP,
             AgentTools.WEB_SEARCH, AgentTools.SEARCH_HISTORY, AgentTools.DELEGATE_TASK
         ) + PhoneTools.UNTRUSTED_OUTPUT
+        /** Output of the daemon for a plain `cd`. */
+        private val DIR_CHANGED = Regex("""Directory changed to: (\S+)""")
+
         /** Shell commands whose output is downloaded (foreign) content. */
         private val GUARD_DOWNLOAD = Regex("""\b(curl|wget|lynx|w3m|aria2c|yt-dlp|git\s+clone)\b|https?://""", RegexOption.IGNORE_CASE)
         /** Texts of image messages the app adds as USER turns (screenshots, photos). */
@@ -145,10 +148,16 @@ class AutonomousAgentEngine(
         private val SCREEN_HEADER = Regex("(^|\\n)Screen: ")
 
         /** Tools that need the Termux bridge. */
-        private val BRIDGE_TOOLS = setOf(AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WRITE_FILE, AgentTools.SEND_FILE)
+        private val BRIDGE_TOOLS = setOf(
+            AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WRITE_FILE, AgentTools.EDIT_FILE, AgentTools.SEND_FILE,
+            AgentTools.JOB_START, AgentTools.JOB_STATUS, AgentTools.JOB_STOP
+        )
+
+        /** Tools whose result is a window the model asked for: compacted less (#14). */
+        private val WINDOWED_TOOLS = setOf(AgentTools.READ_FILE, AgentTools.WEB_FETCH)
         private const val BRIDGE_RECOVERY_TIMEOUT_MS = 25_000L
 
-        private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS) +
+        private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS, AgentTools.JOB_STATUS) +
             PhoneTools.LOOP_EXEMPT
     }
 
@@ -977,6 +986,8 @@ class AutonomousAgentEngine(
         if (state.unattended != null) state.guard = inheritedGuard?.fork() ?: buildGuard()
         unattendedRun = state.unattended != null
         state.contextSummary = ContextCompactor.latest(_messages.value)
+        // A new bridge connection (continuation, restart) starts in the home folder: use the run's last folder (#26).
+        if (bridgeClient.workingDirectory == null) lastWorkingDirectory(_messages.value)?.let { bridgeClient.workingDirectory = it }
         // Built once per run so the prompt prefix stays identical between steps (prompt caching).
         val systemPrompt = AgentPrompts.build(
             memory = memoryStore?.asPromptText().orEmpty(),
@@ -1128,6 +1139,30 @@ class AutonomousAgentEngine(
         }
         text?.trim()?.takeIf { it.isNotEmpty() }
     }
+
+    /** A job answer of the daemon as text for the model. */
+    private fun formatJobs(r: org.json.JSONObject): String {
+        fun line(j: org.json.JSONObject) = buildString {
+            append(j.optString("job_id")).append(" \"").append(j.optString("name")).append("\": ").append(j.optString("state"))
+            if (!j.isNull("exit_code")) append(" (exit ").append(j.optInt("exit_code")).append(')')
+            append(", ").append(j.optLong("runtime_s")).append(" s, log ").append(j.optString("log"))
+        }
+        val list = r.optJSONArray("jobs")
+        if (list != null) {
+            if (list.length() == 0) return "No background jobs."
+            return (0 until list.length()).joinToString("\n") { "- " + line(list.getJSONObject(it)) }
+        }
+        val job = r.getJSONObject("job")
+        val out = job.optString("new_output")
+        return line(job) + "\n" + if (out.isEmpty()) "(no new output since the last check)" else "New output:\n$out"
+    }
+
+    /** The folder the last plain `cd` of this conversation changed to (the daemon reports it), or null. */
+    internal fun lastWorkingDirectory(messages: List<ChatMessage>): String? =
+        messages.asReversed().firstNotNullOfOrNull { m ->
+            if (m.role != MessageRole.TOOL) null
+            else DIR_CHANGED.find(m.toolResult?.stdout ?: m.text)?.groupValues?.get(1)?.trim()
+        }
 
     /** Lists installed skills through the bridge (cached for a few minutes; empty when offline). */
     private suspend fun loadSkillsIndex(): String {
@@ -1634,8 +1669,9 @@ class AutonomousAgentEngine(
 
         // 5. Observation for the model.
         val untrusted = toolCall.name in UNTRUSTED_OUTPUT_TOOLS
+        fun compact(text: String) = compactFor(toolCall.name, text)
         fun guard(text: String): String =
-            if (text.isEmpty()) "" else if (untrusted) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(text)}\n[UNTRUSTED_OUTPUT_END]" else compactToolOutput(text)
+            if (text.isEmpty()) "" else if (untrusted) "[UNTRUSTED_OUTPUT_START]\n${compact(text)}\n[UNTRUSTED_OUTPUT_END]" else compact(text)
 
         var stderr = raw.stderr
         if (failed && state.consecutiveErrors >= REFLECTION_THRESHOLD) {
@@ -1658,7 +1694,7 @@ class AutonomousAgentEngine(
         if (isGuardSource(toolCall.name, description)) state.guard?.observeUntrusted(toolCall.name, observation)
         val toolMsg = ChatMessage(
             role = MessageRole.TOOL,
-            text = if (untrusted) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(observation)}\n[UNTRUSTED_OUTPUT_END]" else compactToolOutput(observation),
+            text = if (untrusted) "[UNTRUSTED_OUTPUT_START]\n${compact(observation)}\n[UNTRUSTED_OUTPUT_END]" else compact(observation),
             toolResult = result,
             status = status
         )
@@ -1931,7 +1967,25 @@ class AutonomousAgentEngine(
             AgentTools.READ_FILE -> {
                 val path = a["path"].orEmpty()
                 val text = bridgeClient.readFile(path, timeoutMs = 20_000L)
-                ok(text.ifEmpty { "(empty file)" })
+                ok(FileWindow.render(text, a["offset"], a["limit"]))
+            }
+            AgentTools.EDIT_FILE -> {
+                val path = a["path"].orEmpty()
+                val old = a["old_text"].orEmpty()
+                val new = a["new_text"].orEmpty()
+                val text = bridgeClient.readFile(path, timeoutMs = 20_000L)
+                when (val count = FileWindow.occurrences(text, old)) {
+                    0 -> fail("old_text was not found in $path. Nothing was changed. Read the file (read_file with offset) and copy the exact text, including whitespace.")
+                    1 -> {
+                        val updated = text.replaceFirst(old, new)
+                        if (bridgeClient.writeFile(path, updated, timeoutMs = 20_000L)) {
+                            if (path.contains(".amc/skills")) invalidateSkillsCache()
+                            registerArtifactForPath(path, updated)
+                            ok("Edited $path: replaced 1 occurrence (${old.length} → ${new.length} characters). The file has ${updated.count { it == '\n' } + 1} lines.")
+                        } else fail("Could not write $path.")
+                    }
+                    else -> fail("old_text occurs $count times in $path. Nothing was changed. Include more surrounding lines so it is unique.")
+                }
             }
             AgentTools.WRITE_FILE -> {
                 val path = a["path"].orEmpty()
@@ -1947,7 +2001,11 @@ class AutonomousAgentEngine(
                 } else fail("Could not write $path.")
             }
             AgentTools.WEB_FETCH -> {
-                val res = webFetcher.fetch(a["url"].orEmpty())
+                val res = webFetcher.fetch(
+                    a["url"].orEmpty(),
+                    start = a["start"]?.trim()?.toDoubleOrNull()?.toInt() ?: 0,
+                    length = a["length"]?.trim()?.toDoubleOrNull()?.toInt() ?: 12_000
+                )
                 if (res.ok) ok(res.text) else fail(res.text.ifEmpty { "HTTP ${res.statusCode}" })
             }
             AgentTools.REMEMBER -> {
@@ -2007,6 +2065,24 @@ class AutonomousAgentEngine(
             }
             AgentTools.DELEGATE_TASK -> runSubAgent(call, assistantMsgId, mode, skippedApprovals, state)
             AgentTools.SEND_FILE -> sendFile(call)
+            AgentTools.JOB_START -> {
+                val r = bridgeClient.jobAction("job_start", mapOf("command" to a["command"].orEmpty().trim(), "name" to a["name"].orEmpty()))
+                if (!r.optBoolean("ok")) fail(r.optString("error", "Could not start the job."))
+                else {
+                    val job = r.getJSONObject("job")
+                    ok(
+                        "Started background job ${job.optString("job_id")} (\"${job.optString("name")}\"). Output: ${job.optString("log")}. " +
+                            "It keeps running across reconnects and later runs. Check it with job_status job_id=${job.optString("job_id")}."
+                    )
+                }
+            }
+            AgentTools.JOB_STATUS, AgentTools.JOB_STOP -> {
+                val id = a["job_id"].orEmpty().trim()
+                val action = if (call.name == AgentTools.JOB_STOP) "job_stop" else if (id.isEmpty()) "job_list" else "job_status"
+                val r = bridgeClient.jobAction(action, if (id.isEmpty()) emptyMap() else mapOf("job_id" to id))
+                if (!r.optBoolean("ok")) fail(r.optString("error", "Job request failed."))
+                else ok(formatJobs(r))
+            }
             AgentTools.FINISH_TASK -> {
                 val status = a["status"].orEmpty().trim().lowercase().takeIf { it in setOf("done", "partial", "blocked") } ?: "done"
                 state.finishStatus = status
@@ -2082,7 +2158,7 @@ class AutonomousAgentEngine(
      * command gets when typed directly. Unreadable scripts keep the command's own assessment.
      */
     private suspend fun withScriptChecks(call: ToolCall, base: SecurityAssessment): SecurityAssessment {
-        if (call.name != AgentTools.EXECUTE_COMMAND || base.isBlocked) return base
+        if ((call.name != AgentTools.EXECUTE_COMMAND && call.name != AgentTools.JOB_START) || base.isBlocked) return base
         val scripts = CommandSecurityFilter.scriptFiles(call.arguments["command"].orEmpty())
         if (scripts.isEmpty() || bridgeClient.connectionStatus.value !is ConnectionStatus.Connected) return base
         var result = base
@@ -2617,6 +2693,11 @@ class AutonomousAgentEngine(
         }
         return out
     }
+
+    /** read_file and web_fetch return the window the model asked for: keep it (bounded), cut other output harder. */
+    internal fun compactFor(toolName: String, text: String): String =
+        if (toolName in WINDOWED_TOOLS) compactToolOutput(text, maxChars = 16_000, headChars = 10_000, tailChars = 5_000)
+        else compactToolOutput(text)
 
     internal fun compactToolOutput(
         text: String,

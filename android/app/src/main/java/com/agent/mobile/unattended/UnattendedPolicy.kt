@@ -55,7 +55,7 @@ object UnattendedPolicy {
     fun guardedKind(call: ToolCall): InjectionGuard.Kind? = when (call.name) {
         AgentTools.REMEMBER -> InjectionGuard.Kind.MEMORY
         AgentTools.SCHEDULE_TASK -> InjectionGuard.Kind.SCHEDULE
-        AgentTools.WRITE_FILE -> if (call.arguments["path"].orEmpty().contains(".amc/skills")) InjectionGuard.Kind.SKILL else null
+        AgentTools.WRITE_FILE, AgentTools.EDIT_FILE -> if (call.arguments["path"].orEmpty().contains(".amc/skills")) InjectionGuard.Kind.SKILL else null
         PhoneTools.NOTIFICATION_TRIGGER -> if (call.arguments["action"].orEmpty().trim().equals("add", ignoreCase = true)) InjectionGuard.Kind.TRIGGER else null
         else -> null
     }
@@ -67,7 +67,8 @@ object UnattendedPolicy {
             AgentTools.REMEMBER -> a["note"].orEmpty()
             AgentTools.SCHEDULE_TASK -> a["title"].orEmpty() + "\n" + a["prompt"].orEmpty()
             AgentTools.WRITE_FILE -> a["content"].orEmpty()
-            AgentTools.EXECUTE_COMMAND -> a["command"].orEmpty()
+            AgentTools.EDIT_FILE -> a["new_text"].orEmpty()
+            AgentTools.EXECUTE_COMMAND, AgentTools.JOB_START -> a["command"].orEmpty()
             else -> a.values.joinToString("\n") + "\n" + assessment?.reason.orEmpty()
         }
     }

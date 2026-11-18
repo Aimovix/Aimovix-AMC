@@ -50,7 +50,7 @@ object ActionClassifier {
     fun classify(call: ToolCall, assessment: SecurityAssessment): UnattendedCategory {
         val reason = assessment.reason
         when (call.name) {
-            AgentTools.EXECUTE_COMMAND -> {
+            AgentTools.EXECUTE_COMMAND, AgentTools.JOB_START -> {
                 val command = call.arguments["command"].orEmpty()
                 // A script's content is only visible through the reason ("Script ~/x.sh: …").
                 val fromReason = REASON_RULES.firstOrNull { it.first.containsMatchIn(reason) }?.second
@@ -59,7 +59,7 @@ object ActionClassifier {
                     ?: UnattendedCategory.ADVANCED_SHELL
             }
             AgentTools.READ_FILE, AgentTools.SEND_FILE -> return UnattendedCategory.ACCOUNTS
-            AgentTools.WRITE_FILE -> {
+            AgentTools.WRITE_FILE, AgentTools.EDIT_FILE -> {
                 val path = call.arguments["path"].orEmpty()
                 return if (path.contains(".ssh") || path.contains(".gnupg")) UnattendedCategory.ACCOUNTS else UnattendedCategory.SYSTEM_SETTINGS
             }
