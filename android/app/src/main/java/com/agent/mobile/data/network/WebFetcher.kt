@@ -26,9 +26,13 @@ class WebFetcher(
         if (!trimmed.startsWith("http://", true) && !trimmed.startsWith("https://", true)) {
             return@withContext Result(false, 0, "Only http:// and https:// URLs are supported.")
         }
+        // Android allows cleartext only to this device (network_security_config): fetch other
+        // hosts over https instead of failing with an unexplained cleartext error (#37).
+        val target = upgradeUrl(trimmed)
+        val upgraded = target != trimmed
         val request = try {
             Request.Builder()
-                .url(trimmed)
+                .url(target)
                 .header("User-Agent", "AMC-Agent/1.4 (Android)")
                 .header("Accept", "text/html,application/json,text/plain;q=0.9,*/*;q=0.5")
                 .get()
@@ -57,7 +61,8 @@ class WebFetcher(
                 val capped = if (text.length > maxChars) {
                     text.take(maxChars) + "\n\n… [truncated ${text.length - maxChars} characters]"
                 } else text
-                val header = "HTTP ${response.code} ${contentType.substringBefore(';')}".trim()
+                val header = "HTTP ${response.code} ${contentType.substringBefore(';')}".trim() +
+                    if (upgraded) " (fetched over https: AMC does not send unencrypted requests)" else ""
                 Result(response.isSuccessful, response.code, "$header\n\n$capped")
             }
         } catch (e: java.net.UnknownHostException) {
@@ -68,6 +73,17 @@ class WebFetcher(
     }
 
     companion object {
+        private val LOCAL_HOSTS = setOf("localhost", "127.0.0.1", "10.0.2.2", "[::1]")
+
+        /** http:// for another host becomes https:// (cleartext is only allowed to this device). */
+        fun upgradeUrl(url: String): String {
+            if (!url.startsWith("http://", ignoreCase = true)) return url
+            val host = url.substring(7).substringBefore('/').substringBefore('?').substringBefore('#')
+                .substringAfterLast('@').let { h -> if (h.startsWith("[")) h.substringBefore(']') + "]" else h.substringBefore(':') }
+                .lowercase()
+            return if (host in LOCAL_HOSTS) url else "https://" + url.substring(7)
+        }
+
         private val DROP_BLOCKS = Regex(
             "<(script|style|noscript|svg|head|template)[^>]*>.*?</\\1>",
             setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)

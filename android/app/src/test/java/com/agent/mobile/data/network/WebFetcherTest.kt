@@ -55,4 +55,14 @@ class WebFetcherTest {
     fun nonHttpUrlsAreRejected() = runTest {
         assertFalse(WebFetcher().fetch("file:///etc/passwd").ok)
     }
+
+    /** #37: cleartext is only allowed to this device, so other hosts are fetched over https. */
+    @Test
+    fun httpToOtherHostsIsUpgradedToHttps() {
+        assertEquals("https://example.com/a?b=1", WebFetcher.upgradeUrl("http://example.com/a?b=1"))
+        assertEquals("https://user@example.com:8080/x", WebFetcher.upgradeUrl("http://user@example.com:8080/x"))
+        assertEquals("http://localhost:8080/v1", WebFetcher.upgradeUrl("http://localhost:8080/v1"))
+        assertEquals("http://127.0.0.1:8765", WebFetcher.upgradeUrl("http://127.0.0.1:8765"))
+        assertEquals("https://example.com", WebFetcher.upgradeUrl("https://example.com"))
+    }
 }
