@@ -117,6 +117,19 @@ object CommandSecurityFilter {
         Pair(Pattern.compile("\\btermux-camera-photo\\b"), "Takes a photo (photographing others may need their consent)")
     )
 
+    /**
+     * The Termux bridge token and AMC's bridge folder. Reading, copying or changing them is never
+     * an agent task (it would leak the secret or break the pairing), so this is blocked in every
+     * preset: part of the floor that no setting lifts.
+     */
+    private val BRIDGE_SECRET = Regex("""\.termux_agen|termux_agent_token|agent_token\b|\bamc\s+token\b""", RegexOption.IGNORE_CASE)
+    const val BRIDGE_SECRET_REASON =
+        "Blocked: the Termux bridge token and AMC's bridge folder (~/.termux_agent*) are off limits for the agent in every mode."
+
+    /** True when [command] reads, copies or changes the bridge token or AMC's bridge folder. */
+    fun touchesBridgeSecret(command: String): Boolean =
+        BRIDGE_SECRET.containsMatchIn(command) || BRIDGE_SECRET.containsMatchIn(normalizeCommand(command))
+
     private var customWhitelist = listOf<Pattern>()
     private var customBlacklist = listOf<Pattern>()
     private var isStrictMode = false
@@ -128,12 +141,9 @@ object CommandSecurityFilter {
         val validBlack = blacklist.mapNotNull {
             try { Pattern.compile(it, Pattern.CASE_INSENSITIVE) } catch (e: Exception) { null }
         }
-        if (whitelist.isEmpty() || validWhite.isNotEmpty()) {
-            customWhitelist = validWhite
-        }
-        if (blacklist.isEmpty() || validBlack.isNotEmpty()) {
-            customBlacklist = validBlack
-        }
+        // Always the valid subset: a list left with only broken patterns must not keep old rules alive.
+        customWhitelist = validWhite
+        customBlacklist = validBlack
         isStrictMode = strict
     }
 
@@ -155,6 +165,11 @@ object CommandSecurityFilter {
     private fun analyzeRisk(command: String, depth: Int = 0): SecurityAssessment {
         val trimmed = command.trim()
         val normalized = normalizeCommand(trimmed)
+
+        // 0. The floor: the bridge token is never touched, whatever the preset or custom rules say.
+        if (touchesBridgeSecret(trimmed)) {
+            return SecurityAssessment(level = RiskLevel.BLOCKED, reason = BRIDGE_SECRET_REASON)
+        }
 
         // 1. Check Custom Blacklist
         for (pattern in customBlacklist) {
