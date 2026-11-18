@@ -80,3 +80,22 @@ Reihenfolge laut Auftrag: Teil D (Fehlerprüfung) → Teil A + B (Unattended-Mod
 **Tests:** Gradle 398 Unit-Tests grün (+26 neu: Policy/Kategorien/Untergrenze/Injection, 7 komplette Engine-Läufe im Unbeaufsichtigt-Modus mit Fake-LLM und Fake-Bridge, Audit-Kette/Manipulation/Rotation/Schwärzung/Export, Migration 2→3, Laufbericht, Tagesbericht, Compose-Tests für Opt-in-Dialog und Kategorie-Schalter); Python 51, `bash -n`, E2E 236 grün.
 
 **Offen:** Der große Lauf-Test (60+ Schritte mit Bridge-Abbruch und App-Neustart) folgt mit Teil C, weil er Wiederaufnahme (#7) braucht.
+
+## 2026-11-18 23:45 – Teil C, erster Block: lange Läufe (c90dcfa, 0edad23, c4ebfc8)
+
+**Was (in Alltagssprache):**
+- **#4 Kompaktierung:** Fallen bei langen Läufen ältere Schritte aus dem Kontextfenster (40 Nachrichten), fasst AMC sie mit einem kurzen Modellaufruf zusammen (ohne Werkzeuge; bei Fehler eine einfache Liste der Schritte) und hängt die Zusammenfassung plus aktuellen Plan an die angeheftete Aufgabe. Die Zusammenfassung wird in der Sitzung gespeichert und überlebt Fortsetzung und Neustart.
+- **#5 Abschluss-Signal / #22 Rückfragen (nur Unbeaufsichtigt-Modus):** Eine Antwort ohne Werkzeug beendet den Lauf nicht mehr; das Modell wird höchstens zweimal erinnert, weiterzuarbeiten oder `finish_task` mit ehrlichem Status (erledigt/teilweise/blockiert) aufzurufen. „blockiert" zählt nicht als Erfolg. `ask_user` hält eine Frage fest und antwortet sofort „niemand erreichbar – entscheide selbst"; der Laufbericht listet diese Fragen. In den anderen Modi bleibt alles wie bisher (ein vorhandener Test prüft genau das alte Verhalten).
+- **#14 Lesefenster und `edit_file`:** Große Dateien werden zeilenweise in Fenstern gelesen (mit Gesamtgröße und nächstem Offset), Webseiten in Zeichenfenstern; `edit_file` ersetzt genau eine Stelle und verweigert mehrdeutige Änderungen.
+- **#13 Hintergrundjobs:** Der Daemon startet lange Befehle abgekoppelt mit Logdatei (`~/.amc/jobs`), sie überleben Verbindungsabrisse und Folgeläufe; Werkzeuge `job_start`, `job_status` (neue Ausgabe seit dem letzten Blick), `job_stop`.
+- **#15 Reconnect ohne Doppelausführung:** Bei Verbindungsverlust werden laufende Befehle 25 s gehalten; beim Wiederverbinden beansprucht der Client nur seine eigenen Ausführungen, der Daemon gibt genau diese Sitzung zurück, das echte Ergebnis kommt genau einmal. Klappt das nicht, lautet das Ergebnis „Status unbekannt – vor Wiederholung prüfen". Alte Clients ohne Claim verhalten sich wie vorher (bestehende Daemon-Tests).
+- **#26 Arbeitsordner:** Der Client merkt sich den vom Daemon gemeldeten Ordner und schickt ihn mit jedem Befehl; nach Reconnect/Fortsetzung bleibt der Ordner erhalten.
+- **#40 (neuer Fund beim Testen):** Wenn der Daemon die Verbindung sauber schließt (z. B. Neustart), merkte die App das erst nach bis zu 25 s. Jetzt sofort.
+- **#7 Wiederaufnahme:** Chat-Läufe schreiben einen Checkpoint. Wird die App geschlossen, läuft die Aufgabe als Hintergrundlauf derselben Sitzung weiter (statt „vom Nutzer abgebrochen"). Nach Prozess-Tod oder Neustart setzt der nächste App-Start bzw. der Boot den Lauf mit Neustart-Hinweis fort. Telegram merkt sich die Nachricht in Arbeit und setzt sie nach einem Neustart fort.
+- **#20 WakeLock:** Der Foreground-Service hält den CPU-WakeLock nur noch, solange ein Lauf arbeitet, und zeigt in der Benachrichtigung, woran AMC gerade arbeitet.
+
+**Entscheidungen:** #5/#22 nur im Unbeaufsichtigt-Modus, weil die Hard Rule „andere Modi exakt wie vorher" gilt und ein vorhandener Test das alte Verhalten festschreibt. #15: Reattach ohne ID bleibt für alte Clients erhalten (bestehende Tests), neue Clients nutzen immer den Claim.
+
+**Tests:** Gradle 415 Unit-Tests grün (u. a. 60-Schritte-Kontext-Test, Fenster-/Edit-Tests, Reconnect mit echtem Ergebnis genau einmal, Ordner nach Reconnect, Job-Werkzeuge, Hand-off beim Schließen, Wiederaufnahme nach Neustart, Telegram-Fortsetzung, WakeLock-Service-Test); Python 54 (+3 Daemon-Tests für Claim und Jobs); `bash -n`; E2E 236 – alles grün.
+
+**Offen in Teil C:** #23, #24, #19, #25, #28, #11 (Ablaufzeit für geparkte Freigaben in anderen Modi) und der große Lauf-Test.
