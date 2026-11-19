@@ -50,7 +50,9 @@ class TelegramGateway(
     private val approvalTimeoutMs: Long = 10 * 60_000L,
     private val pollTimeoutSeconds: Int = 50,
     private val onPaired: (PairedUser) -> Unit = {},
-    private val onTurnActive: (Boolean) -> Unit = {}
+    private val onTurnActive: (Boolean) -> Unit = {},
+    /** First wait before retrying a failed approval message (doubles per retry). */
+    private val sendRetryBaseMs: Long = 1_000L
 ) {
     sealed class Status {
         object Stopped : Status()
@@ -416,7 +418,8 @@ class TelegramGateway(
                     attachments = AttachmentSink { name, bytes, caption ->
                         api.sendFile(chatId, name, bytes, caption)
                         "Sent $name to the user's Telegram chat."
-                    }
+                    },
+                    progress = { note -> trySend(chatId, note) }
                 )
             )
             result.sessionId?.let { sid -> store.update { it.copy(sessions = it.sessions + (chatId to sid)) } }
@@ -467,25 +470,38 @@ class TelegramGateway(
         }
         val decision = CompletableDeferred<Boolean>()
         approvals[id] = PendingApproval(chatId, text, decision)
-        val messageId = try {
-            api.sendMessage(
-                chatId, text,
-                buttons = listOf(
-                    TelegramBotApi.Button("✅ Approve", "ap:$id:y"),
-                    TelegramBotApi.Button("❌ Reject", "ap:$id:n")
+        // A short network hiccup must not count as "rejected": retry with backoff, and if the
+        // question cannot be delivered at all, say so instead of rejecting (#28).
+        var messageId: Long? = null
+        var lastError: Exception? = null
+        for (attempt in 0 until SEND_ATTEMPTS) {
+            try {
+                messageId = api.sendMessage(
+                    chatId, text,
+                    buttons = listOf(
+                        TelegramBotApi.Button("✅ Approve", "ap:$id:y"),
+                        TelegramBotApi.Button("❌ Reject", "ap:$id:n")
+                    )
                 )
+                break
+            } catch (e: CancellationException) {
+                approvals.remove(id)
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(TAG, "Could not send approval request (attempt ${attempt + 1}): ${e.message}")
+                if (attempt < SEND_ATTEMPTS - 1) delay(sendRetryBaseMs * (1L shl attempt))
+            }
+        }
+        if (messageId == null) {
+            approvals.remove(id)
+            throw com.agent.mobile.agent.ApprovalUnreachableException(
+                "The approval request could not be sent to Telegram (${lastError?.message ?: "network error"})."
             )
-        } catch (e: CancellationException) {
-            approvals.remove(id)
-            throw e
-        } catch (e: Exception) {
-            approvals.remove(id)
-            Log.w(TAG, "Could not send approval request: ${e.message}")
-            return false
         }
         return try {
             val answer = withTimeoutOrNull(approvalTimeoutMs) { decision.await() }
-            if (answer == null) tryEdit(chatId, messageId, "$text\n\n⌛ No answer: not executed.")
+            if (answer == null) tryEdit(chatId, messageId!!, "$text\n\n⌛ No answer: not executed.")
             answer ?: false
         } finally {
             approvals.remove(id)
@@ -604,6 +620,7 @@ class TelegramGateway(
     companion object {
         private const val TAG = "TelegramGateway"
         private const val NOTICE_INTERVAL_MS = 10 * 60_000L
+        private const val SEND_ATTEMPTS = 3
 
         /** Callback data prefix of buttons for approvals parked by background runs. */
         const val PARKED_PREFIX = "pk:"

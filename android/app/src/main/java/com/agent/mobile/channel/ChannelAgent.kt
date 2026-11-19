@@ -14,7 +14,9 @@ data class TurnRequest(
     val imageBase64: String? = null,
     val imageMimeType: String? = null,
     val approval: suspend (ToolCall, SecurityAssessment) -> Boolean,
-    val attachments: AttachmentSink
+    val attachments: AttachmentSink,
+    /** Short progress notes for the user while the turn works (e.g. an automatic continuation). */
+    val progress: (suspend (String) -> Unit)? = null
 )
 
 /**

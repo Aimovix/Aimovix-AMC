@@ -9,6 +9,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -44,6 +45,8 @@ class TelegramGatewayTest {
     private lateinit var agent: FakeAgent
     private lateinit var gateway: TelegramGateway
     private val pairedEvents = CopyOnWriteArrayList<PairedUser>()
+    /** Approval messages (with buttons) that fail before one gets through (#28). */
+    private val failingButtonSends = java.util.concurrent.atomic.AtomicInteger(0)
 
     private val owner = 4242L
     private val stranger = 666L
@@ -81,6 +84,9 @@ class TelegramGatewayTest {
                     .filter { it.contains('=') }
                     .associate { URLDecoder.decode(it.substringBefore('='), "UTF-8") to URLDecoder.decode(it.substringAfter('='), "UTF-8") }
                 calls += ApiCall(method, params)
+                if (method == "sendMessage" && params.containsKey("reply_markup") && failingButtonSends.getAndDecrement() > 0) {
+                    return MockResponse().setResponseCode(502).setBody("""{"ok":false,"error_code":502,"description":"Bad Gateway"}""")
+                }
                 val result: Any = when (method) {
                     "sendMessage" -> JSONObject().put("message_id", nextMessageId.incrementAndGet())
                     "getMe" -> JSONObject().put("id", 1).put("username", "amc_test_bot").put("first_name", "AMC")
@@ -379,5 +385,33 @@ class TelegramGatewayTest {
         release.complete(Unit)
         waitUntil { store.get().pendingTurns.isEmpty() }
         assertEquals("State survives a restart", emptyMap<Long, String>(), TelegramState.fromJson(savedState).pendingTurns)
+    }
+
+    /** #28: a failed send is retried; when nothing gets through it is "unreachable", not "rejected". */
+    @Test
+    fun approvalSendFailuresAreRetriedAndNotTreatedAsRejection() = runBlocking {
+        pairOwner()
+        val quick = TelegramGateway(
+            api = TelegramBotApi("TEST:TOKEN", baseUrl = server.url("/").toString().trimEnd('/')),
+            store = store, agentFactory = { agent }, scope = scope, approvalTimeoutMs = 3_000L, sendRetryBaseMs = 10L
+        )
+        val call = ToolCall(name = "execute_command", arguments = mapOf("command" to "termux-sms-send -n 1 hi"))
+        failingButtonSends.set(1)
+        val answer = async { quick.askApproval(owner, call, CommandSecurityFilter.analyze("termux-sms-send -n 1 hi")) }
+        waitUntil { calls.count { it.method == "sendMessage" && it.params.containsKey("reply_markup") } >= 2 }
+        val data = calls.last { it.method == "sendMessage" && it.params.containsKey("reply_markup") }.params["reply_markup"].orEmpty()
+        val id = Regex("ap:([a-z0-9]+):y").find(data)!!.groupValues[1]
+        quick.handleUpdate(callback(owner, "ap:$id:y"))
+        assertTrue("Asked after the retry and approved", answer.await())
+
+        failingButtonSends.set(10)
+        val error = try {
+            quick.askApproval(owner, call, CommandSecurityFilter.analyze("termux-sms-send -n 1 hi"))
+            null
+        } catch (e: com.agent.mobile.agent.ApprovalUnreachableException) {
+            e
+        }
+        assertNotNull("Nothing got through: unreachable, not a rejection", error)
+        failingButtonSends.set(0)
     }
 }

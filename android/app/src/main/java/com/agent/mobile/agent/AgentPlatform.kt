@@ -22,11 +22,36 @@ interface AgentPlatform {
     /** Schedules an unattended agent run. Returns the task id. */
     fun scheduleAgentTask(title: String, prompt: String, delayMinutes: Long, repeatEveryMinutes: Long): String
 
+    /** [scheduleAgentTask] that waits for Wi-Fi, charging or enough battery (#23). */
+    fun scheduleAgentTask(
+        title: String,
+        prompt: String,
+        delayMinutes: Long,
+        repeatEveryMinutes: Long,
+        conditions: TaskConditions
+    ): String = scheduleAgentTask(title, prompt, delayMinutes, repeatEveryMinutes)
+
+    /** The latest agent runs with status and outcome, one per line (#23). Empty when unknown. */
+    suspend fun listRecentRuns(limit: Int): String = ""
+
     /** Human-readable list of scheduled agent tasks (one per line). */
     suspend fun listAgentTasks(): String
 
     /** Returns true when a task with that id existed and was cancelled. */
     suspend fun cancelAgentTask(taskId: String): Boolean
+}
+
+/** When a scheduled task may start (#23). */
+data class TaskConditions(
+    val requiresWifi: Boolean = false,
+    val requiresCharging: Boolean = false,
+    val requiresBatteryNotLow: Boolean = false
+) {
+    val any: Boolean get() = requiresWifi || requiresCharging || requiresBatteryNotLow
+
+    fun describe(): String = listOfNotNull(
+        "Wi-Fi".takeIf { requiresWifi }, "charging".takeIf { requiresCharging }, "battery not low".takeIf { requiresBatteryNotLow }
+    ).joinToString(", ")
 }
 
 /** How a run of the agent is attended. Changes the system prompt and how approvals are handled. */
@@ -43,6 +68,12 @@ enum class RunMode {
     /** A delegated sub-task; approvals are forwarded to the parent run. */
     SUBAGENT
 }
+
+/**
+ * Thrown by an approval handler when the question could not be delivered at all (network
+ * problem). Unlike a rejection, the agent may ask again later in the task (#28).
+ */
+class ApprovalUnreachableException(message: String) : Exception(message)
 
 /** Receives files from the `send_file` tool during a channel conversation (e.g. uploads them to Telegram). */
 fun interface AttachmentSink {

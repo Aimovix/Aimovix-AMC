@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 
@@ -157,7 +158,9 @@ class AutonomousAgentEngine(
         private val WINDOWED_TOOLS = setOf(AgentTools.READ_FILE, AgentTools.WEB_FETCH)
         private const val BRIDGE_RECOVERY_TIMEOUT_MS = 25_000L
 
-        private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS, AgentTools.JOB_STATUS) +
+        private val LOOP_EXEMPT_TOOLS = setOf(
+            AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS, AgentTools.JOB_STATUS, AgentTools.LIST_RUNS
+        ) +
             PhoneTools.LOOP_EXEMPT
     }
 
@@ -297,6 +300,9 @@ class AutonomousAgentEngine(
     @Volatile
     var channelName: String = "Telegram"
 
+    /** Approvals of sub-agents that run side by side reach the user one at a time. */
+    private val subAgentApprovals = kotlinx.coroutines.sync.Mutex()
+
     private val baseExcludedTools: Set<String> =
         if (subAgentDepth >= MAX_SUBAGENT_DEPTH) setOf(AgentTools.DELEGATE_TASK) else emptySet()
 
@@ -307,6 +313,10 @@ class AutonomousAgentEngine(
     /** True while the current run is in unattended mode (offers finish_task and ask_user). */
     @Volatile
     private var unattendedRun = false
+
+    /** The last approval request could not be delivered (not a rejection, #28). */
+    @Volatile
+    private var lastApprovalUnreachable = false
 
     /** The final reply finish_task produced in the current step (added after the tool results). */
     @Volatile
@@ -796,6 +806,7 @@ class AutonomousAgentEngine(
         val summary = finalReply?.text?.trim()
             ?: listOfNotNull(lastThought?.text?.trim(), lastSystem?.text).joinToString("\n\n").ifBlank { null }
             ?: "The task finished without a summary."
+        reflectOnRun(activeSessionId, state, turn, success)
         UnattendedResult(
             activeSessionId, summary, success, skipped,
             parkedApprovalId = state.parkedId,
@@ -1165,7 +1176,7 @@ class AutonomousAgentEngine(
         if (dropped.size < ContextCompactor.MIN_NEW_DROPPED) return
         val previous = state.contextSummary
         val text = try {
-            summarizeWithModel(ContextCompactor.transcript(previous, dropped))
+            askModelWithoutTools(ContextCompactor.SYSTEM_PROMPT, ContextCompactor.transcript(previous, dropped))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1178,23 +1189,62 @@ class AutonomousAgentEngine(
     }
 
     /** One model call without tools; null when it fails or returns nothing. */
-    private suspend fun summarizeWithModel(transcript: String): String? = withTimeoutOrNull(90_000L) {
-        var text: String? = null
+    private suspend fun askModelWithoutTools(systemPrompt: String, text: String): String? = withTimeoutOrNull(90_000L) {
+        var answer: String? = null
         llmClient.streamRequest(
             config = _modelConfig.value,
-            systemPrompt = ContextCompactor.SYSTEM_PROMPT,
-            messages = listOf(ChatMessage(role = MessageRole.USER, text = transcript)),
+            systemPrompt = systemPrompt,
+            messages = listOf(ChatMessage(role = MessageRole.USER, text = text)),
             excludedTools = AgentTools.ALL.map { it.name }.toSet()
         ).collect { event ->
             when (event) {
                 is LlmClient.LlmStreamEvent.Completed -> {
-                    text = event.fullText
+                    answer = event.fullText
                     recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd)
                 }
                 else -> Unit
             }
         }
-        text?.trim()?.takeIf { it.isNotEmpty() }
+        answer?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * After an unattended run that failed or ended incomplete: one review call that may store
+     * one lesson in the long-term memory (#24). A lesson that repeats untrusted content is not
+     * stored. Both outcomes are in the audit log.
+     */
+    private suspend fun reflectOnRun(sessionId: String, state: LoopState, turn: List<ChatMessage>, success: Boolean) {
+        val store = memoryStore ?: return
+        if (state.unattended == null || state.mode != RunMode.UNATTENDED) return
+        val reflect = LessonReflector.shouldReflect(
+            success, state.finishStatus, LessonReflector.failedSteps(turn), state.budgetExhausted,
+            parked = state.parkedId != null, stoppedByUser = stoppedByUser, providerFailed = state.providerFailed
+        )
+        if (!reflect) return
+        val list = _messages.value.filter { it.role != MessageRole.SYSTEM }
+        val task = list.getOrNull(taskRootIndex(list))?.text.orEmpty().substringBefore("[UNTRUSTED_OUTPUT_START]")
+        val answer = try {
+            askModelWithoutTools(LessonReflector.SYSTEM_PROMPT, LessonReflector.transcript(task, turn, state.contextSummary))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Reflection failed: ${e.message}")
+            null
+        }
+        val lesson = LessonReflector.parse(answer) ?: return
+        val call = ToolCall(id = "reflection-${state.runId.take(8)}", name = AgentTools.REMEMBER, arguments = mapOf("note" to lesson))
+        val fragment = state.guard?.untrustedFragment(lesson)
+        if (fragment != null) {
+            audit(state, sessionId, AgentTools.REMEMBER, call, "", AuditDecision.AUTO_DENIED, "reflection:untrusted",
+                "Lesson not stored: it repeats untrusted content (\"${fragment.take(60)}\").", "LOW", null, 0)
+            return
+        }
+        val status = store.rememberLesson(lesson)
+        val stored = status.startsWith("Saved")
+        audit(state, sessionId, AgentTools.REMEMBER, call, "", if (stored) AuditDecision.AUTO_ALLOWED else AuditDecision.INFO,
+            "reflection:lesson", "Lesson after an incomplete run. $status", "LOW",
+            ToolResult(toolCallId = call.id, command = "remember", stdout = status, exitCode = 0), 0)
+        if (stored) appendSystemMessage("💡 Lesson saved for next time: $lesson", sessionId)
     }
 
     /** A job answer of the daemon as text for the model. */
@@ -1427,18 +1477,38 @@ class AutonomousAgentEngine(
                 Log.w(TAG, "Phone turn start failed: ${e.message}")
             }
         }
-        for ((index, toolCall) in tools.withIndex()) {
+        var index = 0
+        while (index < tools.size) {
+            val toolCall = tools[index]
             if (!currentCoroutineContext().isActive) break
             if (state.stopRequested) {
                 // A previous call in this batch ended the run; answer the remaining calls so the
                 // conversation stays valid for every provider.
                 appendToolMessage(executionSessionId, toolCall, toolCall.name, AgentTools.describe(toolCall), "", "Skipped: execution was stopped.", -1, isError = true)
+                index++
+                continue
+            }
+            val group = ParallelDelegation.groupSize(tools, index)
+            if (group > 1) {
+                // Several sub-tasks in one turn run side by side (#25); each still goes through every check.
+                coroutineScope {
+                    (index until index + group).map { i ->
+                        async {
+                            executeToolCall(
+                                executionSessionId, assistantMsgId, tools[i], i, tools,
+                                mode, state, skippedApprovals, pendingVisionObservations
+                            )
+                        }
+                    }.awaitAll()
+                }
+                index += group
                 continue
             }
             executeToolCall(
                 executionSessionId, assistantMsgId, toolCall, index, tools,
                 mode, state, skippedApprovals, pendingVisionObservations
             )
+            index++
         }
 
         for (vision in pendingVisionObservations) {
@@ -1647,6 +1717,7 @@ class AutonomousAgentEngine(
                     tryParkApproval(sessionId, assistantMsgId, toolCall, securedToolCall, assessment, description, state)
                 ) return
                 val skippedBefore = skippedApprovals.size
+                lastApprovalUnreachable = false
                 val approved = requestApproval(
                     assistantMsgId, securedToolCall, assessment, description, mode, skippedApprovals,
                     onScreen = state.control != null && PhoneTools.isPhoneTool(toolCall.name)
@@ -1660,7 +1731,11 @@ class AutonomousAgentEngine(
                 if (!approved) {
                     releasePhoneCall(toolCall)
                     val notAsked = skippedApprovals.size > skippedBefore
-                    val reason = if (notAsked) {
+                    val unreachable = lastApprovalUnreachable
+                    val reason = if (unreachable) {
+                        "Not executed: the user could not be reached to approve it (network problem). This is not a " +
+                            "rejection: you may ask for it again later in this task, or continue without it."
+                    } else if (notAsked) {
                         "Not executed: this action requires the user's approval, and the user cannot be asked during this " +
                             "run. Skip it and mention it in your summary."
                     } else {
@@ -1669,10 +1744,10 @@ class AutonomousAgentEngine(
                     }
                     val rejected = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "", reason, -1, isError = true)
                     updateMessageToolResult(assistantMsgId, rejected, MessageStatus.ERROR)
-                    recordAudit(sessionId, description, assessment.level.name, if (notAsked) "Needs approval (user not present)" else "Rejected by the user", rejected, 0, approved = false)
+                    recordAudit(sessionId, description, assessment.level.name, if (notAsked || unreachable) "Needs approval (user not present)" else "Rejected by the user", rejected, 0, approved = false)
                     audit(state, sessionId, toolCall.name, displayCall, description,
-                        if (notAsked) AuditDecision.SKIPPED else AuditDecision.REJECTED,
-                        if (notAsked) "no_one_to_ask" else "user", assessment.reason, assessment.level.name, rejected, 0, assessment.redact, app)
+                        if (notAsked || unreachable) AuditDecision.SKIPPED else AuditDecision.REJECTED,
+                        if (unreachable) "user_unreachable" else if (notAsked) "no_one_to_ask" else "user", assessment.reason, assessment.level.name, rejected, 0, assessment.redact, app)
                     return
                 }
             }
@@ -1849,6 +1924,10 @@ class AutonomousAgentEngine(
                 updateMessageStatus(assistantMsgId, MessageStatus.WAITING_FOR_APPROVAL)
                 try {
                     handler(call, assessment)
+                } catch (e: ApprovalUnreachableException) {
+                    // Not a rejection: nobody could be asked right now (#28).
+                    lastApprovalUnreachable = true
+                    false
                 } finally {
                     updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
                 }
@@ -2089,14 +2168,22 @@ class AutonomousAgentEngine(
                 val p = platform ?: return fail("Scheduling is not available.")
                 val delay = a["delay_minutes"]?.trim()?.toDoubleOrNull()?.toLong()?.coerceAtLeast(0) ?: 0L
                 val repeat = a["repeat_every_minutes"]?.trim()?.toDoubleOrNull()?.toLong()?.coerceAtLeast(0) ?: 0L
+                val conditions = AgentTools.conditionsOf(a)
                 val id = p.scheduleAgentTask(
                     title = a["title"].orEmpty().ifBlank { "Scheduled task" },
                     prompt = a["prompt"].orEmpty(),
                     delayMinutes = delay,
-                    repeatEveryMinutes = if (repeat in 1 until 15) 15 else repeat
+                    repeatEveryMinutes = if (repeat in 1 until 15) 15 else repeat,
+                    conditions = conditions
                 )
                 val repeatText = if (repeat > 0) ", repeating every ${maxOf(repeat, 15)} minutes" else ""
-                ok("Scheduled (id: $id). First run in about $delay minutes$repeatText. Android may delay background runs slightly.")
+                val whenText = if (conditions.any) " It starts only when: ${conditions.describe()}." else ""
+                ok("Scheduled (id: $id). First run in about $delay minutes$repeatText.$whenText Android may delay background runs slightly.")
+            }
+            AgentTools.LIST_RUNS -> {
+                val p = platform ?: return fail("The run history is not available.")
+                val limit = a["limit"]?.trim()?.toDoubleOrNull()?.toInt()?.coerceIn(1, 30) ?: 10
+                ok(p.listRecentRuns(limit).ifBlank { "No agent runs recorded yet." })
             }
             AgentTools.LIST_SCHEDULED_TASKS -> {
                 val p = platform ?: return fail("Scheduling is not available.")
@@ -2337,7 +2424,10 @@ class AutonomousAgentEngine(
         child.attachmentSink = attachmentSink
         child.approvalHandler = { childCall, assessment ->
             val childDescription = "[sub-agent] " + AgentTools.describe(childCall)
-            requestApproval(assistantMsgId, childCall, assessment, childDescription, parentMode, parentSkipped)
+            // Children running side by side ask one at a time (#25).
+            subAgentApprovals.withLock {
+                requestApproval(assistantMsgId, childCall, assessment, childDescription, parentMode, parentSkipped)
+            }
         }
         child.activityListener = { line ->
             updateStreamingOutput(assistantMsgId, "▸ $line\n")

@@ -27,9 +27,9 @@ class AgentRuntime private constructor(context: Context) {
     /** The user's persona and standing instructions for the agent (like OpenClaw's SOUL.md). */
     val personaStore = TextFileStore(File(appContext.filesDir, "agent/SOUL.md"))
     val scheduler = SchedulerManager(appContext)
-    val platform: AgentPlatform = AndroidAgentPlatform(appContext, scheduler) { title, message ->
+    val platform: AgentPlatform = AndroidAgentPlatform(appContext, scheduler, database, { title, message ->
         telegram.deliver(title, message)
-    }
+    })
     /** Phone control layer (screen, notifications, intents, Shizuku) shared by every engine. */
     val phoneController: com.agent.mobile.agent.PhoneController =
         com.agent.mobile.phone.AndroidPhoneController(appContext, preferenceManager) { title, prompt ->
@@ -67,6 +67,7 @@ class AgentRuntime private constructor(context: Context) {
 class AndroidAgentPlatform(
     private val context: Context,
     private val scheduler: SchedulerManager,
+    private val database: AppDatabase? = null,
     /** Second place for agent messages (paired Telegram accounts, when switched on). */
     private val alsoDeliver: (title: String, message: String) -> Unit = { _, _ -> }
 ) : AgentPlatform {
@@ -95,6 +96,15 @@ class AndroidAgentPlatform(
 
     override fun scheduleAgentTask(title: String, prompt: String, delayMinutes: Long, repeatEveryMinutes: Long): String =
         scheduler.scheduleAgentTask(title, prompt, delayMinutes, repeatEveryMinutes)
+
+    override fun scheduleAgentTask(
+        title: String, prompt: String, delayMinutes: Long, repeatEveryMinutes: Long, conditions: com.agent.mobile.agent.TaskConditions
+    ): String = scheduler.scheduleAgentTask(title, prompt, delayMinutes, repeatEveryMinutes, conditions = conditions)
+
+    override suspend fun listRecentRuns(limit: Int): String = withContext(Dispatchers.IO) {
+        val db = database ?: return@withContext ""
+        com.agent.mobile.agent.RunHistory.format(db, limit)
+    }
 
     override suspend fun listAgentTasks(): String = withContext(Dispatchers.IO) { scheduler.describeAgentTasks() }
 

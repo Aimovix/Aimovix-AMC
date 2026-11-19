@@ -113,12 +113,10 @@ class SchedulerManager(private val context: Context) {
         prompt: String,
         delayMinutes: Long,
         repeatEveryMinutes: Long,
-        trigger: String = com.agent.mobile.agent.RunTrigger.SCHEDULE
+        trigger: String = com.agent.mobile.agent.RunTrigger.SCHEDULE,
+        conditions: com.agent.mobile.agent.TaskConditions = com.agent.mobile.agent.TaskConditions()
     ): String {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .setRequiresBatteryNotLow(false)
-            .build()
+        val constraints = constraintsFor(conditions)
         val data = workDataOf(
             AgentTaskWorker.KEY_KIND to AgentTaskWorker.KIND_TASK,
             AgentTaskWorker.KEY_TITLE to title.take(80),
@@ -268,6 +266,13 @@ class SchedulerManager(private val context: Context) {
     }
 
     companion object {
+        /** WorkManager constraints of an agent task: always a network; Wi-Fi, charging and battery on request (#23). */
+        fun constraintsFor(conditions: com.agent.mobile.agent.TaskConditions): Constraints = Constraints.Builder()
+            .setRequiredNetworkType(if (conditions.requiresWifi) NetworkType.UNMETERED else NetworkType.CONNECTED)
+            .setRequiresCharging(conditions.requiresCharging)
+            .setRequiresBatteryNotLow(conditions.requiresBatteryNotLow)
+            .build()
+
         const val AGENT_TASK_TAG = "amc_agent_task"
         const val HEARTBEAT_TAG = "amc_heartbeat"
         const val HEARTBEAT_WORK_NAME = "amc_heartbeat"

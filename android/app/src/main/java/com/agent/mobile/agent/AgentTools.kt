@@ -36,6 +36,7 @@ object AgentTools {
     const val DELEGATE_TASK = "delegate_task"
     const val SEARCH_HISTORY = "search_history"
     const val SEND_FILE = "send_file"
+    const val LIST_RUNS = "list_runs"
     /** Unattended runs only: ends the task with a summary and an honest status (#5). */
     const val FINISH_TASK = "finish_task"
     /** Unattended runs only: a question nobody can answer; the agent decides itself (#22). */
@@ -184,8 +185,17 @@ object AgentTools {
                 Param("title", ParamType.STRING, "Short name for the task."),
                 Param("prompt", ParamType.STRING, "Complete instruction for the future run."),
                 Param("delay_minutes", ParamType.INTEGER, "Minutes from now until the first run (0 = as soon as possible).", required = false),
-                Param("repeat_every_minutes", ParamType.INTEGER, "Repeat interval in minutes (minimum 15). Omit or 0 for a one-time task.", required = false)
+                Param("repeat_every_minutes", ParamType.INTEGER, "Repeat interval in minutes (minimum 15). Omit or 0 for a one-time task.", required = false),
+                Param("requires_wifi", ParamType.BOOLEAN, "Start only on Wi-Fi (unmetered network).", required = false),
+                Param("requires_charging", ParamType.BOOLEAN, "Start only while the phone is charging.", required = false),
+                Param("requires_battery_not_low", ParamType.BOOLEAN, "Start only when the battery is not low.", required = false)
             )
+        ),
+        Definition(
+            LIST_RUNS,
+            "List the latest agent runs (scheduled tasks, heartbeat, chat tasks handed to the background) with their " +
+                "status (done, failed, continued, waiting) and outcome. Use it to check whether earlier background work succeeded.",
+            listOf(Param("limit", ParamType.INTEGER, "Number of runs (1-30, default 10).", required = false))
         ),
         Definition(
             DELEGATE_TASK,
@@ -357,9 +367,11 @@ object AgentTools {
                 buildString {
                     append("schedule_task \"").append(a["title"].orEmpty()).append("\" in ").append(delay).append(" min")
                     if (repeat != null) append(", every ").append(repeat).append(" min")
+                    conditionsOf(a).takeIf { it.any }?.let { append(" when ").append(it.describe()) }
                 }
             }
             LIST_SCHEDULED_TASKS -> "list_scheduled_tasks"
+            LIST_RUNS -> "list_runs"
             CANCEL_SCHEDULED_TASK -> "cancel_scheduled_task ${a["task_id"].orEmpty()}"
             WEB_SEARCH -> "web_search: ${a["query"].orEmpty().take(160)}"
             DELEGATE_TASK -> "delegate_task: ${a["task"].orEmpty().replace('\n', ' ').take(160)}"
@@ -370,6 +382,13 @@ object AgentTools {
             else -> "${call.name} ${JSONObject(a as Map<*, *>)}"
         }
     }
+
+    /** The start conditions of a schedule_task call (#23). */
+    fun conditionsOf(a: Map<String, String>): com.agent.mobile.agent.TaskConditions = TaskConditions(
+        requiresWifi = PhoneTools.isTrue(a["requires_wifi"]),
+        requiresCharging = PhoneTools.isTrue(a["requires_charging"]),
+        requiresBatteryNotLow = PhoneTools.isTrue(a["requires_battery_not_low"])
+    )
 
     /** Longer text for approval cards: shows what will be written or scheduled. */
     fun approvalPreview(call: ToolCall): String {
@@ -453,7 +472,7 @@ object AgentTools {
                     SecurityAssessment(RiskLevel.MEDIUM, "Network request (download)")
                 }
             }
-            REMEMBER, FORGET, UPDATE_PLAN, NOTIFY_USER, LIST_SCHEDULED_TASKS ->
+            REMEMBER, FORGET, UPDATE_PLAN, NOTIFY_USER, LIST_SCHEDULED_TASKS, LIST_RUNS ->
                 SecurityAssessment(RiskLevel.LOW, "Agent bookkeeping")
             WEB_SEARCH -> {
                 if (a["query"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A search query is required.")
