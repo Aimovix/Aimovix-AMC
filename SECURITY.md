@@ -31,11 +31,25 @@ Android credentials use encrypted preferences. If initialization fails, AMC stop
 
 ## Command approval
 
-New installations use the **Default** security preset (manual review for all terminal commands). **Turbo mode** bypasses interactive approvals for maximum speed while strictly maintaining the hardcoded catastrophic blocklist. **Full machine** requires command approvals while granting open filesystem access. The **Custom** preset allows users to configure custom allowlists, blocklists, and strict mode. High-risk operations, scripts, unknown commands, and shell composition cannot receive allowlist exceptions. Known catastrophic patterns are always blocked across all presets.
+New installations use the **Autonomous** security preset (routine work runs on its own; sensitive actions ask). **Supervised** reviews every action. **Unattended (Turbo)** without its opt-in bypasses interactive approvals except for always-confirm actions while strictly maintaining the hardcoded catastrophic blocklist; with the opt-in it is the unattended mode described below. **Full machine** requires command approvals while granting open filesystem access. The **Custom** preset allows users to configure custom allowlists, blocklists, and strict mode. High-risk operations, scripts, unknown commands, and shell composition cannot receive allowlist exceptions. Known catastrophic patterns are always blocked across all presets.
 
 A direct terminal submission is an explicit user command, not an autonomous agent decision. The client still blocks catastrophic patterns. Manually synchronized cron schedules run independently of interactive agent approval; review their contents before installing them.
 
 Approved scripts can access whatever Termux can access. Broad allowlist rules can authorize unintended operations within recognized command families. Prefer exact rules and inspect command arguments. No finite regular-expression filter can prove arbitrary shell code safe.
+
+## Unattended mode
+
+Unattended mode is opt-in: the Unattended (Turbo) preset plus a one-time confirmation dialog that shows the allowed, refused and never-allowed actions (both answers equally large). In this mode nothing waits for a person: a fixed rule per category either allows and logs an action or refuses and logs it, tells the model, and the run continues. Refused by default (and only unlockable by the user, never by the agent): payments and purchases, calls, accounts and logins, app installs from stores.
+
+**Fixed floor, never switchable:** catastrophic shell targets (root, home, storage root), banking, password and authenticator apps (also when the user released them for supervised use), Android security settings (also through Shizuku `settings put secure …`), AMC itself (package, permissions, data, persona, its own security settings) and the bridge token. The bridge token rule (`~/.termux_agent_token`, `amc token`) applies in every mode, also in scripts.
+
+**Prompt injection:** web pages, files, screens, notifications, downloads, sub-agent reports and messages from other Telegram users are data. Once a run has read such data, an action caused by it cannot unlock a refused category, create durable memory entries or lessons, schedules, notification triggers or skills: these need the user's task to ask for them and must not repeat distinctive content (addresses, links, numbers, five words in a row) from the untrusted data. This is a heuristic, not an isolation mechanism.
+
+**Limits and stop:** optional per-run limits (duration, screen actions, messages sent) end a run cleanly with a report. The chat's stop button, the "Stop all agents" notification action and Quick Settings tile, the phone-control banner and `/stop` in Telegram stop every unattended run.
+
+## Audit log
+
+Every tool call is written to the `audit_events` table: time, run, session, trigger, tool, app, arguments (redacted like password fields; one-time codes and tokens masked; calls carrying a secret keep no values), decision with rule and reason, result summary, duration and exit code. Each entry stores the SHA-256 of its content and of the previous entry; the app verifies the chain and names the first broken entry. The agent has no tool that reads, changes or deletes the log. Retention (30/90/365 days, plus a size bound) removes only whole prefixes of the chain, so the rest stays verifiable. The hash chain detects edits by apps or people without root; it cannot stop someone with root access to the device from rewriting the whole database.
 
 ## Process control
 

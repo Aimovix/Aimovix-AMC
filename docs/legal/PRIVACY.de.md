@@ -32,6 +32,8 @@ App-Backups sind für AMC deaktiviert (`allowBackup=false`). AMC enthält keine 
 - **DuckDuckGo** erhält die Suchbegriffe des Werkzeugs `web_search` und deine IP-Adresse.
 - **Apps, die du den Agenten bedienen lässt**, erhalten Tipper und eingegebenen Text, als hättest du sie eingegeben. Antworten über Benachrichtigungen gehen an die App, die die Benachrichtigung gezeigt hat.
 - **Telegram** (nur wenn du den Telegram-Kanal aktivierst): Nachrichten an deinen Bot, die Antworten des Agenten, Freigabeanfragen und Dateien, die der Agent dir schickt, werden über die Server von Telegram übertragen und nach dessen Datenschutzerklärung verarbeitet, möglicherweise außerhalb der EU/des EWR. Nur Telegram-Konten, die du mit einem Einmal-Code koppelst, können mit dem Agenten sprechen.
+- **Sprachausgabe** (nur bei *Vorlesen*): der Antworttext geht an die auf deinem Handy installierte Sprachausgabe; je nach Sprachausgabe kann er von deren Anbieter verarbeitet werden.
+- **Geteilte Inhalte**: Texte, Links oder Bilder, die du aus anderen Apps an AMC teilst, füllen nur das Eingabefeld; an deinen KI-Anbieter gehen sie erst, wenn du sie sendest.
 - **Termux-Bridge**: läuft nur auf deinem Handy (`127.0.0.1`) und erfordert ein Token. Über sie verlassen keine Daten das Gerät.
 
 ## 4. Daten anderer Personen

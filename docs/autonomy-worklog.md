@@ -100,7 +100,7 @@ Reihenfolge laut Auftrag: Teil D (Fehlerprüfung) → Teil A + B (Unattended-Mod
 
 **Offen in Teil C:** #23, #24, #19, #25, #28, #11 (Ablaufzeit für geparkte Freigaben in anderen Modi) und der große Lauf-Test.
 
-## 2026-11-19 08:40 – Teil C, zweiter Block: Lernen, Fortsetzen, Parallelität, großer Lauf-Test (df998cc, 3bf14d7)
+## 2026-11-19 07:55 – Teil C, zweiter Block: Lernen, Fortsetzen, Parallelität, großer Lauf-Test (df998cc, 3bf14d7)
 
 **Was (in Alltagssprache):**
 - **#23 Bedingungen und Lauf-Rückblick:** Geplante Aufgaben können an Bedingungen hängen („nur mit WLAN", „nur beim Laden", „Akku nicht schwach"); Android startet sie erst dann. Das neue Werkzeug `list_runs` zeigt dem Agenten die letzten Läufe mit Status (erledigt, fehlgeschlagen, fortgesetzt, wartend) und Kurzfazit – damit kann z. B. der Heartbeat fehlgeschlagene Aufgaben finden.
@@ -119,3 +119,94 @@ Reihenfolge laut Auftrag: Teil D (Fehlerprüfung) → Teil A + B (Unattended-Mod
 **Tests:** Gradle 430 Unit-Tests grün (+15: Lektionen rotieren/ersetzen/verdrängen keine Fakten, Reflexions-Format, Lauf erzeugt Lektion, Lektion aus Webinhalt verworfen, Telegram-Fortsetzung bis fertig/max. drei Runden/keine bei fertigem Lauf, Sub-Agenten überlappen nachweislich, Gruppierung, Scheduler-Bedingungen, Telegram-Sendewiederholung, großer Lauf-Test ~18 s); Debug-APK gebaut; Python 54; `bash -n` ok; E2E 236 – alles grün.
 
 **Review:** Alle 40 Befunde haben jetzt eine Statuszeile; #11 und #19 sind „teilweise" (Begründung dort).
+
+## 2026-11-19 08:13 – Teil E: Funktionsvergleich und sechs neue Funktionen (ca6106d)
+
+**Was (in Alltagssprache):** Vergleich mit den großen KI-Apps (nur die Funktion, nicht das Aussehen) in `docs/feature-gap.md`; sechs Lücken mit dem besten Nutzen/Aufwand gebaut:
+- **E1 Formatierte Antworten:** Überschriften, Listen, Zitate, fett/kursiv, Links und Codeblöcke statt reinem Text; jeder Codeblock hat einen eigenen Knopf „Copy code". Während des Streamings bleibt ein offener Codeblock Code. Rechenausdrücke (`2 * 3`) und Dateinamen (`my_file.txt`) werden nicht kursiv.
+- **E2 Teilen an AMC:** In jeder App „Teilen → Ask AMC" (Link, Text, Foto). Der Inhalt landet im Eingabefeld der laufenden AMC-Instanz; der Nutzer schreibt dazu, was zu tun ist, und sendet selbst – nichts Geteiltes läuft von allein (auch kein zweiter Agent im Task der teilenden App).
+- **E3 Shortcuts und Kachel:** Langdruck auf das App-Symbol: „New task" und „Stop agents"; Schnelleinstellungs-Kachel „Stop AMC agents" (Notbremse von überall). Der von außen erreichbare Teilen-Eingang kann keine Läufe stoppen; die Shortcuts laufen über einen nicht exportierten Eingang.
+- **E4 Vorlesen:** Langdruck auf eine Antwort → „Read aloud" (Sprachausgabe des Handys, ohne Netz, ohne neue Berechtigung), „Stop reading".
+- **E5 Bearbeiten und senden:** Langdruck auf eine eigene Nachricht → „Edit and send" legt Text (und Bild) zurück ins Eingabefeld.
+- **E6 Lauf-Übersicht:** Neues Symbol oben im Chat (mit Zahl der laufenden Agenten): was gerade arbeitet (Chat, Hintergrund, Telegram, Sub-Agenten) mit „Stop" je Lauf und „Stop all"; die letzten Hintergrundläufe mit Status, „Report" (aus Sitzung und Audit gebaut) und „Open chat".
+
+**Entscheidungen:** Markdown ohne Textauswahl-Container, weil sonst das Langdruck-Menü der Nachricht nicht mehr auslöst (Kopieren bleibt über das Menü und die Code-Knöpfe). Teilen über eine eigene, unsichtbare Weiterleitungs-Activity in eigenem Task, damit nie eine zweite Chat-Engine entsteht. „Open chat" in der Übersicht nur, wenn der Chat gerade nicht arbeitet (ein Sitzungswechsel würde den laufenden Chat-Lauf stoppen).
+
+**Tests:** 18 neue (Markdown-Blöcke/Inline/Streaming, Code-Kopieren per Compose-Test, Teilen → Entwurf ohne Senden, exportierter Eingang kann nicht stoppen, Shortcuts stoppen/neue Aufgabe, Shortcut-XML zeigt auf den richtigen Eingang, Kachel stoppt alle Läufe, Vorlesen in Stücken und ohne Markdown, Menü „Edit and send"/„Read aloud"/„Stop reading", Lauf-Übersicht: Zeilen, Bericht aus Sitzung + Audit, Stop/Report-Knöpfe). Volle Prüfung: Gradle 448 Unit-Tests grün (vorher 430), Debug-APK gebaut; Python 54; `bash -n` ok; E2E 236 – alles grün.
+
+## 2026-11-19 08:13 – Abschluss (Commit „docs: release v1.9.0 …“, direkt nach ca6106d)
+
+README, PROJECT.md (Features 28–31, Versionsgeschichte), SECURITY.md (Unbeaufsichtigt-Modus, Untergrenze, Injection, Audit), Release-Notiz `docs/releases/v1.9.0.md`, Version 1.9.0 (versionCode 17). Datenschutzhinweise (App und `docs/legal`) um Vorlesen und Teilen ergänzt; die Version bleibt 4, weil Version 4 erst mit diesem Release erscheint (kein zweites Zustimmen nötig). Review: alle 40 Befunde mit Status, Autonomie-Score neu bewertet (5 → 8 von 10).
+
+### Gesamtübersicht
+
+| Baustein/Befund | Status | Commit | Tests | Restrisiko |
+|---|---|---|---|---|
+| Teil A Unbeaufsichtigt-Modus (Kategorien, Untergrenze, Injection-Schutz, Limits, Notbremse) | erledigt | 4a51344 | UnattendedPolicyTest, UnattendedRunTest, UnattendedUiTest, LongUnattendedRunTest | Injection-Schutz ist eine Heuristik (Schlüsselwörter, Fragmente); Klassifikation per Regex kann neue Befehle falsch einordnen |
+| Teil B Audit-Protokoll (Kette, Migration, Ansicht, Export, Bericht, Aufbewahrung) | erledigt | 4a51344 | AuditLoggerTest, RunReportTest, DatabaseMigrationTest | Kette schützt nicht gegen Root-Zugriff; alte Tabelle command_audits wird weiter mitgeschrieben |
+| Großer Lauf-Test (60+ Schritte, Bridge- und App-Neustart) | erledigt | 3bf14d7 | LongUnattendedRunTest | simuliert (Fake-LLM, Fake-Bridge), nicht auf echtem Gerät |
+| #1 Ziel verschwindet | behoben | 3030531 | AutonomousAgentEngineTest, HeadlessAgentRunTest | – |
+| #2 Abbruch nach 5 Fehlern | behoben | 3030531 | AutonomousAgentEngineTest | – |
+| #3 Filter stoppt Alltagsbefehle | behoben | 29f40ca | CommandSecurityFilterTest, PolicySimulatorTest | Regex-Filter ist keine Sandbox |
+| #4 Kompaktierung | behoben | c90dcfa | ContextCompactorTest, LongUnattendedRunTest | Zusammenfassung durch das Modell kann Details verlieren |
+| #5 Text beendet Lauf | behoben (unbeaufsichtigt) | c90dcfa | UnattendedRunTest | andere Modi bewusst unverändert |
+| #6 Budget/Prompt | behoben | f1b20f9 | AgentToolsExtrasTest | – |
+| #7 Wiederaufnahme | behoben | c4ebfc8 | RunResumeTest, TelegramGatewayTest | Fortsetzung nach Neustart nur innerhalb von 6 h |
+| #8 Loop-Schutz | behoben | 3030531 | AutonomousAgentEngineTest | – |
+| #9 Abgeschnittene Argumente | behoben | 3030531, 1c82b84 | AutonomousAgentEngineTest, LlmClientTest | – |
+| #10 Datei-Timeout | behoben | d433fa6 | BridgeReconnectRegressionTest | – |
+| #11 Geparkte Approvals | teilweise | 4a51344 | UnattendedRunTest | Ablauf/„merken" in beaufsichtigten Modi offen |
+| #12 Timeout verwirft Ausgabe | behoben | d433fa6 | BridgeReconnectRegressionTest | – |
+| #13 Hintergrundjobs | behoben | 0edad23 | FileToolsTest, test_bridge_daemon | Jobs überleben keinen Termux-Neustart |
+| #14 Lesefenster/edit_file | behoben | 0edad23 | FileToolsTest, WebFetcherTest | – |
+| #15 Reconnect | behoben | 0edad23 | BridgeContinuityTest, test_bridge_daemon | nach mehr als 25 s Trennung „Status unbekannt" |
+| #16 Skript-Bypass | behoben | 29f40ca, 3030531 | CommandSecurityFilterTest | Inhaltsprüfung nur für lesbare Skripte |
+| #17 Provider-Fallback | behoben | 3030531, 1c82b84 | ProviderRetryTest, LlmClientTest | – |
+| #18 Stream-Abbruch | behoben | 1c82b84, d088cab | LlmClientTest | – |
+| #19 Telegram-Läufe | teilweise | df998cc, 4a51344 | RemoteContinuationTest | Pro-App-Freigabe in beaufsichtigten Modi offen |
+| #20 Foreground-Service | behoben | c4ebfc8 | ForegroundServiceWakeLockTest | Android-6-h-Limit für dataSync bleibt Systemgrenze |
+| #21 Injection | behoben (unbeaufsichtigt) | 4a51344, df998cc | UnattendedRunTest, LongUnattendedRunTest | Heuristik |
+| #22 Rückfragen | behoben | c90dcfa | UnattendedRunTest | – |
+| #23 Trigger/Run-Liste | behoben | df998cc | SchedulerConditionsTest | Boot-Trigger nur über vorhandenen Receiver |
+| #24 Lernen aus Fehlern | behoben | df998cc | MemoryStoreTest, UnattendedRunTest | Lektionsqualität hängt vom Modell ab |
+| #25 Parallele Sub-Agenten | behoben | df998cc | ParallelDelegationTest | gleiche Bridge-Verbindung, Daemon max. 4 parallel |
+| #26 Arbeitsverzeichnis | behoben | 0edad23 | BridgeContinuityTest | – |
+| #27 Prompt-Kontext | behoben | f1b20f9 | AgentToolsExtrasTest | – |
+| #28 Telegram-Sendefehler | behoben | df998cc | TelegramGatewayTest | – |
+| #29 Batch-Sperrliste | behoben | ca1b6f5 | ActionBatchTest | – |
+| #30 Bridge-Token | behoben | 623b2f9 | CommandSecurityFilterTest | Umgehung über unbekannte Leseprogramme denkbar |
+| #31 Gemini-Stream | behoben | d088cab | LlmClientTest | – |
+| #32 Gemini-Key in URL | behoben | d088cab | LlmClientTest | – |
+| #33 Stopp trifft Terminal | behoben | 80de080 | EngineStopTest | – |
+| #34 Eigene Regeln | behoben | 623b2f9 | CommandSecurityFilterTest | – |
+| #35 Tab bei Drehung | behoben | ba575f1 | MainTabStateTest | – |
+| #36 Chip-Zielgröße | behoben | ba575f1 | RuleChipTest | – |
+| #37 web_fetch http | behoben | bea891f | WebFetcherTest | – |
+| #38 Audit unbegrenzt | behoben | 4a51344 | AuditLoggerTest | – |
+| #39 Telegram-Entkoppeln | behoben | a658e72 | TelegramGatewayTest | – |
+| #40 onClosing | behoben | 0edad23 | BridgeContinuityTest | – |
+| E1 Markdown + Code kopieren | erledigt | ca6106d | MarkdownTest | seltene Markdown-Formen (Tabellen) bleiben Text |
+| E2 Teilen an AMC | erledigt | ca6106d | EntryIntentsTest | nicht auf echtem Gerät geprüft |
+| E3 Shortcuts + Kachel | erledigt | ca6106d | EntryIntentsTest | Launcher-Verhalten herstellerabhängig |
+| E4 Vorlesen | erledigt | ca6106d | ReadAloudTest, MessageActionsTest | abhängig von installierter Sprachausgabe |
+| E5 Bearbeiten und senden | erledigt | ca6106d | MessageActionsTest | – |
+| E6 Lauf-Übersicht | erledigt | ca6106d | RunsInboxTest | Interaktive Chat-Läufe erscheinen nur unter „Running now", nicht in „Recent" |
+
+**Teil D – gefundene und behobene Fehler nach Schwere:** 12 gefunden, 12 behoben – HIGH 2 (#29, #30), MEDIUM 6 (#31, #32, #33, #34, #38, #40), LOW 4 (#35, #36, #37, #39).
+
+**Teil E – umgesetzte Funktionen:** 6 (E1 Markdown/Code kopieren, E2 Teilen an AMC, E3 Shortcuts und Kachel, E4 Vorlesen, E5 Bearbeiten und senden, E6 Lauf-Übersicht).
+
+**Prüfung zum Abschluss:** `./gradlew testDebugUnitTest assembleDebug` – 448 Tests, 0 Fehler, 0 übersprungen, Debug-APK 1.9.0 gebaut; `python -m unittest discover -s termux-bridge -p 'test_*.py'` – 54 OK; `bash -n termux-bridge/setup.sh termux-bridge/amc termux-bridge/local_model_manager.sh` – ok; `python tests/e2e/runner.py --all` – 236 bestanden. Der große Engine-Test (`LongUnattendedRunTest`) ist Teil der 448.
+
+**Nicht prüfbar in dieser Umgebung:** kein echtes Android-Gerät/Emulator – Unbeaufsichtigt-Läufe mit echten Apps, Bedienungshilfe, Teilen-Menü, Launcher-Shortcuts, Kachel, Sprachausgabe und Telegram mit echtem Bot wurden nur über Robolectric/Compose-Tests, Fake-LLM und Fake-Bridge geprüft.
+
+### Priorisierte Liste für die nächste Sitzung
+
+1. **Gerätetest** auf echtem Android (14/15): Unbeaufsichtigt-Lauf mit Bildschirmsteuerung, Teilen, Shortcuts, Kachel, Vorlesen, Neustart mitten im Lauf.
+2. **#11 Rest:** Ablaufzeit mit Erinnerung für geparkte Freigaben und „für diese Aufgabe erlauben" in beaufsichtigten Modi – mit ausdrücklicher Entscheidung, weil es deren Verhalten ändert.
+3. **#19 Rest:** Pro-App-Freigabe für Telegram-Läufe in beaufsichtigten Modi (gleicher Vorbehalt).
+4. **Injection-Schutz verbessern:** Herkunft pro Werkzeugaufruf statt Fragment-Heuristik (z. B. Kennzeichnung, welche Argumente aus fremden Inhalten stammen).
+5. **Lektionen zusammenfassen** statt ersetzen/rotieren, wenn viele ähnliche Lektionen entstehen.
+6. **Teil E weiter:** Sitzungen anheften/umbenennen, Datei-Anhänge (PDF/Text) direkt im Chat, Startbildschirm-Widget, Antwort neu erzeugen.
+7. **AutonomousAgentEngine.kt verkleinern** (über 3000 Zeilen): Werkzeug-Dispatch und Freigabepfad in eigene Klassen.
+8. **command_audits** abschaffen, sobald die alten Tests auf das neue Audit umgestellt werden dürfen.

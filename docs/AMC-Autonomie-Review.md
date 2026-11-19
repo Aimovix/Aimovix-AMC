@@ -12,6 +12,22 @@ Autonomie-Score: 5/10
 8. Tools: ⚠️ Kein edit_file, keine Hintergrundjobs, Seiten nur 5,5k Zeichen.
 9. Prompting: ⚠️ Kern gut; Budget-Satz und „frag den Nutzer" bremsen.
 
+## Neubewertung nach v1.9.0 (2026-11-19)
+
+Autonomie-Score: 8/10 (vorher 5/10)
+
+1. Loop: ✅ Unbeaufsichtigt endet ein Lauf erst mit `finish_task` (Status erledigt/teilweise/blockiert); Budgetende führt im Hintergrund und in Telegram zur Fortsetzung.
+2. Selbstprüfung: ⚠️ Weiterhin prompt-getrieben; ehrlicher Abschlussstatus und Laufbericht, aber kein erzwungener Prüfschritt.
+3. Fehlerbehandlung: ✅ Kein harter Abbruch nach Fehlerserien, Provider-Retry mit Fallback, Bridge-Selbstheilung, Lektionen aus Fehlschlägen.
+4. Lange Läufe: ✅ Kompaktierung mit angeheftetem Ziel und Plan, Wiederaufnahme nach App-/Telefon-Neustart, Hintergrundjobs, Reconnect ohne Doppelausführung.
+5. Approvals: ✅ Unbeaufsichtigt nie Fragen, feste Regeln je Kategorie, Untergrenze; ⚠️ in beaufsichtigten Modi weiterhin kein Ablauf/„merken" (#11 teilweise).
+6. Initiative: ✅ Zeit, Heartbeat, Notification-Trigger, Bedingungen (WLAN/Laden/Akku), Rückblick auf Läufe.
+7. Memory: ✅ Fakten bleiben, Lektionen rotieren; ⚠️ keine Zusammenfassung ähnlicher Lektionen.
+8. Tools: ✅ edit_file, Lesefenster, Jobs, parallele Sub-Agenten.
+9. Prompting: ✅ Uhrzeit, Zeitzone, Gerät, ehrliches Budget, eigener Unbeaufsichtigt-Teil.
+
+Warum nicht höher: kein Gerätetest; Injection-Schutz ist eine Heuristik; #11 und #19 in beaufsichtigten Modi bewusst nur teilweise (Hard Rule „andere Modi exakt wie vorher").
+
 Basis aller Kotlin-Pfade: `android/app/src/main/java/com/agent/mobile/`
 
 ---
