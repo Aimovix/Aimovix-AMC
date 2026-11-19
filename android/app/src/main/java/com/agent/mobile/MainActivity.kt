@@ -49,6 +49,25 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
     var isInitialized = false
         private set
 
+    /** Text/image shared to AMC from another app, waiting to fill the chat input (Teil E, E2). */
+    val pendingDraft = kotlinx.coroutines.flow.MutableStateFlow<com.agent.mobile.entry.ChatDraft?>(null)
+
+    /** Increases for every outside request to show the chat (share or "New task" shortcut). */
+    val openChatRequests = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    /** Increases for every "New task" shortcut: the chat starts a fresh session. */
+    val newTaskRequests = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    /** Handles an intent relayed by the share target or a launcher shortcut. */
+    fun handleEntry(intent: android.content.Intent?) {
+        val draft = com.agent.mobile.entry.EntryIntents.draftFromRelay(intent)
+        val newTask = intent?.getBooleanExtra(com.agent.mobile.entry.EntryIntents.EXTRA_NEW_TASK, false) == true
+        if (draft == null && !newTask) return
+        if (newTask) newTaskRequests.value += 1
+        if (draft != null) pendingDraft.value = draft
+        openChatRequests.value += 1
+    }
+
     fun init(context: android.content.Context) {
         if (isInitialized) return
         val runtime = AgentRuntime.get(context)
@@ -164,6 +183,8 @@ class MainActivity : ComponentActivity() {
         }
 
         val savedToken = preferenceManager.loadAuthToken()
+        // A share or shortcut that started the app (not again after rotation).
+        if (savedInstanceState == null) viewModel.handleEntry(intent)
 
         // Request notification permission on Android 13+
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -195,6 +216,17 @@ class MainActivity : ComponentActivity() {
                 var showTutorial by rememberSaveable {
                     mutableStateOf(!preferenceManager.hasCompletedTutorial())
                 }
+                val openChatRequests by viewModel.openChatRequests.collectAsState()
+                // Handled requests are saved, so a rotation does not jump back to the chat.
+                var handledOpenChat by rememberSaveable { mutableStateOf(0L) }
+                LaunchedEffect(openChatRequests) {
+                    if (openChatRequests > handledOpenChat) {
+                        handledOpenChat = openChatRequests
+                        selectedTab = 0
+                    }
+                }
+                val pendingDraft by viewModel.pendingDraft.collectAsState()
+                val newTaskRequests by viewModel.newTaskRequests.collectAsState()
 
                 Box(modifier = Modifier.fillMaxSize()) {
                     Scaffold(
@@ -310,7 +342,10 @@ class MainActivity : ComponentActivity() {
                                     agentEngine = agentEngine,
                                     bridgeClient = bridgeClient,
                                     onNavigateSetup = { selectedTab = 2 },
-                                    onNavigateSettings = { selectedTab = 3 }
+                                    onNavigateSettings = { selectedTab = 3 },
+                                    draft = pendingDraft,
+                                    onDraftConsumed = { viewModel.pendingDraft.value = null },
+                                    newTaskRequest = newTaskRequests
                                 )
                                 1 -> com.agent.mobile.ui.terminal.TerminalScreen(
                                     bridgeClient = bridgeClient
@@ -358,6 +393,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (viewModel.isInitialized) viewModel.handleEntry(intent)
     }
 
     override fun onStart() {

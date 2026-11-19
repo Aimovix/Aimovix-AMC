@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher shortcuts (long-press on the AMC icon). Both go through ShortcutRelayActivity. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_task"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_new_task"
+        android:shortcutShortLabel="@string/shortcut_new_task_short"
+        android:shortcutLongLabel="@string/shortcut_new_task_long">
+        <intent
+            android:action="com.agent.mobile.action.NEW_TASK"
+            android:targetPackage="com.agent.mobile"
+            android:targetClass="com.agent.mobile.entry.ShortcutRelayActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="stop_all"
+        android:enabled="true"
+        android:icon="@drawable/ic_tile_stop"
+        android:shortcutShortLabel="@string/shortcut_stop_all_short"
+        android:shortcutLongLabel="@string/shortcut_stop_all_long">
+        <intent
+            android:action="com.agent.mobile.action.STOP_ALL"
+            android:targetPackage="com.agent.mobile"
+            android:targetClass="com.agent.mobile.entry.ShortcutRelayActivity" />
+    </shortcut>
+</shortcuts>

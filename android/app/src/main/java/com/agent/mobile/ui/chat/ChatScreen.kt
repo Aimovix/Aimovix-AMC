@@ -32,10 +32,12 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,9 +59,11 @@ import com.agent.mobile.ui.chat.components.AgentProgressPanel
 import com.agent.mobile.ui.chat.components.ConnectionBanner
 import com.agent.mobile.ui.chat.components.ArtifactViewerDialog
 import com.agent.mobile.ui.chat.components.MessageBubble
+import com.agent.mobile.entry.ChatDraft
 import com.agent.mobile.ui.chat.components.MessageActionsSheet
 import com.agent.mobile.ui.chat.components.EmptyStateSuggestions
 import com.agent.mobile.ui.chat.components.QuickActionToolbar
+import com.agent.mobile.ui.chat.components.RunsInboxDialog
 import com.agent.mobile.ui.chat.components.SessionDrawerContent
 import com.agent.mobile.ui.chat.components.VoiceInputButton
 import com.agent.mobile.data.storage.PreferenceManager
@@ -77,7 +81,12 @@ fun ChatScreen(
     bridgeClient: TermuxBridgeClient,
     onNavigateSetup: () -> Unit,
     onNavigateSettings: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Shared from another app: fills the input (and the image), never sends on its own. */
+    draft: ChatDraft? = null,
+    onDraftConsumed: () -> Unit = {},
+    /** Increases for every "New task" shortcut. */
+    newTaskRequest: Long = 0L
 ) {
     val messages by agentEngine.messages.collectAsState()
     val isBusy by agentEngine.isBusy.collectAsState()
@@ -97,6 +106,8 @@ fun ChatScreen(
     var inputText by remember { mutableStateOf("") }
     var showModelPickerDialog by remember { mutableStateOf(false) }
     var actionMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var showRunsInbox by remember { mutableStateOf(false) }
+    val activeRuns by com.agent.mobile.agent.RunRegistry.active.collectAsState()
     val inputFocus = remember { FocusRequester() }
     val haptics = LocalHapticFeedback.current
     var viewingArtifactPath by remember { mutableStateOf<String?>(null) }
@@ -113,6 +124,35 @@ fun ChatScreen(
     val context = LocalContext.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+
+    // Read aloud (text-to-speech), released with the screen.
+    val readAloud = remember { ReadAloud(context) }
+    val reading by readAloud.speaking.collectAsState()
+    DisposableEffect(readAloud) { onDispose { readAloud.shutdown() } }
+
+    // A share from another app fills the input; the user decides what to ask and sends it.
+    LaunchedEffect(draft) {
+        val d = draft ?: return@LaunchedEffect
+        if (d.text.isNotBlank()) inputText = if (inputText.isBlank()) d.text else inputText + "\n\n" + d.text
+        d.imageUri?.let { uri ->
+            processImageUri(context, uri)?.let { res ->
+                pendingImageBase64 = res.first
+                pendingImageMimeType = res.second
+                pendingImageBitmap = res.third
+            }
+        }
+        onDraftConsumed()
+        runCatching { inputFocus.requestFocus() }
+    }
+    // "New task" shortcut: a fresh chat with the cursor in the input (once per request, also across rotation).
+    var handledNewTask by rememberSaveable { mutableStateOf(0L) }
+    LaunchedEffect(newTaskRequest) {
+        if (newTaskRequest > handledNewTask) {
+            handledNewTask = newTaskRequest
+            if (!isBusy) agentEngine.createNewSession()
+            runCatching { inputFocus.requestFocus() }
+        }
+    }
 
     // Activity result launchers for camera and gallery
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -304,6 +344,19 @@ fun ChatScreen(
                                             }
                                         )
                                     }
+                                }
+                            }
+
+                            // Agent runs overview (badge = runs working right now)
+                            IconButton(onClick = { showRunsInbox = true }) {
+                                BadgedBox(badge = {
+                                    if (activeRuns.isNotEmpty()) Badge(containerColor = AccentPrimary) { Text("${activeRuns.size}") }
+                                }) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.List,
+                                        contentDescription = if (activeRuns.isEmpty()) "Agent runs" else "Agent runs, ${activeRuns.size} running",
+                                        tint = TextSecondary
+                                    )
                                 }
                             }
 
@@ -727,16 +780,53 @@ fun ChatScreen(
         }
     }
 
-    // Long-press menu for a message: copy, or send the same request again
+    // Long-press menu for a message: copy, edit, send again, read aloud
     actionMessage?.let { message ->
         val resend: () -> Unit = {
             agentEngine.startTask(message.text, message.imageBase64, message.imageMimeType)
             actionMessage = null
         }
+        val edit: () -> Unit = {
+            inputText = message.text
+            pendingImageBase64 = message.imageBase64
+            pendingImageMimeType = message.imageMimeType ?: "image/jpeg"
+            pendingImageBitmap = message.imageBase64?.let { b64 ->
+                runCatching {
+                    val bytes = Base64.decode(b64, Base64.DEFAULT)
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                }.getOrNull()
+            }
+            actionMessage = null
+            runCatching { inputFocus.requestFocus() }
+        }
+        val isUser = message.role == MessageRole.USER
+        val readable = message.role == MessageRole.ASSISTANT && message.text.isNotBlank()
         MessageActionsSheet(
             message = message,
-            onResend = if (message.role == MessageRole.USER) resend else null,
-            onDismiss = { actionMessage = null }
+            onResend = if (isUser) resend else null,
+            onDismiss = { actionMessage = null },
+            onEdit = if (isUser && !isBusy) edit else null,
+            onReadAloud = if (readable) ({ readAloud.speak(message.text); actionMessage = null }) else null,
+            onStopReading = if (readable && reading) ({ readAloud.stop(); actionMessage = null }) else null
+        )
+    }
+
+    if (showRunsInbox) {
+        val repo = agentEngine.chatRepository
+        val recentFlow = remember(repo) { repo?.recentRunsFlow() ?: kotlinx.coroutines.flow.flowOf(emptyList()) }
+        RunsInboxDialog(
+            active = activeRuns,
+            recentFlow = recentFlow,
+            chats = repo,
+            audit = repo?.auditLogger,
+            canOpenChat = !isBusy,
+            onStop = { runId -> com.agent.mobile.agent.RunRegistry.stop(runId) },
+            onStopAll = { com.agent.mobile.agent.RunRegistry.stopAll() },
+            onOpenChat = { sessionId ->
+                agentEngine.switchSession(sessionId)
+                showRunsInbox = false
+            },
+            onDismiss = { showRunsInbox = false }
         )
     }
 

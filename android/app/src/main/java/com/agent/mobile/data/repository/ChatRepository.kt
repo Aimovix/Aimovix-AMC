@@ -37,6 +37,9 @@ class ChatRepository(
         database.chatMessageDao().getMessagesForSessionSync(sessionId).map { it.toDomain() }
     }
 
+    /** Latest agent runs (background, handed-off chat runs), newest first, for the run overview. */
+    fun recentRunsFlow(limit: Int = 30) = database.agentQueueDao().recentRunsFlow(limit)
+
     suspend fun getSessionById(sessionId: String): ChatSession? = withContext(Dispatchers.IO) {
         database.chatSessionDao().getSessionById(sessionId)
     }

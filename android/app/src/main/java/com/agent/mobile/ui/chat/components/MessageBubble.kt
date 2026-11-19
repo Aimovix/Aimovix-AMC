@@ -20,6 +20,7 @@ import com.agent.mobile.data.model.ChatMessage
 import com.agent.mobile.data.model.MessageRole
 import com.agent.mobile.data.model.MessageStatus
 import com.agent.mobile.data.model.ToolCall
+import com.agent.mobile.ui.chat.markdown.MarkdownText
 import com.agent.mobile.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -95,7 +96,7 @@ private fun AssistantMessage(
     val allCalls = if (message.toolCalls.isNotEmpty()) message.toolCalls else listOfNotNull(message.toolCall)
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (message.text.isNotEmpty()) {
-            Text(text = message.text, style = MaterialTheme.typography.bodyLarge, color = TextWhite)
+            MarkdownText(text = message.text)
         } else if (message.status == MessageStatus.STREAMING && allCalls.isEmpty()) {
             Text(text = "Thinking…", style = MaterialTheme.typography.bodyMedium, color = TextMuted)
         }
