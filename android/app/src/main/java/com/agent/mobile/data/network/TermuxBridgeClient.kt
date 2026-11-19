@@ -56,6 +56,16 @@ class TermuxBridgeClient(
         const val MAX_WRITE_BYTES = 64L * 1024 * 1024
         const val WRITE_APPEND_CAPABILITY = "write_append"
         val LLM_ACTIONS = setOf("llm_status", "llm_install", "llm_start", "llm_stop", "llm_cancel", "llm_delete")
+        val JOB_ACTIONS = setOf("job_start", "job_status", "job_stop", "job_list")
+        const val JOBS_CAPABILITY = "jobs"
+
+        /** How long a running command survives a lost connection before its result counts as unknown (#15). */
+        const val RECONNECT_GRACE_MS = 25_000L
+
+        /** Result of a command whose connection was lost and not regained in time (#15). */
+        const val UNKNOWN_STATUS_HINT = "[AMC] The connection to Termux was lost while this command ran and it could not " +
+            "be followed after reconnecting. Its result is unknown: it may have finished or may still run. Check its effect " +
+            "(files, processes, logs) before running it again."
 
         /** Splits [content] into transfer chunks without cutting a surrogate pair. */
         fun chunkForTransfer(content: String, chunkChars: Int = WRITE_CHUNK_CHARS): List<String> {
@@ -236,6 +246,19 @@ class TermuxBridgeClient(
 
     // Map for waiting command execution completions
     private val pendingExecutions = ConcurrentHashMap<String, CompletableDeferred<ToolResult>>()
+    /** Executions waiting for the connection to come back (id → since when), see [holdPendingExecutions]. */
+    private val heldExecutions = ConcurrentHashMap<String, Long>()
+    private var holdWatchdog: Job? = null
+    @Volatile
+    internal var reconnectGraceMs: Long = RECONNECT_GRACE_MS
+    private val pendingJobRequests = ConcurrentHashMap<String, CompletableDeferred<JSONObject>>()
+
+    /**
+     * The shell's working folder as the daemon last reported it (#26). Sent with every command,
+     * so a reconnect (which starts a fresh daemon session in the home folder) keeps the folder.
+     */
+    @Volatile
+    var workingDirectory: String? = null
     private val executionBuffers = ConcurrentHashMap<String, ExecutionBuffers>()
     private val pendingPings = ConcurrentHashMap<String, CompletableDeferred<Long>>()
 
@@ -515,7 +538,7 @@ class TermuxBridgeClient(
 
     private fun handleConnectionLost(reason: String) {
         stopHeartbeat()
-        failAllPendingExecutions("Connection lost: $reason")
+        holdPendingExecutions("Connection lost: $reason")
         if (_connectionStatus.value !is ConnectionStatus.AuthFailed && !isManualDisconnect) {
             _connectionStatus.value = ConnectionStatus.Disconnected
             scheduleReconnect()
@@ -531,7 +554,7 @@ class TermuxBridgeClient(
         stopHeartbeat()
         authWatchdog?.cancel()
         val currentGen = connectionGeneration.incrementAndGet()
-        failAllPendingExecutions("Reconnecting to Termux bridge...")
+        holdPendingExecutions("Reconnecting to Termux bridge...")
 
         // Clean up previous socket
         try {
@@ -556,6 +579,9 @@ class TermuxBridgeClient(
                 val authMsg = JSONObject().apply {
                     put("action", "auth")
                     put("token", authToken)
+                    // Reattach only to our own running commands, never to another client's session (#15).
+                    put("claim", "own")
+                    put("execution_ids", org.json.JSONArray(pendingExecutions.keys.toList()))
                 }
                 ws.send(authMsg.toString())
                 // A bridge that accepts the socket but never answers would otherwise keep us in
@@ -571,7 +597,7 @@ class TermuxBridgeClient(
                         connectAttemptInFlight = false
                         if (webSocket === ws) webSocket = null
                         ws.cancel()
-                        failAllPendingExecutions("The bridge did not answer the login")
+                        holdPendingExecutions("The bridge did not answer the login")
                         _connectionStatus.value = ConnectionStatus.Error(
                             "The bridge accepted the connection but did not answer the login. Restart it with 'amc restart'."
                         )
@@ -585,6 +611,13 @@ class TermuxBridgeClient(
                 handleIncomingMessage(text)
             }
 
+            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                // The daemon closes cleanly (restart, shutdown): answer the close and treat the
+                // connection as lost now, not after the next heartbeat times out (#40).
+                ws.close(1000, null)
+                onClosed(ws, code, reason)
+            }
+
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 if (connectionGeneration.get() != currentGen) return
                 Log.w(TAG, "WebSocket closed ($code): $reason")
@@ -592,7 +625,7 @@ class TermuxBridgeClient(
                 authWatchdog?.cancel()
                 if (webSocket === ws) webSocket = null
                 stopHeartbeat()
-                failAllPendingExecutions("Connection to Termux closed ($reason)")
+                holdPendingExecutions("Connection to Termux closed ($reason)")
                 if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
                     _connectionStatus.value = ConnectionStatus.Disconnected
                     scheduleReconnect()
@@ -606,7 +639,7 @@ class TermuxBridgeClient(
                 authWatchdog?.cancel()
                 if (webSocket === ws) webSocket = null
                 stopHeartbeat()
-                failAllPendingExecutions("Connection error: ${t.localizedMessage}")
+                holdPendingExecutions("Connection error: ${t.localizedMessage}")
                 if (_connectionStatus.value !is ConnectionStatus.AuthFailed) {
                     _connectionStatus.value = ConnectionStatus.Error(describeConnectFailure(t))
                     scheduleReconnect()
@@ -638,7 +671,61 @@ class TermuxBridgeClient(
         }
     }
 
+    /**
+     * The connection dropped: file transfers, pings and other requests fail now, but running
+     * commands are kept for [reconnectGraceMs]. When the daemon hands their session back after the
+     * reconnect, their real result arrives exactly once; otherwise they end as "status unknown" (#15).
+     */
+    private fun holdPendingExecutions(reason: String) {
+        failRequests(reason)
+        if (pendingExecutions.isEmpty()) return
+        val now = System.currentTimeMillis()
+        pendingExecutions.keys.forEach { heldExecutions.putIfAbsent(it, now) }
+        if (holdWatchdog?.isActive == true) return
+        holdWatchdog = scope.launch {
+            while (heldExecutions.isNotEmpty()) {
+                delay(200)
+                val expired = heldExecutions.filter { (id, since) ->
+                    !pendingExecutions.containsKey(id) || System.currentTimeMillis() - since > reconnectGraceMs
+                }.keys
+                expired.forEach { id ->
+                    heldExecutions.remove(id)
+                    failExecution(id, "$reason\n$UNKNOWN_STATUS_HINT")
+                }
+            }
+        }
+    }
+
+    /** Ends one waiting execution with an error, keeping what it printed so far. */
+    private fun failExecution(id: String, reason: String) {
+        val deferred = pendingExecutions.remove(id) ?: return
+        val buffers = executionBuffers.remove(id)
+        executionChunkCallbacks.remove(id)
+        deferred.complete(
+            ToolResult(
+                toolCallId = id, command = "",
+                stdout = buffers?.stdout?.build().orEmpty(),
+                stderr = listOf(buffers?.stderr?.build().orEmpty(), reason).filter { it.isNotBlank() }.joinToString("\n"),
+                exitCode = -1, isError = true
+            )
+        )
+    }
+
+    private fun failRequests(reason: String) {
+        pendingLlmActions.values.forEach { it.complete(LlmActionResult(false, reason, emptyMap())) }
+        pendingLlmActions.clear()
+        pendingPings.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
+        pendingPings.clear()
+        pendingFileReads.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
+        pendingFileReads.clear()
+        pendingFileWrites.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
+        pendingFileWrites.clear()
+        pendingJobRequests.values.forEach { it.completeExceptionally(java.io.IOException(reason)) }
+        pendingJobRequests.clear()
+    }
+
     private fun failAllPendingExecutions(reason: String) {
+        heldExecutions.clear()
         pendingExecutions.forEach { (id, deferred) ->
             deferred.complete(
                 ToolResult(
@@ -696,6 +783,15 @@ class TermuxBridgeClient(
                         (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }.toSet()
                     } ?: emptySet()
                     _connectionStatus.value = ConnectionStatus.Connected(info)
+                    if (workingDirectory == null) json.optString("cwd").takeIf { it.isNotBlank() && it != "~" }?.let { workingDirectory = it }
+                    // Commands we were waiting for: followed again only if the daemon gave their session back.
+                    json.optJSONArray("reattached")?.let { arr ->
+                        val back = (0 until arr.length()).map { arr.optString(it) }.toSet()
+                        heldExecutions.keys.toList().forEach { id ->
+                            heldExecutions.remove(id)
+                            if (id !in back) failExecution(id, "The Termux bridge restarted while this command ran.\n$UNKNOWN_STATUS_HINT")
+                        }
+                    }
                     // Once connected, cancel any scheduled reconnects and start heartbeat
                     reconnectJob?.cancel()
                     startHeartbeat()
@@ -740,6 +836,8 @@ class TermuxBridgeClient(
                 "completed" -> {
                     val execId = json.optString("execution_id")
                     val exitCode = json.optInt("exit_code", 0)
+                    heldExecutions.remove(execId)
+                    json.optString("cwd").takeIf { it.isNotBlank() && pendingExecutions.containsKey(execId) }?.let { workingDirectory = it }
                     val buffers = executionBuffers[execId]
                     val out = buffers?.stdout?.build() ?: ""
                     val err = buffers?.stderr?.build() ?: ""
@@ -786,6 +884,9 @@ class TermuxBridgeClient(
                     val deferred = if (reqId.isNotEmpty()) pendingFileWrites.remove(reqId) else pendingFileWrites.remove(path)
                     deferred?.complete(success)
                 }
+                "job_result" -> {
+                    pendingJobRequests.remove(json.optString("request_id"))?.complete(json)
+                }
                 "llm_result" -> {
                     val reqId = json.optString("request_id")
                     val status = json.optJSONObject("status")
@@ -811,6 +912,8 @@ class TermuxBridgeClient(
                         pendingFileWrites.remove(path)?.completeExceptionally(Exception(err))
                     }
                     val deferred = pendingExecutions[execId]
+                    val lostDir = workingDirectory?.takeIf { deferred != null && err.contains("No such file or directory") && err.contains(it) }
+                    if (lostDir != null) workingDirectory = null
                     if (deferred != null) {
                         // Keep what the command printed before the error (daemon timeout, crash):
                         // without it the model cannot tell how far the command got.
@@ -823,7 +926,10 @@ class TermuxBridgeClient(
                                 toolCallId = execId,
                                 command = "",
                                 stdout = outSoFar,
-                                stderr = listOf(errSoFar, err, if (timedOut) LONG_RUNNING_HINT else "")
+                                stderr = listOf(
+                                    errSoFar, err, if (timedOut) LONG_RUNNING_HINT else "",
+                                    lostDir?.let { "[AMC] The working folder $it no longer exists; commands run in the home folder again." }.orEmpty()
+                                )
                                     .filter { it.isNotBlank() }.joinToString("\n"),
                                 exitCode = if (timedOut) 124 else 1,
                                 isError = true
@@ -894,6 +1000,7 @@ class TermuxBridgeClient(
             put("command", command)
             put("execution_id", execId)
             put("timeout_ms", timeoutMs.coerceIn(1L, 3_600_000L))
+            workingDirectory?.let { put("cwd", it) }
         }
 
         val ws = webSocket
@@ -1040,6 +1147,35 @@ class TermuxBridgeClient(
             pendingFileWrites.remove(reqId)
         }
     }
+
+    /** Background jobs (#13): start, status (with new output), stop, list. Returns the daemon's answer. */
+    suspend fun jobAction(action: String, params: Map<String, String> = emptyMap(), timeoutMs: Long = 20_000L): JSONObject =
+        withContext(Dispatchers.IO) {
+            require(action in JOB_ACTIONS) { "Unknown job action $action" }
+            val ws = webSocket
+            if (ws == null || _connectionStatus.value !is ConnectionStatus.Connected) throw IllegalStateException("No connection to Termux")
+            if (JOBS_CAPABILITY !in serverCapabilities) {
+                throw java.io.IOException("This Termux bridge has no background jobs yet. Update it (run setup.sh again), or use nohup … & with a log file.")
+            }
+            val reqId = UUID.randomUUID().toString()
+            val deferred = CompletableDeferred<JSONObject>()
+            pendingJobRequests[reqId] = deferred
+            val msg = JSONObject().apply {
+                put("action", action)
+                put("request_id", reqId)
+                params.forEach { (k, v) -> put(k, v) }
+                if (action == "job_start" && !params.containsKey("cwd")) workingDirectory?.let { put("cwd", it) }
+            }
+            if (!ws.send(msg.toString())) {
+                pendingJobRequests.remove(reqId)
+                throw java.io.IOException("Could not send $action (socket closed).")
+            }
+            try {
+                awaitFileReply(deferred, timeoutMs, action)
+            } finally {
+                pendingJobRequests.remove(reqId)
+            }
+        }
 
     /** Runs a local model action (status, install, start, stop) through the bridge. */
     suspend fun llmAction(action: String, params: Map<String, String> = emptyMap(), timeoutMs: Long = 120_000L): LlmActionResult =

@@ -2,6 +2,7 @@ package com.agent.mobile.channel
 
 import com.agent.mobile.AgentRuntime
 import com.agent.mobile.agent.AutonomousAgentEngine
+import com.agent.mobile.agent.RemoteContinuation
 import com.agent.mobile.agent.RunMode
 import com.agent.mobile.data.model.ConnectionStatus
 import com.agent.mobile.data.network.TermuxBridgeClient
@@ -44,13 +45,20 @@ class EngineChannelAgent(
             // The agent can still answer without Termux (web, memory), so don't fail here.
             runtime.bridgeStarter.ensureConnected(bridge, token, 15_000L)
         }
-        return engine.runHeadless(
-            title = request.title,
-            prompt = request.text,
-            mode = RunMode.REMOTE,
-            sessionId = request.sessionId,
-            imageBase64 = request.imageBase64,
-            imageMimeType = request.imageMimeType
+        // At the step or time budget the same chat task continues on its own (#19).
+        return RemoteContinuation.run(
+            first = {
+                engine.runHeadless(
+                    title = request.title,
+                    prompt = request.text,
+                    mode = RunMode.REMOTE,
+                    sessionId = request.sessionId,
+                    imageBase64 = request.imageBase64,
+                    imageMimeType = request.imageMimeType
+                )
+            },
+            next = { sid -> engine.runHeadless(title = request.title, prompt = RemoteContinuation.NOTE, mode = RunMode.REMOTE, sessionId = sid) },
+            onContinue = { round -> request.progress?.invoke(RemoteContinuation.progressText(round)) }
         )
     }
 

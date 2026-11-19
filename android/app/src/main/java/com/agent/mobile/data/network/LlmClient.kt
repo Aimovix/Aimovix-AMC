@@ -366,7 +366,8 @@ class LlmClient(
             msgs.put(mObj)
         }
         root.put("messages", msgs)
-        root.put("tools", com.agent.mobile.agent.AgentTools.openAiTools(excludedTools))
+        // A request without tools (e.g. the context summary) must not send an empty list: providers reject it.
+        com.agent.mobile.agent.AgentTools.openAiTools(excludedTools).takeIf { it.length() > 0 }?.let { root.put("tools", it) }
 
         val trimmedBase = config.baseUrl.trimEnd('/')
         val url = if (trimmedBase.endsWith("/chat/completions")) {
@@ -621,7 +622,7 @@ class LlmClient(
         root.put("contents", contents)
 
         val funcDecls = com.agent.mobile.agent.AgentTools.geminiFunctionDeclarations(excludedTools)
-        root.put("tools", JSONArray().put(JSONObject().put("function_declarations", funcDecls)))
+        if (funcDecls.length() > 0) root.put("tools", JSONArray().put(JSONObject().put("function_declarations", funcDecls)))
 
         val cleanKey = config.apiKey.removePrefix("Bearer ").removePrefix("bearer ").trim()
         if (cleanKey.isEmpty()) {
@@ -633,11 +634,8 @@ class LlmClient(
         }
 
         val isOAuthToken = cleanKey.startsWith("ya29.")
-        val url = if (isOAuthToken) {
-            "${config.baseUrl.trimEnd('/')}/models/${config.modelName}:streamGenerateContent?alt=sse"
-        } else {
-            "${config.baseUrl.trimEnd('/')}/models/${config.modelName}:streamGenerateContent?alt=sse&key=$cleanKey"
-        }
+        // The key travels in a header only: URLs end up in proxy, router and server logs.
+        val url = "${config.baseUrl.trimEnd('/')}/models/${config.modelName}:streamGenerateContent?alt=sse"
 
         val reqBuilder = Request.Builder()
             .url(url)
@@ -674,6 +672,9 @@ class LlmClient(
             val detectedTools = mutableListOf<ToolCall>()
             var promptTokens = 0
             var completionTokens = 0
+            // Gemini has no [DONE]: the last candidate carries a finishReason. Without one the
+            // connection dropped mid-answer and the partial text must not count as a final reply.
+            var finishReason = ""
 
             var line: String?
             while (reader.readLine().also { line = it } != null) {
@@ -686,7 +687,9 @@ class LlmClient(
                     if (json.has("error")) {
                         val errObj = json.getJSONObject("error")
                         val msg = errObj.optString("message", "Gemini stream error")
-                        emit(LlmStreamEvent.Error("Gemini stream error: $msg", errObj.optInt("code", 0), false))
+                        val code = errObj.optInt("code", 0)
+                        val retryable = code == 429 || code >= 500 || isRetryableStreamError(errObj.optString("status").lowercase(), msg)
+                        emit(LlmStreamEvent.Error("Gemini stream error: $msg", code, retryable))
                         return@executeCancellableCall
                     }
 
@@ -709,9 +712,10 @@ class LlmClient(
 
                     if (candidates != null && candidates.length() > 0) {
                         val c = candidates.getJSONObject(0)
-                        val finishReason = c.optString("finishReason", "")
-                        if (finishReason == "SAFETY" || finishReason == "RECITATION" || finishReason == "BLOCKLIST" || finishReason == "PROHIBITED_CONTENT") {
-                            emit(LlmStreamEvent.Error("Gemini response blocked by content filter ($finishReason)", 0, false))
+                        val reason = c.optString("finishReason", "")
+                        if (reason.isNotEmpty() && reason != "null") finishReason = reason
+                        if (reason == "SAFETY" || reason == "RECITATION" || reason == "BLOCKLIST" || reason == "PROHIBITED_CONTENT") {
+                            emit(LlmStreamEvent.Error("Gemini response blocked by content filter ($reason)", 0, false))
                             return@executeCancellableCall
                         }
 
@@ -768,6 +772,10 @@ class LlmClient(
                 emit(LlmStreamEvent.Error("Gemini stream completed with empty response", 0, true))
                 return@executeCancellableCall
             }
+            if (finishReason.isEmpty()) {
+                emit(LlmStreamEvent.Error("Gemini stream closed prematurely without a finish reason (connection dropped)", 0, true))
+                return@executeCancellableCall
+            }
 
             if (detectedTools.isNotEmpty()) {
                 emit(
@@ -797,7 +805,7 @@ class LlmClient(
                 return@executeCancellableCall
             }
 
-            emit(LlmStreamEvent.Completed(fullText = fullText, promptTokens = promptTokens, completionTokens = completionTokens, estimatedCostUsd = cost))
+            emit(LlmStreamEvent.Completed(fullText = fullText, promptTokens = promptTokens, completionTokens = completionTokens, estimatedCostUsd = cost, truncated = finishReason == "MAX_TOKENS"))
         }
     }
 
@@ -823,7 +831,7 @@ class LlmClient(
         root.put("stream", true)
 
         val toolsArr = com.agent.mobile.agent.AgentTools.claudeTools(excludedTools)
-        root.put("tools", toolsArr)
+        if (toolsArr.length() > 0) root.put("tools", toolsArr)
 
         val msgs = JSONArray()
         for (m in messages) {

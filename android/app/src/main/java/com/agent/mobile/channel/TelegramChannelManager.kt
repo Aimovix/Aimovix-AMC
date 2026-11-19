@@ -122,7 +122,9 @@ class TelegramChannelManager(private val runtime: AgentRuntime) {
     }
 
     fun unpair(userId: Long) {
-        stateStore.update { st -> st.copy(paired = st.paired.filterNot { it.id == userId }) }
+        val g = gateway
+        if (g != null) g.forget(userId)
+        else stateStore.update { st -> st.copy(paired = st.paired.filterNot { it.id == userId }, sessions = st.sessions - userId) }
         refreshState()
     }
 

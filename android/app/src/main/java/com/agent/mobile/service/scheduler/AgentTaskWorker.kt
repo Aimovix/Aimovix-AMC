@@ -36,6 +36,10 @@ class AgentTaskWorker(
         const val KEY_SESSION_ID = "agent_task_session_id"
         const val KEY_CHAIN = "agent_task_chain"
         const val KEY_ORIGIN_KIND = "agent_task_origin_kind"
+        /** What started the task (RunTrigger): SCHEDULE by default, NOTIFICATION for notification triggers. */
+        const val KEY_TRIGGER = "agent_task_trigger"
+        /** Note a continuation starts with (restart or hand-off of a chat run, #7). */
+        const val KEY_NOTE = "agent_task_note"
         const val KIND_TASK = "task"
         const val KIND_HEARTBEAT = "heartbeat"
         const val KIND_RESUME = "resume"
@@ -53,7 +57,8 @@ class AgentTaskWorker(
         val title: String,
         val originKind: String,
         val prompt: String = "",
-        val resume: ResumeRequest? = null
+        val resume: ResumeRequest? = null,
+        val trigger: String = com.agent.mobile.agent.RunTrigger.SCHEDULE
     )
 
     override suspend fun doWork(): Result {
@@ -103,13 +108,15 @@ class AgentTaskWorker(
                 // The agent can still work without Termux (web, memory, notifications); continue.
             }
             val result = if (plan.resume != null) {
-                engine.resumeUnattended(plan.title, plan.resume, checkpoint)
+                engine.resumeUnattended(plan.title, plan.resume, checkpoint, plan.trigger)
             } else {
-                engine.runUnattended(plan.title, plan.prompt, checkpoint)
+                engine.runUnattended(plan.title, plan.prompt, checkpoint, plan.trigger)
             }
             val now = System.currentTimeMillis()
             // Out of budget, or the AI provider stayed unreachable: continue the same session later.
+            // A limit or the emergency brake ends the task for good: no continuation.
             val canContinue = (result.budgetExhausted || result.providerFailed) &&
+                result.limitReached == null && !result.stoppedByUser &&
                 result.sessionId != null && chain + 1 < ResumeRequest.MAX_CHAIN
             val status = when {
                 result.parkedApprovalId != null -> AgentRunEntity.STATUS_PARKED
@@ -119,13 +126,19 @@ class AgentTaskWorker(
             }
             runs.setRunStatus(runKey, status, now)
             runs.pruneRuns(now - 7L * 24 * 60 * 60_000)
+            try {
+                runtime.chatRepository.auditLogger.rotate(prefs.loadAuditRetentionDays())
+            } catch (e: Exception) {
+                Log.w(TAG, "Audit retention failed: ${e.message}")
+            }
 
             when {
                 // The user was asked already (notification / Telegram); the task resumes after the answer.
                 result.parkedApprovalId != null -> Unit
                 canContinue -> runtime.scheduler.enqueueContinuation(
                     result.sessionId!!, plan.title, chain + 1, plan.originKind,
-                    delayMinutes = if (result.providerFailed) PROVIDER_RETRY_DELAY_MIN else 0
+                    delayMinutes = if (result.providerFailed) PROVIDER_RETRY_DELAY_MIN else 0,
+                    trigger = plan.trigger
                 )
                 else -> report(runtime, plan, result)
             }
@@ -164,31 +177,36 @@ class AgentTaskWorker(
             return Plan(
                 title = interrupted.title,
                 originKind = interrupted.kind,
-                resume = ResumeRequest(interrupted.sessionId, ResumeRequest.RESTART_NOTE, chain = interrupted.chain + 1)
+                resume = ResumeRequest(interrupted.sessionId, ResumeRequest.RESTART_NOTE, chain = interrupted.chain + 1),
+                trigger = com.agent.mobile.agent.RunTrigger.RESUME
             )
         }
 
         return when (kind) {
             KIND_HEARTBEAT -> {
                 if (!prefs.loadHeartbeatEnabled()) return null
-                Plan("💓 Heartbeat", KIND_HEARTBEAT, AgentPrompts.heartbeatPrompt(prefs.loadHeartbeatChecklist()))
+                Plan("💓 Heartbeat", KIND_HEARTBEAT, AgentPrompts.heartbeatPrompt(prefs.loadHeartbeatChecklist()), trigger = com.agent.mobile.agent.RunTrigger.HEARTBEAT)
             }
             KIND_RESUME -> {
                 val approval = runs.getApproval(inputData.getString(KEY_APPROVAL_ID).orEmpty()) ?: return null
-                Plan(approval.runTitle.ifBlank { "Background task" }, KIND_RESUME, resume = resumeFor(approval))
+                Plan(approval.runTitle.ifBlank { "Background task" }, KIND_RESUME, resume = resumeFor(approval), trigger = com.agent.mobile.agent.RunTrigger.RESUME)
             }
             KIND_CONTINUE -> {
                 val sessionId = inputData.getString(KEY_SESSION_ID) ?: return null
                 Plan(
                     title = inputData.getString(KEY_TITLE) ?: "Background task",
                     originKind = inputData.getString(KEY_ORIGIN_KIND) ?: KIND_TASK,
-                    resume = ResumeRequest(sessionId, ResumeRequest.CONTINUE_NOTE, chain = inputData.getInt(KEY_CHAIN, 1))
+                    resume = ResumeRequest(sessionId, inputData.getString(KEY_NOTE) ?: ResumeRequest.CONTINUE_NOTE, chain = inputData.getInt(KEY_CHAIN, 1)),
+                    trigger = inputData.getString(KEY_TRIGGER) ?: com.agent.mobile.agent.RunTrigger.SCHEDULE
                 )
             }
             else -> {
                 val prompt = inputData.getString(KEY_PROMPT).orEmpty()
                 if (prompt.isBlank()) return null
-                Plan("⏰ " + (inputData.getString(KEY_TITLE) ?: "Scheduled task"), KIND_TASK, prompt)
+                Plan(
+                    "⏰ " + (inputData.getString(KEY_TITLE) ?: "Scheduled task"), KIND_TASK, prompt,
+                    trigger = inputData.getString(KEY_TRIGGER) ?: com.agent.mobile.agent.RunTrigger.SCHEDULE
+                )
             }
         }
     }
@@ -219,6 +237,19 @@ class AgentTaskWorker(
         if (isQuietHeartbeat) {
             // Nothing to report: don't clutter the session list.
             result.sessionId?.let { runtime.chatRepository.deleteSession(it) }
+            return
+        }
+        if (result.unattended) {
+            // Unattended runs end with a full report built from the audit log of the task.
+            val events = result.sessionId?.let { runtime.chatRepository.auditLogger.forSession(it) }
+                ?: runtime.chatRepository.auditLogger.forRun(result.runId)
+            val endReason = result.limitReached?.let { "limit: $it" }
+                ?: if (result.stoppedByUser) "stopped by the emergency brake" else null
+            val report = com.agent.mobile.audit.RunReport.build(
+                plan.title, plan.prompt.ifBlank { plan.resume?.note.orEmpty() }.take(300), result.summary,
+                result.success, events, endReason
+            )
+            runtime.platform.notifyUser("${plan.title} — ${report.outcome.label}", report.toText())
             return
         }
         val body = buildString {

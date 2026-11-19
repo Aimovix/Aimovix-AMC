@@ -14,8 +14,8 @@ android {
         applicationId = "com.agent.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "1.8.0"
+        versionCode = 17
+        versionName = "1.9.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -117,4 +117,8 @@ dependencies {
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.ext.junit)
+    // Compose UI tests on the JVM (Robolectric): click through screens and dialogs.
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.ui.test.junit4)
+    debugImplementation(libs.androidx.ui.test.manifest)
 }

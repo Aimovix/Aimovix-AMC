@@ -14,11 +14,21 @@ import com.agent.mobile.phone.PhoneToolPolicy
 import com.agent.mobile.security.CommandSecurityFilter
 import com.agent.mobile.security.RiskLevel
 import com.agent.mobile.security.SecurityAssessment
+import com.agent.mobile.audit.AuditDecision
+import com.agent.mobile.audit.AuditEntry
+import com.agent.mobile.audit.AuditRedactor
+import com.agent.mobile.unattended.ActionClassifier
+import com.agent.mobile.unattended.InjectionGuard
+import com.agent.mobile.unattended.SecurityFloor
+import com.agent.mobile.unattended.UnattendedCategory
+import com.agent.mobile.unattended.UnattendedPolicy
+import com.agent.mobile.unattended.UnattendedSettings
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 
@@ -45,7 +55,9 @@ class AutonomousAgentEngine(
     /** 0 for a normal agent, 1 for a sub-agent. Sub-agents cannot delegate further. */
     private val subAgentDepth: Int = 0,
     /** Phone control (screen, notifications, intents, Shizuku). Null: those tools are not offered. */
-    private val phone: PhoneController? = null
+    private val phone: PhoneController? = null,
+    /** Audit log for engines without a chat repository (sub-agents write into the parent's log). */
+    private val auditLogger: com.agent.mobile.audit.AuditLogger? = null
 ) {
     companion object {
         private const val TAG = "AgentEngine"
@@ -74,6 +86,9 @@ class AutonomousAgentEngine(
         fun invalidateSkillsCache() {
             skillsCache = null
         }
+
+        /** Reminders per unattended run to end with finish_task instead of plain text. */
+        const val MAX_FINISH_NUDGES = 2
 
         /** Consecutive failed tool calls after which the agent is told to rethink its approach. */
         private const val REFLECTION_THRESHOLD = 3
@@ -119,9 +134,14 @@ class AutonomousAgentEngine(
         private const val IMAGE_CHAR_WEIGHT = 4_000
 
         private val UNTRUSTED_OUTPUT_TOOLS = setOf(
-            AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH,
+            AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WEB_FETCH, AgentTools.JOB_STATUS, AgentTools.JOB_STOP,
             AgentTools.WEB_SEARCH, AgentTools.SEARCH_HISTORY, AgentTools.DELEGATE_TASK
         ) + PhoneTools.UNTRUSTED_OUTPUT
+        /** Output of the daemon for a plain `cd`. */
+        private val DIR_CHANGED = Regex("""Directory changed to: (\S+)""")
+
+        /** Shell commands whose output is downloaded (foreign) content. */
+        private val GUARD_DOWNLOAD = Regex("""\b(curl|wget|lynx|w3m|aria2c|yt-dlp|git\s+clone)\b|https?://""", RegexOption.IGNORE_CASE)
         /** Texts of image messages the app adds as USER turns (screenshots, photos). */
         private val SYNTHETIC_IMAGE_PREFIXES = listOf("📱 Screenshot", "📸 Photo captured")
 
@@ -129,10 +149,18 @@ class AutonomousAgentEngine(
         private val SCREEN_HEADER = Regex("(^|\\n)Screen: ")
 
         /** Tools that need the Termux bridge. */
-        private val BRIDGE_TOOLS = setOf(AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WRITE_FILE, AgentTools.SEND_FILE)
+        private val BRIDGE_TOOLS = setOf(
+            AgentTools.EXECUTE_COMMAND, AgentTools.READ_FILE, AgentTools.WRITE_FILE, AgentTools.EDIT_FILE, AgentTools.SEND_FILE,
+            AgentTools.JOB_START, AgentTools.JOB_STATUS, AgentTools.JOB_STOP
+        )
+
+        /** Tools whose result is a window the model asked for: compacted less (#14). */
+        private val WINDOWED_TOOLS = setOf(AgentTools.READ_FILE, AgentTools.WEB_FETCH)
         private const val BRIDGE_RECOVERY_TIMEOUT_MS = 25_000L
 
-        private val LOOP_EXEMPT_TOOLS = setOf(AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS) +
+        private val LOOP_EXEMPT_TOOLS = setOf(
+            AgentTools.UPDATE_PLAN, AgentTools.REMEMBER, AgentTools.LIST_SCHEDULED_TASKS, AgentTools.JOB_STATUS, AgentTools.LIST_RUNS
+        ) +
             PhoneTools.LOOP_EXEMPT
     }
 
@@ -146,7 +174,17 @@ class AutonomousAgentEngine(
         /** True when the run ended because its step or time budget ran out, not because it finished. */
         val budgetExhausted: Boolean = false,
         /** True when the run stopped because the AI provider stayed unreachable (worth a later retry). */
-        val providerFailed: Boolean = false
+        val providerFailed: Boolean = false,
+        /** Id of this run in the audit log and the run registry. */
+        val runId: String = "",
+        /** Set when an unattended limit (duration, phone actions, messages) ended the run. */
+        val limitReached: String? = null,
+        /** Actions the unattended rules refused, with the reason (for the run report). */
+        val autoDenied: List<String> = emptyList(),
+        /** True when the run used unattended mode (no approval was asked). */
+        val unattended: Boolean = false,
+        /** The user stopped the run (emergency brake). */
+        val stoppedByUser: Boolean = false
     )
 
     private var activeJob: Job? = null
@@ -225,6 +263,19 @@ class AutonomousAgentEngine(
     @Volatile
     var bridgeRecovery: (suspend () -> Boolean)? = null
 
+    /**
+     * Unattended settings to use instead of the stored ones (tests, and runs whose caller decided
+     * already). Only applies while the preset is Turbo; null: read consent and settings from preferences.
+     */
+    @Volatile
+    var unattendedOverride: UnattendedSettings? = null
+
+    /** Sub-agents: the parent's run id (audit entries link to it) and its injection guard. */
+    @Volatile
+    internal var parentRunId: String? = null
+    @Volatile
+    internal var inheritedGuard: InjectionGuard? = null
+
     /** First retry delay after a provider error (doubles per retry). Lowered in tests. */
     @Volatile
     internal var retryBaseDelayMs: Long = 2_000L
@@ -232,6 +283,14 @@ class AutonomousAgentEngine(
     /** Receives files from `send_file` in channel conversations. Null: files are shown in the app. */
     @Volatile
     var attachmentSink: AttachmentSink? = null
+
+    /** Checkpoints of chat runs (#7): resume after the app was closed or the phone restarted. */
+    @Volatile
+    var runCheckpointer: RunCheckpointer? = null
+
+    /** Set while the chat run is handed to the background because the app goes away (#7). */
+    @Volatile
+    private var handingOff = false
 
     /** Called with a one-line description whenever a tool starts (progress for sub-agents and channels). */
     @Volatile
@@ -241,12 +300,27 @@ class AutonomousAgentEngine(
     @Volatile
     var channelName: String = "Telegram"
 
+    /** Approvals of sub-agents that run side by side reach the user one at a time. */
+    private val subAgentApprovals = kotlinx.coroutines.sync.Mutex()
+
     private val baseExcludedTools: Set<String> =
         if (subAgentDepth >= MAX_SUBAGENT_DEPTH) setOf(AgentTools.DELEGATE_TASK) else emptySet()
 
     /** Tools hidden from the model in the current run (base exclusions plus phone control rules for the mode). */
     @Volatile
     private var excludedTools: Set<String> = baseExcludedTools + PhoneTools.ALL_NAMES
+
+    /** True while the current run is in unattended mode (offers finish_task and ask_user). */
+    @Volatile
+    private var unattendedRun = false
+
+    /** The last approval request could not be delivered (not a rejection, #28). */
+    @Volatile
+    private var lastApprovalUnreachable = false
+
+    /** The final reply finish_task produced in the current step (added after the tool results). */
+    @Volatile
+    private var pendingFinal: ChatMessage? = null
 
     /** Job of the running headless loop, cancelled by the phone control Stop button. */
     @Volatile
@@ -271,6 +345,41 @@ class AutonomousAgentEngine(
             _isInitialized.value = true
         } else {
             scope.launch { initSession() }
+        }
+    }
+
+    /**
+     * The app is going away (ViewModel cleared) while a chat run works: hand the task to a
+     * background run of the same session instead of losing it (#7), then [close].
+     */
+    fun handOffAndClose() {
+        val sessionId = _currentSession.value?.id
+        val runId = interactiveRunId
+        val checkpointer = runCheckpointer
+        if (_isBusy.value && sessionId != null && runId != null && checkpointer != null && !_isStopping.value) {
+            handingOff = true
+            runBlocking {
+                withTimeoutOrNull(2_000L) {
+                    try {
+                        checkpointer.finished(runId, com.agent.mobile.data.storage.db.entity.AgentRunEntity.STATUS_CONTINUED)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Checkpoint failed: ${e.message}")
+                    }
+                }
+            }
+            checkpointer.handOff(runId, sessionId, _currentSession.value?.title ?: "Chat task")
+        }
+        close()
+    }
+
+    private suspend fun checkpoint(block: suspend (RunCheckpointer) -> Unit) {
+        val c = runCheckpointer ?: return
+        try {
+            block(c)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Run checkpoint failed: ${e.message}")
         }
     }
 
@@ -467,6 +576,11 @@ class AutonomousAgentEngine(
         _plan.value = emptyList()
         _currentStep.value = 0
 
+        val state = LoopState().apply { runTitle = userPrompt.trim().take(60); trigger = RunTrigger.USER }
+        interactiveRunId = state.runId
+        RunRegistry.register(
+            RunRegistry.ActiveRun(state.runId, state.runTitle, RunMode.INTERACTIVE, RunTrigger.USER, executionSessionId, unattended = unattendedSettings() != null)
+        ) { stopLocal() }
         activeJob = scope.launch {
             try {
                 if (targetSession != null && (targetSession.title == "New chat" || targetSession.title.isBlank())) {
@@ -475,15 +589,30 @@ class AutonomousAgentEngine(
                     chatRepository?.updateSessionTitle(executionSessionId, generatedTitle)
                 }
                 chatRepository?.saveMessage(executionSessionId, userMessage)
-                runAgentLoop(executionSessionId, RunMode.INTERACTIVE)
+                checkpoint { it.started(state.runId, executionSessionId, state.runTitle) }
+                runAgentLoop(executionSessionId, RunMode.INTERACTIVE, state = state)
+                if (state.unattended != null) appendRunReport(executionSessionId, state, userPrompt)
+                checkpoint { it.finished(state.runId, com.agent.mobile.data.storage.db.entity.AgentRunEntity.STATUS_DONE) }
             } catch (e: CancellationException) {
-                recoverAbortedToolCalls(executionSessionId, "Execution canceled by the user.")
-                appendSystemMessage("🛑 Execution canceled by the user.", executionSessionId)
+                if (handingOff) {
+                    // Not the user's decision: the app closed and the task goes on in the background.
+                    withContext(NonCancellable) {
+                        recoverAbortedToolCalls(executionSessionId, "Interrupted because the app was closed; the task continues in the background.")
+                        appendSystemMessage("📤 The app was closed: the task continues in the background.", executionSessionId)
+                    }
+                } else {
+                    recoverAbortedToolCalls(executionSessionId, "Execution canceled by the user.")
+                    appendSystemMessage("🛑 Execution canceled by the user.", executionSessionId)
+                    withContext(NonCancellable) {
+                        checkpoint { it.finished(state.runId, com.agent.mobile.data.storage.db.entity.AgentRunEntity.STATUS_FAILED) }
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Agent loop error: ${e.message}", e)
                 recoverAbortedToolCalls(executionSessionId, "Agent loop error: ${e.localizedMessage}")
                 appendSystemMessage("⚠️ Agent loop error: ${e.localizedMessage}", executionSessionId)
             } finally {
+                RunRegistry.unregister(state.runId)
                 withContext(NonCancellable) {
                     // Messages typed after the run ended (or after a stop) are kept, not lost.
                     drainSteeringQueue(executionSessionId)
@@ -510,9 +639,10 @@ class AutonomousAgentEngine(
     suspend fun runUnattended(
         title: String,
         prompt: String,
-        onSessionReady: (suspend (String) -> Unit)? = null
+        onSessionReady: (suspend (String) -> Unit)? = null,
+        trigger: String = RunTrigger.SCHEDULE
     ): UnattendedResult =
-        runHeadless(title = title, prompt = prompt, mode = RunMode.UNATTENDED, onSessionReady = onSessionReady)
+        runHeadless(title = title, prompt = prompt, mode = RunMode.UNATTENDED, onSessionReady = onSessionReady, trigger = trigger)
 
     /**
      * Continues the session of an earlier background run (after an approval was answered, after
@@ -522,9 +652,10 @@ class AutonomousAgentEngine(
     suspend fun resumeUnattended(
         title: String,
         resume: ResumeRequest,
-        onSessionReady: (suspend (String) -> Unit)? = null
+        onSessionReady: (suspend (String) -> Unit)? = null,
+        trigger: String = RunTrigger.RESUME
     ): UnattendedResult =
-        runHeadless(title = title, prompt = resume.note, mode = RunMode.UNATTENDED, resume = resume, onSessionReady = onSessionReady)
+        runHeadless(title = title, prompt = resume.note, mode = RunMode.UNATTENDED, resume = resume, onSessionReady = onSessionReady, trigger = trigger)
 
     /**
      * Queues a message from a channel user while a REMOTE run is busy ("steering"); it is picked
@@ -559,7 +690,9 @@ class AutonomousAgentEngine(
             else -> UNATTENDED_TIMEOUT_MS
         },
         resume: ResumeRequest? = null,
-        onSessionReady: (suspend (String) -> Unit)? = null
+        onSessionReady: (suspend (String) -> Unit)? = null,
+        /** What started the run (see [RunTrigger]); recorded in the audit log and the run report. */
+        trigger: String = RunTrigger.defaultFor(mode)
     ): UnattendedResult = withContext(Dispatchers.Main) {
         check(headless) { "runHeadless requires a headless engine" }
         require(mode != RunMode.INTERACTIVE) { "Interactive runs use startTask" }
@@ -591,7 +724,14 @@ class AutonomousAgentEngine(
             runTitle = title
             chain = resume?.chain ?: 0
             resume?.grantKey?.let { grants += it }
+            this.trigger = trigger
+            this.mode = mode
+            unattended = unattendedSettings()
+            parentRunId?.let { runId = "$it/sub-${runId.take(8)}" }
         }
+        RunRegistry.register(
+            RunRegistry.ActiveRun(state.runId, title, mode, trigger, activeSessionId, unattended = state.unattended != null)
+        ) { onPhoneControlStop(fromBrake = true) }
         val turnText = if (resume != null) runApprovedCall(activeSessionId, resume, state, skipped) else prompt.trim()
 
         val userMessage = ChatMessage(
@@ -626,7 +766,8 @@ class AutonomousAgentEngine(
             } else if (finished == null) {
                 success = false
                 state.budgetExhausted = true
-                bridgeClient.interruptCurrent()
+                // The cancelled loop already stopped its own command (by execution id); a bare
+                // interrupt would also stop the user's commands on a shared connection (#33).
                 recoverAbortedToolCalls(activeSessionId, "Time limit reached.")
                 appendSystemMessage("⏱️ Time limit reached. The task was stopped.", activeSessionId)
             }
@@ -644,6 +785,7 @@ class AutonomousAgentEngine(
             Log.e(TAG, "Headless run failed: ${e.message}", e)
             appendSystemMessage("⚠️ Run failed: ${e.localizedMessage}", activeSessionId)
         } finally {
+            RunRegistry.unregister(state.runId)
             withContext(NonCancellable) {
                 drainSteeringQueue(activeSessionId)
                 awaitPendingWrites()
@@ -659,14 +801,22 @@ class AutonomousAgentEngine(
         val lastSystem = turn.lastOrNull { it.role == MessageRole.SYSTEM }
         val lastThought = turn.lastOrNull { it.role == MessageRole.ASSISTANT && it.text.isNotBlank() }
         if (finalReply == null) success = false
+        if (state.limitReached != null) success = false
+        if (state.finishStatus == "blocked") success = false
         val summary = finalReply?.text?.trim()
             ?: listOfNotNull(lastThought?.text?.trim(), lastSystem?.text).joinToString("\n\n").ifBlank { null }
             ?: "The task finished without a summary."
+        reflectOnRun(activeSessionId, state, turn, success)
         UnattendedResult(
             activeSessionId, summary, success, skipped,
             parkedApprovalId = state.parkedId,
-            budgetExhausted = state.budgetExhausted && state.parkedId == null && !stoppedByUser,
-            providerFailed = state.providerFailed && !stoppedByUser
+            budgetExhausted = state.budgetExhausted && state.parkedId == null && !stoppedByUser && state.limitReached == null,
+            providerFailed = state.providerFailed && !stoppedByUser,
+            runId = state.runId,
+            limitReached = state.limitReached,
+            autoDenied = state.autoDenied.toList(),
+            unattended = state.unattended != null,
+            stoppedByUser = stoppedByUser
         )
     }
 
@@ -697,6 +847,8 @@ class AutonomousAgentEngine(
             val why = if (assessment.isBlocked) assessment.reason else "the tool is not available in this run"
             val result = ToolResult(toolCallId = call.id, command = description, toolName = call.name, stderr = why, exitCode = -1, isError = true)
             recordAudit(sessionId, description, assessment.level.name, why, result, 0, approved = false)
+            audit(state, sessionId, call.name, call, description, if (assessment.isBlocked) AuditDecision.BLOCKED else AuditDecision.NOT_RUN,
+                if (assessment.isBlocked) "security:blocked" else "tool_unavailable", why, assessment.level.name, result, 0, assessment.redact)
             appendSystemMessage("🛡️ Approved action not run: `${description.take(160)}` ($why)", sessionId)
             return resume.note + " AMC did NOT run it: $why."
         }
@@ -712,6 +864,8 @@ class AutonomousAgentEngine(
             ToolResult(toolCallId = call.id, command = description, stderr = e.localizedMessage ?: e.toString(), exitCode = -1, isError = true)
         }
         recordAudit(sessionId, description, assessment.level.name, "Approved by the user (parked action)", raw, System.currentTimeMillis() - start, approved = true)
+        audit(state, sessionId, call.name, call, description, AuditDecision.APPROVED, "user:parked",
+            "Approved by the user (parked action). ${assessment.reason}", assessment.level.name, raw, System.currentTimeMillis() - start, assessment.redact)
         val failed = raw.isError || raw.exitCode != 0
         appendSystemMessage(
             (if (failed) "⚠️ Approved action failed: " else "✅ Approved action done: ") + "`${description.take(160)}`",
@@ -737,8 +891,8 @@ class AutonomousAgentEngine(
     }
 
     private class LoopState {
-        /** Identifies this run towards the phone controller (screen lease, element ids per turn). */
-        val runId: String = UUID.randomUUID().toString()
+        /** Identifies this run towards the phone controller (screen lease, element ids per turn) and in the audit log. */
+        var runId: String = UUID.randomUUID().toString()
         val history = mutableListOf<String>()
         /** Result hash per [history] entry (null until the action has run). */
         val resultHistory = mutableListOf<Int?>()
@@ -768,6 +922,64 @@ class AutonomousAgentEngine(
         var continuedAfterCutOff = false
         /** Until then the steps of this run go to the fallback provider directly (the primary failed). */
         var fallbackUntil: Long = 0L
+        /** What started the run (audit log, run report). */
+        var trigger: String = RunTrigger.USER
+        var mode: RunMode = RunMode.INTERACTIVE
+        /** Non-null while the run is in unattended mode: decides instead of asking. */
+        var unattended: UnattendedSettings? = null
+        /** Prompt-injection guard of unattended runs (built when the loop starts). */
+        var guard: InjectionGuard? = null
+        val startedAt: Long = System.currentTimeMillis()
+        var phoneActions = 0
+        var messagesSent = 0
+        /** Set when an unattended limit ended the run. */
+        var limitReached: String? = null
+        /** Actions the unattended rules refused ("what — why"), for the run report. */
+        val autoDenied = mutableListOf<String>()
+        /** Running summary of steps that no longer fit into the context (#4). */
+        var contextSummary: ContextCompactor.Summary? = null
+        /** finish_task was called: "done", "partial" or "blocked" (#5). */
+        var finishStatus: String? = null
+        /** Reminders to call finish_task after a text-only reply (at most two per run). */
+        var finishNudges = 0
+    }
+
+    /** Unattended settings when unattended mode is on for this engine right now, else null. */
+    private fun unattendedSettings(): UnattendedSettings? {
+        if (_securityPreset.value != SecurityPreset.TURBO) return null
+        unattendedOverride?.let { return it }
+        val prefs = preferenceManager ?: return null
+        return if (prefs.loadUnattendedConsentVersion() >= UnattendedPolicy.CONSENT_VERSION) prefs.loadUnattendedSettings() else null
+    }
+
+    /**
+     * The injection guard of a run: trusted task text is the request the current work serves;
+     * untrusted content already in the conversation (earlier slots, a trigger's notification)
+     * counts as read.
+     */
+    private fun buildGuard(): InjectionGuard {
+        val list = _messages.value.filter { it.role != MessageRole.SYSTEM }
+        val root = taskRootIndex(list)
+        val rootText = list.getOrNull(root)?.text.orEmpty()
+        val trusted = rootText.substringBefore("[UNTRUSTED_OUTPUT_START]")
+        val guard = InjectionGuard(trusted)
+        if (rootText.contains("[UNTRUSTED_OUTPUT_START]")) guard.observeUntrusted("trigger", rootText.substringAfter("[UNTRUSTED_OUTPUT_START]"))
+        for (m in list) {
+            val result = m.toolResult ?: continue
+            if (m.role == MessageRole.TOOL && isGuardSource(result.toolName, result.command)) guard.observeUntrusted(result.toolName, m.text)
+        }
+        return guard
+    }
+
+    /**
+     * Results that count as foreign content for the injection guard: web pages and searches,
+     * files, screens, notifications, the clipboard, sub-agent reports, and shell commands that
+     * download something. Plain shell output of the user's own system does not.
+     */
+    private fun isGuardSource(toolName: String, description: String): Boolean = when (toolName) {
+        AgentTools.EXECUTE_COMMAND -> GUARD_DOWNLOAD.containsMatchIn(description)
+        AgentTools.SEARCH_HISTORY -> false
+        else -> toolName in UNTRUSTED_OUTPUT_TOOLS
     }
 
     private fun fallbackConfigOf(primary: ModelConfig): ModelConfig {
@@ -782,6 +994,11 @@ class AutonomousAgentEngine(
 
     /** Tools the model may not use in [mode]. */
     private fun excludedFor(mode: RunMode): Set<String> {
+        val modeOnly = if (unattendedRun) emptySet() else AgentTools.UNATTENDED_ONLY
+        return excludedForPhone(mode) + modeOnly
+    }
+
+    private fun excludedForPhone(mode: RunMode): Set<String> {
         val p = phone ?: return baseExcludedTools + PhoneTools.ALL_NAMES + localProfileExcluded()
         val phoneExcluded = try {
             p.excludedTools(mode)
@@ -803,12 +1020,17 @@ class AutonomousAgentEngine(
             AgentTools.ALL.map { it.name }.filter { it !in AgentTools.LOCAL_PROFILE }.toSet()
         } else emptySet()
 
-    /** Stop button of the phone control overlay or notification. */
-    private fun onPhoneControlStop() {
+    /**
+     * Stop button of the phone control overlay or notification; also the emergency brake of
+     * [RunRegistry] ([fromBrake]: another stop source already reaches every run).
+     */
+    private fun onPhoneControlStop(fromBrake: Boolean = false) {
         if (headless) {
             stoppedByUser = true
-            bridgeClient.interruptCurrent()
             headlessLoopJob?.cancel()
+            if (!fromBrake) RunRegistry.stopAll(unattendedOnly = true)
+        } else if (fromBrake) {
+            stopLocal()
         } else {
             emergencyStop()
         }
@@ -826,6 +1048,13 @@ class AutonomousAgentEngine(
             else -> _maxSteps.value
         }
         val steerable = mode == RunMode.INTERACTIVE || mode == RunMode.REMOTE
+        state.mode = mode
+        if (mode == RunMode.INTERACTIVE) state.unattended = unattendedSettings()
+        if (state.unattended != null) state.guard = inheritedGuard?.fork() ?: buildGuard()
+        unattendedRun = state.unattended != null
+        state.contextSummary = ContextCompactor.latest(_messages.value)
+        // A new bridge connection (continuation, restart) starts in the home folder: use the run's last folder (#26).
+        if (bridgeClient.workingDirectory == null) lastWorkingDirectory(_messages.value)?.let { bridgeClient.workingDirectory = it }
         // Built once per run so the prompt prefix stays identical between steps (prompt caching).
         val systemPrompt = AgentPrompts.build(
             memory = memoryStore?.asPromptText().orEmpty(),
@@ -833,7 +1062,8 @@ class AutonomousAgentEngine(
             maxSteps = stepLimit,
             persona = withContext(Dispatchers.IO) { personaStore?.read().orEmpty() },
             skills = loadSkillsIndex(),
-            channel = channelName
+            channel = channelName,
+            unattended = state.unattended != null
         )
         excludedTools = excludedFor(mode)
         try {
@@ -883,6 +1113,8 @@ class AutonomousAgentEngine(
             iterations++
             _currentStep.value = iterations
             if (iterations > 1) excludedTools = excludedFor(mode)
+            if (mode == RunMode.INTERACTIVE && iterations % 5 == 0) checkpoint { it.progressed(state.runId) }
+            if (unattendedLimitHit(executionSessionId, state)) break
 
             val outcome = runSingleStep(executionSessionId, systemPrompt, mode, state, skippedApprovals)
             if (outcome == StepOutcome.STOP || state.stopRequested) break
@@ -893,6 +1125,151 @@ class AutonomousAgentEngine(
             }
         }
     }
+
+    /** Ends an unattended run cleanly when its duration limit is reached (checked before each step). */
+    private suspend fun unattendedLimitHit(sessionId: String, state: LoopState): Boolean {
+        val settings = state.unattended ?: return false
+        val maxMin = settings.limits.maxDurationMinutes
+        if (maxMin <= 0 || System.currentTimeMillis() - state.startedAt < maxMin * 60_000L) return false
+        endForLimit(sessionId, state, "maximum duration of $maxMin minutes")
+        return true
+    }
+
+    private suspend fun endForLimit(sessionId: String, state: LoopState, what: String) {
+        state.limitReached = what
+        state.stopRequested = true
+        appendSystemMessage("⏹️ Unattended limit reached ($what). The run was ended; see the run report.", sessionId)
+        audit(
+            state, sessionId, "run_limit", null, "", AuditDecision.INFO, "limit", "Run ended: limit reached ($what).",
+            riskLevel = "", result = null, durationMs = 0
+        )
+    }
+
+    /** Unattended mode in the chat: the run ends with the same report background runs send. */
+    private suspend fun appendRunReport(sessionId: String, state: LoopState, goal: String) {
+        val logger = auditLogger ?: chatRepository?.auditLogger ?: return
+        val events = try {
+            logger.forRun(state.runId)
+        } catch (e: Exception) {
+            return
+        }
+        if (events.isEmpty()) return
+        val lastReply = _messages.value.lastOrNull { isFinalAnswer(it) }?.text.orEmpty()
+        val report = com.agent.mobile.audit.RunReport.build(
+            state.runTitle, goal, lastReply.take(400), success = state.limitReached == null && lastReply.isNotBlank(),
+            events = events, endReason = state.limitReached?.let { "limit: $it" }
+        )
+        appendSystemMessage("📋 Run report (unattended mode)\n" + report.toText(2_000), sessionId)
+    }
+
+    /**
+     * Folds steps that fell out of the context window into the running summary (#4): once enough
+     * new ones dropped, one model call without tools writes the summary (an extractive one when
+     * that fails). The summary is stored in the session and appended to the pinned task.
+     */
+    private suspend fun maybeCompact(sessionId: String, state: LoopState, history: List<ChatMessage>) {
+        val nonSystem = history.filter { it.role != MessageRole.SYSTEM }
+        val root = taskRootIndex(nonSystem)
+        if (root < 0) return
+        val window = prepareContextMessages(history)
+        val dropped = ContextCompactor.uncoveredDropped(nonSystem, root, window, state.contextSummary)
+        if (dropped.size < ContextCompactor.MIN_NEW_DROPPED) return
+        val previous = state.contextSummary
+        val text = try {
+            askModelWithoutTools(ContextCompactor.SYSTEM_PROMPT, ContextCompactor.transcript(previous, dropped))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Context summary failed: ${e.message}")
+            null
+        } ?: ContextCompactor.extractive(previous, dropped)
+        val summary = ContextCompactor.Summary(text.take(ContextCompactor.MAX_SUMMARY_CHARS), dropped.last().id)
+        state.contextSummary = summary
+        appendSystemMessage(ContextCompactor.stored(summary), sessionId)
+    }
+
+    /** One model call without tools; null when it fails or returns nothing. */
+    private suspend fun askModelWithoutTools(systemPrompt: String, text: String): String? = withTimeoutOrNull(90_000L) {
+        var answer: String? = null
+        llmClient.streamRequest(
+            config = _modelConfig.value,
+            systemPrompt = systemPrompt,
+            messages = listOf(ChatMessage(role = MessageRole.USER, text = text)),
+            excludedTools = AgentTools.ALL.map { it.name }.toSet()
+        ).collect { event ->
+            when (event) {
+                is LlmClient.LlmStreamEvent.Completed -> {
+                    answer = event.fullText
+                    recordMetrics(event.promptTokens, event.completionTokens, event.estimatedCostUsd)
+                }
+                else -> Unit
+            }
+        }
+        answer?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * After an unattended run that failed or ended incomplete: one review call that may store
+     * one lesson in the long-term memory (#24). A lesson that repeats untrusted content is not
+     * stored. Both outcomes are in the audit log.
+     */
+    private suspend fun reflectOnRun(sessionId: String, state: LoopState, turn: List<ChatMessage>, success: Boolean) {
+        val store = memoryStore ?: return
+        if (state.unattended == null || state.mode != RunMode.UNATTENDED) return
+        val reflect = LessonReflector.shouldReflect(
+            success, state.finishStatus, LessonReflector.failedSteps(turn), state.budgetExhausted,
+            parked = state.parkedId != null, stoppedByUser = stoppedByUser, providerFailed = state.providerFailed
+        )
+        if (!reflect) return
+        val list = _messages.value.filter { it.role != MessageRole.SYSTEM }
+        val task = list.getOrNull(taskRootIndex(list))?.text.orEmpty().substringBefore("[UNTRUSTED_OUTPUT_START]")
+        val answer = try {
+            askModelWithoutTools(LessonReflector.SYSTEM_PROMPT, LessonReflector.transcript(task, turn, state.contextSummary))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Reflection failed: ${e.message}")
+            null
+        }
+        val lesson = LessonReflector.parse(answer) ?: return
+        val call = ToolCall(id = "reflection-${state.runId.take(8)}", name = AgentTools.REMEMBER, arguments = mapOf("note" to lesson))
+        val fragment = state.guard?.untrustedFragment(lesson)
+        if (fragment != null) {
+            audit(state, sessionId, AgentTools.REMEMBER, call, "", AuditDecision.AUTO_DENIED, "reflection:untrusted",
+                "Lesson not stored: it repeats untrusted content (\"${fragment.take(60)}\").", "LOW", null, 0)
+            return
+        }
+        val status = store.rememberLesson(lesson)
+        val stored = status.startsWith("Saved")
+        audit(state, sessionId, AgentTools.REMEMBER, call, "", if (stored) AuditDecision.AUTO_ALLOWED else AuditDecision.INFO,
+            "reflection:lesson", "Lesson after an incomplete run. $status", "LOW",
+            ToolResult(toolCallId = call.id, command = "remember", stdout = status, exitCode = 0), 0)
+        if (stored) appendSystemMessage("💡 Lesson saved for next time: $lesson", sessionId)
+    }
+
+    /** A job answer of the daemon as text for the model. */
+    private fun formatJobs(r: org.json.JSONObject): String {
+        fun line(j: org.json.JSONObject) = buildString {
+            append(j.optString("job_id")).append(" \"").append(j.optString("name")).append("\": ").append(j.optString("state"))
+            if (!j.isNull("exit_code")) append(" (exit ").append(j.optInt("exit_code")).append(')')
+            append(", ").append(j.optLong("runtime_s")).append(" s, log ").append(j.optString("log"))
+        }
+        val list = r.optJSONArray("jobs")
+        if (list != null) {
+            if (list.length() == 0) return "No background jobs."
+            return (0 until list.length()).joinToString("\n") { "- " + line(list.getJSONObject(it)) }
+        }
+        val job = r.getJSONObject("job")
+        val out = job.optString("new_output")
+        return line(job) + "\n" + if (out.isEmpty()) "(no new output since the last check)" else "New output:\n$out"
+    }
+
+    /** The folder the last plain `cd` of this conversation changed to (the daemon reports it), or null. */
+    internal fun lastWorkingDirectory(messages: List<ChatMessage>): String? =
+        messages.asReversed().firstNotNullOfOrNull { m ->
+            if (m.role != MessageRole.TOOL) null
+            else DIR_CHANGED.find(m.toolResult?.stdout ?: m.text)?.groupValues?.get(1)?.trim()
+        }
 
     /** Lists installed skills through the bridge (cached for a few minutes; empty when offline). */
     private suspend fun loadSkillsIndex(): String {
@@ -955,7 +1332,10 @@ class AutonomousAgentEngine(
         while (!streamCompleted && currentCoroutineContext().isActive) {
             attemptOnProvider++
             try {
-                val contextMessages = prepareContextMessages(_messages.value.filter { it.id != assistantMsgId })
+                val history = _messages.value.filter { it.id != assistantMsgId }
+                if (attemptOnProvider == 1 && !isUsingFallback) maybeCompact(executionSessionId, state, history)
+                val pinned = state.contextSummary?.let { ContextCompactor.pinnedBlock(it.text, _plan.value) }
+                val contextMessages = prepareContextMessages(history, pinned = pinned)
                 llmClient.streamRequest(
                     config = activeConfig,
                     systemPrompt = systemPrompt,
@@ -1050,6 +1430,21 @@ class AutonomousAgentEngine(
 
         if (detectedTools.isEmpty()) {
             _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
+            if (state.unattended != null && state.finishStatus == null && state.finishNudges < MAX_FINISH_NUDGES) {
+                // Unattended: a reply without tools is not the end yet (it may announce work or ask a
+                // question nobody can answer). Ask once or twice for finish_task or the next action (#5).
+                state.finishNudges++
+                val nudge = ChatMessage(
+                    role = MessageRole.USER,
+                    text = "$AGENT_NOTE_PREFIX Unattended run: nobody reads replies until the run ends and nobody can answer " +
+                        "questions. If work is left, continue with your tools now (decide open questions yourself and state your " +
+                        "assumption). If the task is complete or cannot be completed, call finish_task with the summary and the status.",
+                    status = MessageStatus.COMPLETED
+                )
+                _messages.value = _messages.value + nudge
+                chatRepository?.saveMessage(executionSessionId, nudge)
+                return StepOutcome.CONTINUE
+            }
             if (textCutOff && !state.continuedAfterCutOff) {
                 // The reply hit the output limit mid-way: let the model finish it once instead of ending here.
                 state.continuedAfterCutOff = true
@@ -1082,18 +1477,38 @@ class AutonomousAgentEngine(
                 Log.w(TAG, "Phone turn start failed: ${e.message}")
             }
         }
-        for ((index, toolCall) in tools.withIndex()) {
+        var index = 0
+        while (index < tools.size) {
+            val toolCall = tools[index]
             if (!currentCoroutineContext().isActive) break
             if (state.stopRequested) {
                 // A previous call in this batch ended the run; answer the remaining calls so the
                 // conversation stays valid for every provider.
                 appendToolMessage(executionSessionId, toolCall, toolCall.name, AgentTools.describe(toolCall), "", "Skipped: execution was stopped.", -1, isError = true)
+                index++
+                continue
+            }
+            val group = ParallelDelegation.groupSize(tools, index)
+            if (group > 1) {
+                // Several sub-tasks in one turn run side by side (#25); each still goes through every check.
+                coroutineScope {
+                    (index until index + group).map { i ->
+                        async {
+                            executeToolCall(
+                                executionSessionId, assistantMsgId, tools[i], i, tools,
+                                mode, state, skippedApprovals, pendingVisionObservations
+                            )
+                        }
+                    }.awaitAll()
+                }
+                index += group
                 continue
             }
             executeToolCall(
                 executionSessionId, assistantMsgId, toolCall, index, tools,
                 mode, state, skippedApprovals, pendingVisionObservations
             )
+            index++
         }
 
         for (vision in pendingVisionObservations) {
@@ -1101,6 +1516,13 @@ class AutonomousAgentEngine(
             chatRepository?.saveMessage(executionSessionId, vision)
         }
         _messages.value.firstOrNull { it.id == assistantMsgId }?.let { chatRepository?.saveMessage(executionSessionId, it) }
+        pendingFinal?.let { final ->
+            // finish_task: its summary closes the turn as a normal final reply.
+            pendingFinal = null
+            val msg = final.copy(timestamp = System.currentTimeMillis())
+            _messages.value = _messages.value + msg
+            chatRepository?.saveMessage(executionSessionId, msg)
+        }
 
         return if (state.stopRequested) StepOutcome.STOP else StepOutcome.CONTINUE
     }
@@ -1123,6 +1545,7 @@ class AutonomousAgentEngine(
             tools[index] = safeCall
             updateMessageToolCalls(assistantMsgId, tools.toList(), MessageStatus.EXECUTING_TOOL)
             appendToolMessage(sessionId, safeCall, toolCall.name, "${toolCall.name} (invalid arguments)", "", invalidArgs, -1, isError = true)
+            audit(state, sessionId, toolCall.name, safeCall, "", AuditDecision.NOT_RUN, "invalid_arguments", invalidArgs.take(200), "", null, 0)
             state.consecutiveErrors++
             return
         }
@@ -1139,6 +1562,7 @@ class AutonomousAgentEngine(
                 hint + AgentTools.ALL.filter { it.name !in excludedTools }.joinToString { it.name } + ".",
                 -1, isError = true
             )
+            audit(state, sessionId, toolCall.name, safeCall, "", AuditDecision.NOT_RUN, "tool_unavailable", "Tool not available in this run.", "", null, 0, secret = true)
             state.consecutiveErrors++
             return
         }
@@ -1154,7 +1578,18 @@ class AutonomousAgentEngine(
                 null
             }
         } else null
-        val assessment = withScriptChecks(toolCall, AgentTools.assess(toolCall, phoneContext))
+        var assessment = withScriptChecks(toolCall, AgentTools.assess(toolCall, phoneContext))
+        // Unattended mode: the floor turns what would only ask into a block (nobody could answer).
+        val unattended = state.unattended
+        var blockRule = if (assessment.isBlocked) "security:blocked" else ""
+        if (unattended != null) {
+            SecurityFloor.check(toolCall, assessment)?.let { (floor, rule) ->
+                assessment = floor
+                blockRule = rule
+            }
+        }
+        if (assessment.isBlocked && assessment.reason == CommandSecurityFilter.BRIDGE_SECRET_REASON) blockRule = "floor:bridge_token"
+        val app = phoneContext?.targetPackage ?: phoneContext?.foregroundPackage
         val description = AgentTools.describe(toolCall, redact = assessment.redact)
         // What is shown, stored and sent back to the model; the real arguments are only used to execute.
         val displayCall = if (assessment.redact) PhoneTools.redacted(toolCall) else toolCall
@@ -1176,11 +1611,15 @@ class AutonomousAgentEngine(
                         "or report the problem to the user.",
                     -1, isError = true
                 )
+                audit(state, sessionId, toolCall.name, displayCall, description, AuditDecision.NOT_RUN, "loop_protection",
+                    "Repeated action or persistent failures: not executed (warning).", assessment.level.name, null, 0, assessment.redact, app)
                 return
             }
             appendSystemMessage("🛑 Loop protection: repeated actions or persistent failures (`$description`). Execution stopped.", sessionId)
             updateMessageStatus(assistantMsgId, MessageStatus.ERROR)
             appendToolMessage(sessionId, toolCall, toolCall.name, description, "", "Loop protection stopped execution.", -1, isError = true)
+            audit(state, sessionId, toolCall.name, displayCall, description, AuditDecision.NOT_RUN, "loop_protection",
+                "Loop protection stopped the run.", assessment.level.name, null, 0, assessment.redact, app)
             state.stopRequested = true
             return
         }
@@ -1199,41 +1638,118 @@ class AutonomousAgentEngine(
             val blocked = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "", "Security block active: ${assessment.reason}", -1, isError = true)
             updateMessageToolResult(assistantMsgId, blocked, MessageStatus.ERROR)
             recordAudit(sessionId, description, RiskLevel.BLOCKED.name, assessment.reason, blocked, 0, approved = false)
+            audit(state, sessionId, toolCall.name, displayCall, description, AuditDecision.BLOCKED, blockRule, assessment.reason,
+                RiskLevel.BLOCKED.name, blocked, 0, assessment.redact, app)
             state.consecutiveErrors++
             return
         }
 
         // 3. Approval. In REMOTE runs every screen action asks, and per-run grants do not apply there.
         val remoteForced = PhoneToolPolicy.requiresApprovalInMode(toolCall.name, mode)
-        val granted = !remoteForced && assessment.grantKey != null && assessment.grantKey in state.grants
-        if (!granted && (remoteForced || CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value))) {
-            // Background run: park the action for the user instead of skipping it.
-            if (mode == RunMode.UNATTENDED &&
-                tryParkApproval(sessionId, assistantMsgId, toolCall, securedToolCall, assessment, description, state)
-            ) return
-            val skippedBefore = skippedApprovals.size
-            val approved = requestApproval(
-                assistantMsgId, securedToolCall, assessment, description, mode, skippedApprovals,
-                onScreen = state.control != null && PhoneTools.isPhoneTool(toolCall.name)
-            )
-            if (approved) {
-                assessment.grantKey?.let { if (remoteForced) state.callGrant = it else state.grants += it }
+        var decision = AuditDecision.ALLOWED
+        var decisionRule = "preset:${_securityPreset.value.name}"
+        var decisionReason = assessment.reason
+        var category: UnattendedCategory? = null
+        if (unattended != null) {
+            // Unattended mode: never ask, never park. A fixed rule decides and the log says why.
+            val guard = state.guard
+            val kind = UnattendedPolicy.guardedKind(toolCall)
+            val denial: Pair<String, String>? = if (kind != null && guard != null) {
+                val verdict = guard.check(kind, UnattendedPolicy.contentOf(toolCall, assessment))
+                if (verdict.allowed) null else "injection:${kind.name.lowercase()}" to verdict.reason
+            } else null
+            val needsUser = remoteForced || CommandSecurityFilter.shouldRequireApproval(assessment, SecurityPreset.AUTONOMOUS)
+            val granted = assessment.grantKey != null && assessment.grantKey in state.grants
+            var policyDenial = denial
+            if (policyDenial == null && needsUser && !granted) {
+                val cat = ActionClassifier.classify(toolCall, assessment)
+                category = cat
+                val d = UnattendedPolicy.decide(cat, unattended, guard, UnattendedPolicy.contentOf(toolCall, assessment))
+                if (!d.allowed) policyDenial = d.rule to d.reason
+                else {
+                    decision = AuditDecision.AUTO_ALLOWED
+                    decisionRule = d.rule
+                    decisionReason = "${d.reason} ${assessment.reason}".trim()
+                }
+            } else if (policyDenial == null && needsUser && granted) {
+                decisionRule = "grant:${assessment.grantKey}"
+            }
+            if (policyDenial != null) {
+                autoDeny(sessionId, assistantMsgId, toolCall, securedToolCall, displayCall, description, assessment, state, policyDenial.first, policyDenial.second, app)
+                return
+            }
+            // Per-run limits: stop cleanly before the action that would exceed them.
+            val limits = unattended.limits
+            val isPhoneAction = toolCall.name in PhoneTools.SCREEN_ACTIONS || toolCall.name == PhoneTools.SCREEN_BATCH
+            val phoneSteps = if (toolCall.name == PhoneTools.SCREEN_BATCH) {
+                com.agent.mobile.phone.ActionBatchParser.parse(toolCall.arguments["steps"]).steps.size.coerceAtLeast(1)
+            } else 1
+            val sends = category == UnattendedCategory.SEND_MESSAGES
+            val over = when {
+                isPhoneAction && limits.maxPhoneActions > 0 && state.phoneActions + phoneSteps > limits.maxPhoneActions ->
+                    "maximum of ${limits.maxPhoneActions} phone actions"
+                sends && limits.maxMessagesSent > 0 && state.messagesSent + 1 > limits.maxMessagesSent ->
+                    "maximum of ${limits.maxMessagesSent} sent messages"
+                else -> null
+            }
+            if (over != null) {
+                releasePhoneCall(toolCall)
+                val stopped = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "",
+                    "Not executed: the unattended limit ($over) is reached. The run ends now.", -1, isError = true)
+                updateMessageToolResult(assistantMsgId, stopped, MessageStatus.ERROR)
+                audit(state, sessionId, toolCall.name, displayCall, description, AuditDecision.NOT_RUN, "limit",
+                    "Unattended limit reached: $over.", assessment.level.name, stopped, 0, assessment.redact, app)
+                endForLimit(sessionId, state, over)
+                return
+            }
+            if (isPhoneAction) state.phoneActions += phoneSteps
+            if (sends) state.messagesSent++
+            if (decision == AuditDecision.AUTO_ALLOWED) {
+                assessment.grantKey?.let { state.grants += it }
                 if (PhoneTools.isPhoneTool(toolCall.name)) phone?.noteApproved(toolCall.id)
             }
-            if (!approved) {
-                releasePhoneCall(toolCall)
-                val notAsked = skippedApprovals.size > skippedBefore
-                val reason = if (notAsked) {
-                    "Not executed: this action requires the user's approval, and the user cannot be asked during this " +
-                        "run. Skip it and mention it in your summary."
-                } else {
-                    "Execution rejected by the user (or not answered in time). Do not retry this action; choose another " +
-                        "approach or ask the user."
+        } else {
+            val granted = !remoteForced && assessment.grantKey != null && assessment.grantKey in state.grants
+            if (granted) decisionRule = "grant:${assessment.grantKey}"
+            if (!granted && (remoteForced || CommandSecurityFilter.shouldRequireApproval(assessment, _securityPreset.value))) {
+                // Background run: park the action for the user instead of skipping it.
+                if (mode == RunMode.UNATTENDED &&
+                    tryParkApproval(sessionId, assistantMsgId, toolCall, securedToolCall, assessment, description, state)
+                ) return
+                val skippedBefore = skippedApprovals.size
+                lastApprovalUnreachable = false
+                val approved = requestApproval(
+                    assistantMsgId, securedToolCall, assessment, description, mode, skippedApprovals,
+                    onScreen = state.control != null && PhoneTools.isPhoneTool(toolCall.name)
+                )
+                if (approved) {
+                    assessment.grantKey?.let { if (remoteForced) state.callGrant = it else state.grants += it }
+                    if (PhoneTools.isPhoneTool(toolCall.name)) phone?.noteApproved(toolCall.id)
+                    decision = AuditDecision.APPROVED
+                    decisionRule = if (mode == RunMode.INTERACTIVE) "user:app" else "user:${mode.name.lowercase()}"
                 }
-                val rejected = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "", reason, -1, isError = true)
-                updateMessageToolResult(assistantMsgId, rejected, MessageStatus.ERROR)
-                recordAudit(sessionId, description, assessment.level.name, if (notAsked) "Needs approval (user not present)" else "Rejected by the user", rejected, 0, approved = false)
-                return
+                if (!approved) {
+                    releasePhoneCall(toolCall)
+                    val notAsked = skippedApprovals.size > skippedBefore
+                    val unreachable = lastApprovalUnreachable
+                    val reason = if (unreachable) {
+                        "Not executed: the user could not be reached to approve it (network problem). This is not a " +
+                            "rejection: you may ask for it again later in this task, or continue without it."
+                    } else if (notAsked) {
+                        "Not executed: this action requires the user's approval, and the user cannot be asked during this " +
+                            "run. Skip it and mention it in your summary."
+                    } else {
+                        "Execution rejected by the user (or not answered in time). Do not retry this action; choose another " +
+                            "approach or ask the user."
+                    }
+                    val rejected = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "", reason, -1, isError = true)
+                    updateMessageToolResult(assistantMsgId, rejected, MessageStatus.ERROR)
+                    recordAudit(sessionId, description, assessment.level.name, if (notAsked || unreachable) "Needs approval (user not present)" else "Rejected by the user", rejected, 0, approved = false)
+                    audit(state, sessionId, toolCall.name, displayCall, description,
+                        if (notAsked || unreachable) AuditDecision.SKIPPED else AuditDecision.REJECTED,
+                        if (unreachable) "user_unreachable" else if (notAsked) "no_one_to_ask" else "user", assessment.reason, assessment.level.name, rejected, 0, assessment.redact, app)
+                    return
+                }
             }
         }
 
@@ -1277,14 +1793,17 @@ class AutonomousAgentEngine(
         }
 
         recordAudit(sessionId, description, assessment.level.name, assessment.reason, raw, duration, approved = true)
+        audit(state, sessionId, toolCall.name, displayCall, description, decision, decisionRule, decisionReason,
+            assessment.level.name, raw, duration, assessment.redact, app)
         if (toolCall.name == AgentTools.EXECUTE_COMMAND) {
             detectAndRegisterArtifacts(description, raw)
         }
 
         // 5. Observation for the model.
         val untrusted = toolCall.name in UNTRUSTED_OUTPUT_TOOLS
+        fun compact(text: String) = compactFor(toolCall.name, text)
         fun guard(text: String): String =
-            if (text.isEmpty()) "" else if (untrusted) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(text)}\n[UNTRUSTED_OUTPUT_END]" else compactToolOutput(text)
+            if (text.isEmpty()) "" else if (untrusted) "[UNTRUSTED_OUTPUT_START]\n${compact(text)}\n[UNTRUSTED_OUTPUT_END]" else compact(text)
 
         var stderr = raw.stderr
         if (failed && state.consecutiveErrors >= REFLECTION_THRESHOLD) {
@@ -1303,9 +1822,11 @@ class AutonomousAgentEngine(
         val status = if (failed) MessageStatus.ERROR else MessageStatus.COMPLETED
         updateMessageToolResult(assistantMsgId, result, status)
         val observation = if (raw.stdout.isNotEmpty()) raw.stdout else raw.stderr
+        // Foreign content read in an unattended run restricts what may follow (injection guard).
+        if (isGuardSource(toolCall.name, description)) state.guard?.observeUntrusted(toolCall.name, observation)
         val toolMsg = ChatMessage(
             role = MessageRole.TOOL,
-            text = if (untrusted) "[UNTRUSTED_OUTPUT_START]\n${compactToolOutput(observation)}\n[UNTRUSTED_OUTPUT_END]" else compactToolOutput(observation),
+            text = if (untrusted) "[UNTRUSTED_OUTPUT_START]\n${compact(observation)}\n[UNTRUSTED_OUTPUT_END]" else compact(observation),
             toolResult = result,
             status = status
         )
@@ -1328,6 +1849,33 @@ class AutonomousAgentEngine(
             )
             state.stopRequested = true
         }
+    }
+
+    /**
+     * Unattended mode refused [toolCall]: it does not run, the log records why, and the model
+     * gets a hint to continue without it. Never waits for anybody.
+     */
+    private suspend fun autoDeny(
+        sessionId: String,
+        assistantMsgId: String,
+        toolCall: ToolCall,
+        securedToolCall: ToolCall,
+        displayCall: ToolCall,
+        description: String,
+        assessment: SecurityAssessment,
+        state: LoopState,
+        rule: String,
+        reason: String,
+        app: String?
+    ) {
+        releasePhoneCall(toolCall)
+        val denied = appendToolMessage(sessionId, securedToolCall, toolCall.name, description, "", UnattendedPolicy.hint(reason), -1, isError = true)
+        updateMessageToolResult(assistantMsgId, denied, MessageStatus.ERROR)
+        appendSystemMessage("🚫 Unattended rule: `${description.take(160)}` was not run. $reason", sessionId)
+        recordAudit(sessionId, description, assessment.level.name, "Auto-denied (unattended): $reason", denied, 0, approved = false)
+        audit(state, sessionId, toolCall.name, displayCall, description, AuditDecision.AUTO_DENIED, rule, reason,
+            assessment.level.name, denied, 0, assessment.redact, app)
+        state.autoDenied += "${description.take(160)} — $reason"
     }
 
     /**
@@ -1376,6 +1924,10 @@ class AutonomousAgentEngine(
                 updateMessageStatus(assistantMsgId, MessageStatus.WAITING_FOR_APPROVAL)
                 try {
                     handler(call, assessment)
+                } catch (e: ApprovalUnreachableException) {
+                    // Not a rejection: nobody could be asked right now (#28).
+                    lastApprovalUnreachable = true
+                    false
                 } finally {
                     updateMessageStatus(assistantMsgId, MessageStatus.EXECUTING_TOOL)
                 }
@@ -1488,6 +2040,8 @@ class AutonomousAgentEngine(
         )
         updateMessageToolResult(assistantMsgId, paused, MessageStatus.WAITING_FOR_APPROVAL)
         recordAudit(sessionId, description, assessment.level.name, "Waiting for the user's approval (parked)", paused, 0, approved = false)
+        audit(state, sessionId, toolCall.name, securedToolCall, description, AuditDecision.PARKED, "user:parked",
+            "Waiting for the user's approval. ${assessment.reason}", assessment.level.name, paused, 0, assessment.redact)
         appendSystemMessage("⏸️ Waiting for your approval: `${description.take(160)}`. The task continues after you answer.", sessionId)
         state.parkedId = id
         state.stopRequested = true
@@ -1549,7 +2103,25 @@ class AutonomousAgentEngine(
             AgentTools.READ_FILE -> {
                 val path = a["path"].orEmpty()
                 val text = bridgeClient.readFile(path, timeoutMs = 20_000L)
-                ok(text.ifEmpty { "(empty file)" })
+                ok(FileWindow.render(text, a["offset"], a["limit"]))
+            }
+            AgentTools.EDIT_FILE -> {
+                val path = a["path"].orEmpty()
+                val old = a["old_text"].orEmpty()
+                val new = a["new_text"].orEmpty()
+                val text = bridgeClient.readFile(path, timeoutMs = 20_000L)
+                when (val count = FileWindow.occurrences(text, old)) {
+                    0 -> fail("old_text was not found in $path. Nothing was changed. Read the file (read_file with offset) and copy the exact text, including whitespace.")
+                    1 -> {
+                        val updated = text.replaceFirst(old, new)
+                        if (bridgeClient.writeFile(path, updated, timeoutMs = 20_000L)) {
+                            if (path.contains(".amc/skills")) invalidateSkillsCache()
+                            registerArtifactForPath(path, updated)
+                            ok("Edited $path: replaced 1 occurrence (${old.length} → ${new.length} characters). The file has ${updated.count { it == '\n' } + 1} lines.")
+                        } else fail("Could not write $path.")
+                    }
+                    else -> fail("old_text occurs $count times in $path. Nothing was changed. Include more surrounding lines so it is unique.")
+                }
             }
             AgentTools.WRITE_FILE -> {
                 val path = a["path"].orEmpty()
@@ -1565,7 +2137,11 @@ class AutonomousAgentEngine(
                 } else fail("Could not write $path.")
             }
             AgentTools.WEB_FETCH -> {
-                val res = webFetcher.fetch(a["url"].orEmpty())
+                val res = webFetcher.fetch(
+                    a["url"].orEmpty(),
+                    start = a["start"]?.trim()?.toDoubleOrNull()?.toInt() ?: 0,
+                    length = a["length"]?.trim()?.toDoubleOrNull()?.toInt() ?: 12_000
+                )
                 if (res.ok) ok(res.text) else fail(res.text.ifEmpty { "HTTP ${res.statusCode}" })
             }
             AgentTools.REMEMBER -> {
@@ -1592,14 +2168,22 @@ class AutonomousAgentEngine(
                 val p = platform ?: return fail("Scheduling is not available.")
                 val delay = a["delay_minutes"]?.trim()?.toDoubleOrNull()?.toLong()?.coerceAtLeast(0) ?: 0L
                 val repeat = a["repeat_every_minutes"]?.trim()?.toDoubleOrNull()?.toLong()?.coerceAtLeast(0) ?: 0L
+                val conditions = AgentTools.conditionsOf(a)
                 val id = p.scheduleAgentTask(
                     title = a["title"].orEmpty().ifBlank { "Scheduled task" },
                     prompt = a["prompt"].orEmpty(),
                     delayMinutes = delay,
-                    repeatEveryMinutes = if (repeat in 1 until 15) 15 else repeat
+                    repeatEveryMinutes = if (repeat in 1 until 15) 15 else repeat,
+                    conditions = conditions
                 )
                 val repeatText = if (repeat > 0) ", repeating every ${maxOf(repeat, 15)} minutes" else ""
-                ok("Scheduled (id: $id). First run in about $delay minutes$repeatText. Android may delay background runs slightly.")
+                val whenText = if (conditions.any) " It starts only when: ${conditions.describe()}." else ""
+                ok("Scheduled (id: $id). First run in about $delay minutes$repeatText.$whenText Android may delay background runs slightly.")
+            }
+            AgentTools.LIST_RUNS -> {
+                val p = platform ?: return fail("The run history is not available.")
+                val limit = a["limit"]?.trim()?.toDoubleOrNull()?.toInt()?.coerceIn(1, 30) ?: 10
+                ok(p.listRecentRuns(limit).ifBlank { "No agent runs recorded yet." })
             }
             AgentTools.LIST_SCHEDULED_TASKS -> {
                 val p = platform ?: return fail("Scheduling is not available.")
@@ -1623,8 +2207,40 @@ class AutonomousAgentEngine(
                 val hits = repo.searchHistory(query, max.coerceIn(1, 20), excludeSessionId = _currentSession.value?.id)
                 ok(formatHistoryHits(query, hits))
             }
-            AgentTools.DELEGATE_TASK -> runSubAgent(call, assistantMsgId, mode, skippedApprovals)
+            AgentTools.DELEGATE_TASK -> runSubAgent(call, assistantMsgId, mode, skippedApprovals, state)
             AgentTools.SEND_FILE -> sendFile(call)
+            AgentTools.JOB_START -> {
+                val r = bridgeClient.jobAction("job_start", mapOf("command" to a["command"].orEmpty().trim(), "name" to a["name"].orEmpty()))
+                if (!r.optBoolean("ok")) fail(r.optString("error", "Could not start the job."))
+                else {
+                    val job = r.getJSONObject("job")
+                    ok(
+                        "Started background job ${job.optString("job_id")} (\"${job.optString("name")}\"). Output: ${job.optString("log")}. " +
+                            "It keeps running across reconnects and later runs. Check it with job_status job_id=${job.optString("job_id")}."
+                    )
+                }
+            }
+            AgentTools.JOB_STATUS, AgentTools.JOB_STOP -> {
+                val id = a["job_id"].orEmpty().trim()
+                val action = if (call.name == AgentTools.JOB_STOP) "job_stop" else if (id.isEmpty()) "job_list" else "job_status"
+                val r = bridgeClient.jobAction(action, if (id.isEmpty()) emptyMap() else mapOf("job_id" to id))
+                if (!r.optBoolean("ok")) fail(r.optString("error", "Job request failed."))
+                else ok(formatJobs(r))
+            }
+            AgentTools.FINISH_TASK -> {
+                val status = a["status"].orEmpty().trim().lowercase().takeIf { it in setOf("done", "partial", "blocked") } ?: "done"
+                state.finishStatus = status
+                state.stopRequested = true
+                // The summary becomes the run's final reply (notification, Telegram, report).
+                val summary = a["summary"].orEmpty().trim()
+                val reply = ChatMessage(role = MessageRole.ASSISTANT, text = summary, status = MessageStatus.COMPLETED)
+                pendingFinal = reply
+                ok("Run finished with status '$status'.")
+            }
+            AgentTools.ASK_USER -> ok(
+                "Nobody can answer during this unattended run. Decide yourself with the most reasonable assumption and " +
+                    "state it in your summary, or skip this part. The question is recorded for the user's report."
+            )
             else -> fail("Unknown tool '${call.name}'.")
         }
     }
@@ -1686,7 +2302,7 @@ class AutonomousAgentEngine(
      * command gets when typed directly. Unreadable scripts keep the command's own assessment.
      */
     private suspend fun withScriptChecks(call: ToolCall, base: SecurityAssessment): SecurityAssessment {
-        if (call.name != AgentTools.EXECUTE_COMMAND || base.isBlocked) return base
+        if ((call.name != AgentTools.EXECUTE_COMMAND && call.name != AgentTools.JOB_START) || base.isBlocked) return base
         val scripts = CommandSecurityFilter.scriptFiles(call.arguments["command"].orEmpty())
         if (scripts.isEmpty() || bridgeClient.connectionStatus.value !is ConnectionStatus.Connected) return base
         var result = base
@@ -1765,7 +2381,8 @@ class AutonomousAgentEngine(
         call: ToolCall,
         assistantMsgId: String,
         parentMode: RunMode,
-        parentSkipped: MutableList<String>
+        parentSkipped: MutableList<String>,
+        parentState: LoopState
     ): ToolResult {
         val description = AgentTools.describe(call)
         fun result(text: String, error: Boolean) = ToolResult(
@@ -1793,8 +2410,13 @@ class AutonomousAgentEngine(
             webSearcher = webSearcher,
             personaStore = personaStore,
             subAgentDepth = subAgentDepth + 1,
-            phone = phone
+            phone = phone,
+            auditLogger = auditLogger ?: chatRepository?.auditLogger
         )
+        // Unattended parents: the child decides by the same rules and never asks anybody.
+        child.unattendedOverride = parentState.unattended
+        child.parentRunId = parentState.runId
+        child.inheritedGuard = parentState.guard
         child.setModelConfig(_modelConfig.value)
         child.setSecurityPreset(_securityPreset.value)
         child.setMaxSteps(minOf(_maxSteps.value, SUBAGENT_MAX_STEPS))
@@ -1802,7 +2424,10 @@ class AutonomousAgentEngine(
         child.attachmentSink = attachmentSink
         child.approvalHandler = { childCall, assessment ->
             val childDescription = "[sub-agent] " + AgentTools.describe(childCall)
-            requestApproval(assistantMsgId, childCall, assessment, childDescription, parentMode, parentSkipped)
+            // Children running side by side ask one at a time (#25).
+            subAgentApprovals.withLock {
+                requestApproval(assistantMsgId, childCall, assessment, childDescription, parentMode, parentSkipped)
+            }
         }
         child.activityListener = { line ->
             updateStreamingOutput(assistantMsgId, "▸ $line\n")
@@ -1949,6 +2574,60 @@ class AutonomousAgentEngine(
         }
     }
 
+    /**
+     * Writes one entry of the tamper-evident audit log (every tool call, whatever the decision).
+     * Arguments are redacted ([AuditRedactor]); a call that carries a secret keeps no values.
+     */
+    private suspend fun audit(
+        state: LoopState?,
+        sessionId: String?,
+        toolName: String,
+        call: ToolCall?,
+        description: String,
+        decision: AuditDecision,
+        rule: String,
+        reason: String,
+        riskLevel: String,
+        result: ToolResult?,
+        durationMs: Long,
+        secret: Boolean = false,
+        app: String? = null
+    ) {
+        val logger = auditLogger ?: chatRepository?.auditLogger ?: return
+        val args = when {
+            call != null -> AuditRedactor.arguments(toolName, call.arguments, secret)
+            description.isNotEmpty() -> org.json.JSONObject().put("description", AuditRedactor.scrub(description).take(300)).toString()
+            else -> "{}"
+        }
+        val ran = decision == AuditDecision.ALLOWED || decision == AuditDecision.AUTO_ALLOWED || decision == AuditDecision.APPROVED
+        val out = result?.let { r -> if (r.stdout.isNotEmpty()) r.stdout else r.stderr }.orEmpty()
+        try {
+            logger.log(
+                AuditEntry(
+                    runId = state?.runId ?: "unknown",
+                    sessionId = sessionId,
+                    trigger = state?.trigger ?: RunTrigger.USER,
+                    mode = (state?.mode ?: RunMode.INTERACTIVE).name,
+                    preset = if (state?.unattended != null) "UNATTENDED" else _securityPreset.value.name,
+                    tool = toolName,
+                    app = app,
+                    arguments = args,
+                    decision = decision,
+                    rule = rule,
+                    reason = AuditRedactor.scrub(reason),
+                    riskLevel = riskLevel,
+                    resultSummary = if (secret) "" else AuditRedactor.scrub(out.take(700)),
+                    durationMs = durationMs,
+                    exitCode = if (ran) result?.exitCode else null
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Audit log write failed: ${e.message}")
+        }
+    }
+
     // -------------------------------------------------------------------------------------------
     // Context window
     // -------------------------------------------------------------------------------------------
@@ -1964,7 +2643,9 @@ class AutonomousAgentEngine(
     internal fun prepareContextMessages(
         allMessages: List<ChatMessage>,
         maxMessages: Int = 40,
-        maxCharBudget: Int = 120_000
+        maxCharBudget: Int = 120_000,
+        /** Summary of dropped steps and the current plan, appended to the pinned task (#4). */
+        pinned: String? = null
     ): List<ChatMessage> {
         val nonSystem = repairToolPairs(allMessages.filter { it.role != MessageRole.SYSTEM })
         if (nonSystem.isEmpty()) return emptyList()
@@ -2013,6 +2694,11 @@ class AutonomousAgentEngine(
         }
 
         maskSupersededScreens(window)
+
+        // The record of earlier steps travels with the pinned task, so it survives every trim.
+        if (pinned != null && root >= 0 && window.isNotEmpty() && window[0].id == nonSystem[root].id) {
+            window[0] = window[0].copy(text = window[0].text + pinned)
+        }
 
         // Keep images only on the most recent messages.
         val imageIndices = window.indices.filter { window[it].imageBase64 != null }
@@ -2154,6 +2840,11 @@ class AutonomousAgentEngine(
         }
         return out
     }
+
+    /** read_file and web_fetch return the window the model asked for: keep it (bounded), cut other output harder. */
+    internal fun compactFor(toolName: String, text: String): String =
+        if (toolName in WINDOWED_TOOLS) compactToolOutput(text, maxChars = 16_000, headChars = 10_000, tailChars = 5_000)
+        else compactToolOutput(text)
 
     internal fun compactToolOutput(
         text: String,
@@ -2359,7 +3050,8 @@ class AutonomousAgentEngine(
     suspend fun stopExecution(silent: Boolean = false) {
         _isStopping.value = true
         approvalContinuation?.cancel()
-        bridgeClient.interruptCurrent()
+        // Cancelling the run below stops the agent's own command by its execution id. No bare
+        // interrupt: the terminal tab shares this connection and its command must keep running (#33).
         _pendingApproval.value = null
         if (!silent) {
             appendSystemMessage("🛑 Emergency stop requested. Waiting for the bridge to stop execution.", _currentSession.value?.id)
@@ -2375,11 +3067,23 @@ class AutonomousAgentEngine(
         }
     }
 
+    /**
+     * The chat's stop button: stops this engine's run and, as an emergency brake, every unattended
+     * run of AMC (background tasks, Telegram, triggers).
+     */
     fun emergencyStop() {
+        stopLocal()
+        RunRegistry.stopAll(exceptRunId = interactiveRunId, unattendedOnly = true)
+    }
+
+    private fun stopLocal() {
         _isStopping.value = true
         if (stopJob?.isActive == true) return
         stopJob = scope.launch { stopExecution(silent = false) }
     }
+
+    @Volatile
+    private var interactiveRunId: String? = null
 
     private fun recoverAbortedToolCalls(executionSessionId: String, reason: String) {
         val currentMessages = _messages.value

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -35,6 +36,10 @@ import com.agent.mobile.ui.legal.LegalConsentScreen
 import com.agent.mobile.ui.legal.LegalTexts
 
 
+/** The selected bottom tab. Saveable, so rotation or a theme change does not jump back to the chat (#35). */
+@Composable
+internal fun rememberSelectedTab(initial: Int = 0): MutableIntState = rememberSaveable { mutableIntStateOf(initial) }
+
 class MainViewModel : androidx.lifecycle.ViewModel() {
     lateinit var bridgeClient: TermuxBridgeClient
     lateinit var agentEngine: AutonomousAgentEngine
@@ -43,6 +48,25 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
     lateinit var chatRepository: ChatRepository
     var isInitialized = false
         private set
+
+    /** Text/image shared to AMC from another app, waiting to fill the chat input (Teil E, E2). */
+    val pendingDraft = kotlinx.coroutines.flow.MutableStateFlow<com.agent.mobile.entry.ChatDraft?>(null)
+
+    /** Increases for every outside request to show the chat (share or "New task" shortcut). */
+    val openChatRequests = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    /** Increases for every "New task" shortcut: the chat starts a fresh session. */
+    val newTaskRequests = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    /** Handles an intent relayed by the share target or a launcher shortcut. */
+    fun handleEntry(intent: android.content.Intent?) {
+        val draft = com.agent.mobile.entry.EntryIntents.draftFromRelay(intent)
+        val newTask = intent?.getBooleanExtra(com.agent.mobile.entry.EntryIntents.EXTRA_NEW_TASK, false) == true
+        if (draft == null && !newTask) return
+        if (newTask) newTaskRequests.value += 1
+        if (draft != null) pendingDraft.value = draft
+        openChatRequests.value += 1
+    }
 
     fun init(context: android.content.Context) {
         if (isInitialized) return
@@ -61,6 +85,15 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
             personaStore = runtime.personaStore,
             phone = runtime.phoneController
         )
+        // Chat runs survive the app being closed or killed (#7): checkpoint them, continue stale ones.
+        agentEngine.runCheckpointer = runtime.runCheckpointer
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                runtime.runCheckpointer.resumeInterrupted(com.agent.mobile.agent.RunRegistry.active.value.map { it.runId }.toSet())
+            } catch (e: Exception) {
+                android.util.Log.w("MainViewModel", "Could not continue interrupted runs: ${e.message}")
+            }
+        }
         // A finished local model setup changes the model; also continue a setup that stopped half-way.
         viewModelScope.launch {
             com.agent.mobile.service.scheduler.LocalModelSetupWorker.activated.collect { agentEngine.reloadSettings() }
@@ -83,6 +116,15 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
                 }
             }
         }
+        // Audit retention (30/90/365 days, bounded size) and the optional daily summary.
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                runtime.chatRepository.auditLogger.rotate(preferenceManager.loadAuditRetentionDays())
+            } catch (e: Exception) {
+                android.util.Log.w("MainViewModel", "Audit retention failed: ${e.message}")
+            }
+        }
+        if (preferenceManager.loadDailyReport()) runtime.scheduler.scheduleDailyReport() else runtime.scheduler.cancelDailyReport()
         // Re-arm the heartbeat after app updates or reinstalls.
         if (preferenceManager.loadHeartbeatEnabled()) {
             runtime.scheduler.scheduleHeartbeat(preferenceManager.loadHeartbeatIntervalMinutes())
@@ -99,7 +141,8 @@ class MainViewModel : androidx.lifecycle.ViewModel() {
     override fun onCleared() {
         super.onCleared()
         if (::agentEngine.isInitialized) {
-            agentEngine.close()
+            // A running chat task continues in the background instead of being lost (#7).
+            agentEngine.handOffAndClose()
         }
         // Note: bridgeClient is decoupled from ViewModel/Activity lifecycle so that
         // background operations and AgentForegroundService maintain bridge persistence.
@@ -140,6 +183,8 @@ class MainActivity : ComponentActivity() {
         }
 
         val savedToken = preferenceManager.loadAuthToken()
+        // A share or shortcut that started the app (not again after rotation).
+        if (savedInstanceState == null) viewModel.handleEntry(intent)
 
         // Request notification permission on Android 13+
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -165,11 +210,23 @@ class MainActivity : ComponentActivity() {
                         onDecline = { finish() }
                     )
                 } else {
-                var selectedTab by remember { mutableIntStateOf(0) }
+                var selectedTab by rememberSelectedTab()
+                // Not saveable on purpose: the token must not end up in the saved instance state.
                 var currentToken by remember { mutableStateOf(savedToken) }
-                var showTutorial by remember {
+                var showTutorial by rememberSaveable {
                     mutableStateOf(!preferenceManager.hasCompletedTutorial())
                 }
+                val openChatRequests by viewModel.openChatRequests.collectAsState()
+                // Handled requests are saved, so a rotation does not jump back to the chat.
+                var handledOpenChat by rememberSaveable { mutableStateOf(0L) }
+                LaunchedEffect(openChatRequests) {
+                    if (openChatRequests > handledOpenChat) {
+                        handledOpenChat = openChatRequests
+                        selectedTab = 0
+                    }
+                }
+                val pendingDraft by viewModel.pendingDraft.collectAsState()
+                val newTaskRequests by viewModel.newTaskRequests.collectAsState()
 
                 Box(modifier = Modifier.fillMaxSize()) {
                     Scaffold(
@@ -285,7 +342,10 @@ class MainActivity : ComponentActivity() {
                                     agentEngine = agentEngine,
                                     bridgeClient = bridgeClient,
                                     onNavigateSetup = { selectedTab = 2 },
-                                    onNavigateSettings = { selectedTab = 3 }
+                                    onNavigateSettings = { selectedTab = 3 },
+                                    draft = pendingDraft,
+                                    onDraftConsumed = { viewModel.pendingDraft.value = null },
+                                    newTaskRequest = newTaskRequests
                                 )
                                 1 -> com.agent.mobile.ui.terminal.TerminalScreen(
                                     bridgeClient = bridgeClient
@@ -333,6 +393,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (viewModel.isInitialized) viewModel.handleEntry(intent)
     }
 
     override fun onStart() {

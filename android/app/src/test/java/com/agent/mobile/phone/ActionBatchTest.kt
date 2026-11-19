@@ -199,6 +199,33 @@ class ActionBatchTest {
         assertNotEquals(a, AndroidPhoneController.fingerprint("org.telegram", TargetInfo("Send", viewId = "id/send")))
         assertNull(AndroidPhoneController.fingerprint("com.whatsapp", null))
     }
+
+    /** #29: every step is re-checked with the user's block list, not the built-in default. */
+    @Test
+    fun batchStepsUseTheUsersBlockList() {
+        val snapshot = ScreenSnapshot(
+            packageName = "com.example.paybox", appLabel = "PayBox Wallet",
+            elements = emptyList(), text = "", truncated = false
+        )
+        val tap = ToolCall(id = "b1#1", name = PhoneTools.SCREEN_TAP, arguments = mapOf("target" to "e1"))
+        val target = TargetInfo("Add to list")
+
+        // The name looks like a payment app: blocked by default ...
+        val byDefault = ActionBatchExecutor.stepContext(snapshot, null, target, "com.agent.mobile", PackageBlocklist.DEFAULT)
+        assertTrue(PhoneToolPolicy.assess(tap, byDefault).isBlocked)
+        // ... but the user released it, so a batch step must not be blocked either.
+        val released = PackageBlocklist.DEFAULT.withoutEntry("com.example.paybox")
+        val withUserList = ActionBatchExecutor.stepContext(snapshot, null, target, "com.agent.mobile", released)
+        assertFalse(PhoneToolPolicy.assess(tap, withUserList).isBlocked)
+
+        // An own entry for one window class blocks the step on that window.
+        val notes = snapshot.copy(packageName = "com.example.notes", appLabel = "Notes")
+        val ownEntry = PackageBlocklist.DEFAULT.withEntry("com.example.notes/.Secret")
+        val secretWindow = ActionBatchExecutor.stepContext(notes, "com.example.notes.SecretActivity", target, "com.agent.mobile", ownEntry)
+        assertTrue(PhoneToolPolicy.assess(tap, secretWindow).isBlocked)
+        val otherWindow = ActionBatchExecutor.stepContext(notes, "com.example.notes.MainActivity", target, "com.agent.mobile", ownEntry)
+        assertFalse(PhoneToolPolicy.assess(tap, otherWindow).isBlocked)
+    }
 }
 
 class ScreenLeaseTest {

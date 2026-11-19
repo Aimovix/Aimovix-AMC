@@ -20,6 +20,10 @@ object AgentTools {
     const val EXECUTE_COMMAND = "execute_command"
     const val READ_FILE = "read_file"
     const val WRITE_FILE = "write_file"
+    const val EDIT_FILE = "edit_file"
+    const val JOB_START = "job_start"
+    const val JOB_STATUS = "job_status"
+    const val JOB_STOP = "job_stop"
     const val WEB_FETCH = "web_fetch"
     const val REMEMBER = "remember"
     const val FORGET = "forget"
@@ -32,6 +36,14 @@ object AgentTools {
     const val DELEGATE_TASK = "delegate_task"
     const val SEARCH_HISTORY = "search_history"
     const val SEND_FILE = "send_file"
+    const val LIST_RUNS = "list_runs"
+    /** Unattended runs only: ends the task with a summary and an honest status (#5). */
+    const val FINISH_TASK = "finish_task"
+    /** Unattended runs only: a question nobody can answer; the agent decides itself (#22). */
+    const val ASK_USER = "ask_user"
+
+    /** Tools offered only in unattended mode. */
+    val UNATTENDED_ONLY: Set<String> = setOf(FINISH_TASK, ASK_USER)
 
     enum class ParamType(val jsonType: String, val geminiType: String) {
         STRING("string", "STRING"),
@@ -69,8 +81,23 @@ object AgentTools {
         ),
         Definition(
             READ_FILE,
-            "Read a UTF-8 text file from the Termux home directory or shared storage (max 5 MiB).",
-            listOf(Param("path", ParamType.STRING, "Absolute path or path relative to the Termux home directory."))
+            "Read a UTF-8 text file from the Termux home directory or shared storage (max 5 MiB). Large files come in " +
+                "windows of lines: the result says the total and the offset of the next window.",
+            listOf(
+                Param("path", ParamType.STRING, "Absolute path or path relative to the Termux home directory."),
+                Param("offset", ParamType.INTEGER, "First line to read (1-based, default 1).", required = false),
+                Param("limit", ParamType.INTEGER, "Number of lines to read (default: the whole file if it is small, else 300; max 2000).", required = false)
+            )
+        ),
+        Definition(
+            EDIT_FILE,
+            "Change part of a text file: replaces old_text with new_text. old_text must occur exactly once (include a few " +
+                "surrounding lines to make it unique). Use it instead of rewriting a whole file.",
+            listOf(
+                Param("path", ParamType.STRING, "Absolute path or path relative to the Termux home directory."),
+                Param("old_text", ParamType.STRING, "The exact text to replace (whitespace matters)."),
+                Param("new_text", ParamType.STRING, "The replacement text (may be empty to delete old_text).")
+            )
         ),
         Definition(
             WRITE_FILE,
@@ -83,9 +110,34 @@ object AgentTools {
             )
         ),
         Definition(
+            JOB_START,
+            "Start a long-running command in the background (server, download, build, sync). It keeps running after this " +
+                "call returns, across reconnects and later runs; its output goes to a log file. Returns a job id.",
+            listOf(
+                Param("command", ParamType.STRING, "The Bash command to run in the background."),
+                Param("name", ParamType.STRING, "Short name for the job.", required = false)
+            )
+        ),
+        Definition(
+            JOB_STATUS,
+            "State of a background job (running, done, failed, stopped, exit code) and its new output since the last check. " +
+                "Without job_id: list all jobs.",
+            listOf(Param("job_id", ParamType.STRING, "The id from job_start (omit to list all jobs).", required = false))
+        ),
+        Definition(
+            JOB_STOP,
+            "Stop a background job (the whole process group).",
+            listOf(Param("job_id", ParamType.STRING, "The id from job_start."))
+        ),
+        Definition(
             WEB_FETCH,
-            "Download a web page or API response over HTTP(S) and return it as readable text (HTML is converted to text).",
-            listOf(Param("url", ParamType.STRING, "The http:// or https:// URL to fetch."))
+            "Download a web page or API response over HTTP(S) and return it as readable text (HTML is converted to text). " +
+                "Long pages come in windows of characters: the result says the total and where the next window starts.",
+            listOf(
+                Param("url", ParamType.STRING, "The http:// or https:// URL to fetch."),
+                Param("start", ParamType.INTEGER, "Character offset to start from (default 0).", required = false),
+                Param("length", ParamType.INTEGER, "Number of characters (default 12000, max 20000).", required = false)
+            )
         ),
         Definition(
             WEB_SEARCH,
@@ -133,8 +185,17 @@ object AgentTools {
                 Param("title", ParamType.STRING, "Short name for the task."),
                 Param("prompt", ParamType.STRING, "Complete instruction for the future run."),
                 Param("delay_minutes", ParamType.INTEGER, "Minutes from now until the first run (0 = as soon as possible).", required = false),
-                Param("repeat_every_minutes", ParamType.INTEGER, "Repeat interval in minutes (minimum 15). Omit or 0 for a one-time task.", required = false)
+                Param("repeat_every_minutes", ParamType.INTEGER, "Repeat interval in minutes (minimum 15). Omit or 0 for a one-time task.", required = false),
+                Param("requires_wifi", ParamType.BOOLEAN, "Start only on Wi-Fi (unmetered network).", required = false),
+                Param("requires_charging", ParamType.BOOLEAN, "Start only while the phone is charging.", required = false),
+                Param("requires_battery_not_low", ParamType.BOOLEAN, "Start only when the battery is not low.", required = false)
             )
+        ),
+        Definition(
+            LIST_RUNS,
+            "List the latest agent runs (scheduled tasks, heartbeat, chat tasks handed to the background) with their " +
+                "status (done, failed, continued, waiting) and outcome. Use it to check whether earlier background work succeeded.",
+            listOf(Param("limit", ParamType.INTEGER, "Number of runs (1-30, default 10).", required = false))
         ),
         Definition(
             DELEGATE_TASK,
@@ -174,6 +235,21 @@ object AgentTools {
             CANCEL_SCHEDULED_TASK,
             "Cancel a scheduled background task.",
             listOf(Param("task_id", ParamType.STRING, "The id returned by schedule_task or list_scheduled_tasks."))
+        ),
+        Definition(
+            FINISH_TASK,
+            "End this unattended run. Call it exactly once, when the task is complete or cannot be completed. " +
+                "The summary is the report the user reads, so say what was done, what was refused or skipped and why.",
+            listOf(
+                Param("summary", ParamType.STRING, "Short final report for the user."),
+                Param("status", ParamType.STRING, "'done' (everything finished), 'partial' (some parts left) or 'blocked' (could not do the task).")
+            )
+        ),
+        Definition(
+            ASK_USER,
+            "Record a question for the user. Nobody can answer during an unattended run: you get no answer, so decide " +
+                "yourself with the most reasonable assumption (and state it in the summary) or skip that part.",
+            listOf(Param("question", ParamType.STRING, "The question you would ask."))
         )
     )
 
@@ -190,7 +266,7 @@ object AgentTools {
      * and small models choose more reliably from a short list.
      */
     val LOCAL_PROFILE: Set<String> = setOf(
-        EXECUTE_COMMAND, READ_FILE, WRITE_FILE, REMEMBER, NOTIFY_USER, WEB_SEARCH,
+        EXECUTE_COMMAND, READ_FILE, WRITE_FILE, EDIT_FILE, REMEMBER, NOTIFY_USER, WEB_SEARCH, FINISH_TASK,
         PhoneTools.SCREEN_READ, PhoneTools.SCREEN_TAP, PhoneTools.SCREEN_TYPE, PhoneTools.SCREEN_SCROLL,
         PhoneTools.SCREEN_GLOBAL, PhoneTools.OPEN_APP
     )
@@ -271,12 +347,16 @@ object AgentTools {
         PhoneTools.describe(call, redact)?.let { return it }
         return when (call.name) {
             EXECUTE_COMMAND -> a["command"]?.trim().orEmpty()
-            READ_FILE -> "read_file ${a["path"].orEmpty()}"
+            READ_FILE -> "read_file ${a["path"].orEmpty()}" + (a["offset"]?.takeIf { it.isNotBlank() }?.let { " from line $it" } ?: "")
+            JOB_START -> "job_start: ${a["command"]?.trim().orEmpty()}"
+            JOB_STATUS -> "job_status ${a["job_id"].orEmpty()}".trim()
+            JOB_STOP -> "job_stop ${a["job_id"].orEmpty()}"
+            EDIT_FILE -> "edit_file ${a["path"].orEmpty()} [${a["old_text"]?.length ?: 0} → ${a["new_text"]?.length ?: 0} chars]"
             WRITE_FILE -> {
                 val mode = if (a["mode"].equals("append", ignoreCase = true)) " (append)" else ""
                 "write_file ${a["path"].orEmpty()}$mode [${a["content"]?.length ?: 0} chars]"
             }
-            WEB_FETCH -> "web_fetch ${a["url"].orEmpty()}"
+            WEB_FETCH -> "web_fetch ${a["url"].orEmpty()}" + (a["start"]?.takeIf { it.isNotBlank() && it != "0" }?.let { " from $it" } ?: "")
             REMEMBER -> "remember: ${a["note"].orEmpty().take(120)}"
             FORGET -> "forget: ${a["text"].orEmpty().take(120)}"
             UPDATE_PLAN -> "update_plan"
@@ -287,17 +367,28 @@ object AgentTools {
                 buildString {
                     append("schedule_task \"").append(a["title"].orEmpty()).append("\" in ").append(delay).append(" min")
                     if (repeat != null) append(", every ").append(repeat).append(" min")
+                    conditionsOf(a).takeIf { it.any }?.let { append(" when ").append(it.describe()) }
                 }
             }
             LIST_SCHEDULED_TASKS -> "list_scheduled_tasks"
+            LIST_RUNS -> "list_runs"
             CANCEL_SCHEDULED_TASK -> "cancel_scheduled_task ${a["task_id"].orEmpty()}"
             WEB_SEARCH -> "web_search: ${a["query"].orEmpty().take(160)}"
             DELEGATE_TASK -> "delegate_task: ${a["task"].orEmpty().replace('\n', ' ').take(160)}"
             SEARCH_HISTORY -> "search_history: ${a["query"].orEmpty().take(120)}"
             SEND_FILE -> "send_file ${a["path"].orEmpty()}"
+            FINISH_TASK -> "finish_task (${a["status"].orEmpty()})"
+            ASK_USER -> "ask_user: ${a["question"].orEmpty().take(160)}"
             else -> "${call.name} ${JSONObject(a as Map<*, *>)}"
         }
     }
+
+    /** The start conditions of a schedule_task call (#23). */
+    fun conditionsOf(a: Map<String, String>): com.agent.mobile.agent.TaskConditions = TaskConditions(
+        requiresWifi = PhoneTools.isTrue(a["requires_wifi"]),
+        requiresCharging = PhoneTools.isTrue(a["requires_charging"]),
+        requiresBatteryNotLow = PhoneTools.isTrue(a["requires_battery_not_low"])
+    )
 
     /** Longer text for approval cards: shows what will be written or scheduled. */
     fun approvalPreview(call: ToolCall): String {
@@ -312,6 +403,7 @@ object AgentTools {
                 }
             }
             SCHEDULE_TASK -> describe(call) + "\n---\n" + a["prompt"].orEmpty().take(1500)
+            EDIT_FILE -> describe(call) + "\n--- old\n" + a["old_text"].orEmpty().take(700) + "\n--- new\n" + a["new_text"].orEmpty().take(700)
             DELEGATE_TASK -> "delegate_task\n---\n" + a["task"].orEmpty().take(1500) +
                 a["context"]?.takeIf { it.isNotBlank() }?.let { "\n\nContext: " + it.take(800) }.orEmpty()
             else -> describe(call)
@@ -342,11 +434,14 @@ object AgentTools {
         val a = call.arguments
         if (PhoneTools.isPhoneTool(call.name)) return PhoneToolPolicy.assess(call, phone ?: PhoneRiskContext())
         return when (call.name) {
-            EXECUTE_COMMAND -> {
+            EXECUTE_COMMAND, JOB_START -> {
                 val cmd = a["command"]?.trim().orEmpty()
                 if (cmd.isEmpty()) SecurityAssessment(RiskLevel.BLOCKED, "Empty command.")
                 else CommandSecurityFilter.analyze(cmd)
             }
+            JOB_STATUS -> SecurityAssessment(RiskLevel.LOW, "Reads the state and output of a background job")
+            JOB_STOP -> if (a["job_id"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A job id is required.")
+                else SecurityAssessment(RiskLevel.MEDIUM, "Stops a background job the agent started")
             READ_FILE -> {
                 val path = a["path"].orEmpty()
                 when {
@@ -356,9 +451,11 @@ object AgentTools {
                     else -> SecurityAssessment(RiskLevel.LOW, "Read-only file access")
                 }
             }
-            WRITE_FILE -> {
+            WRITE_FILE, EDIT_FILE -> {
                 val path = a["path"].orEmpty()
                 when {
+                    call.name == EDIT_FILE && a["old_text"].isNullOrEmpty() ->
+                        SecurityAssessment(RiskLevel.BLOCKED, "old_text is required (the exact text to replace).")
                     path.isBlank() -> SecurityAssessment(RiskLevel.BLOCKED, "A file path is required.")
                     path.contains(".termux_agent_token") ->
                         SecurityAssessment(RiskLevel.BLOCKED, "Writing the bridge token file is not allowed.")
@@ -375,7 +472,7 @@ object AgentTools {
                     SecurityAssessment(RiskLevel.MEDIUM, "Network request (download)")
                 }
             }
-            REMEMBER, FORGET, UPDATE_PLAN, NOTIFY_USER, LIST_SCHEDULED_TASKS ->
+            REMEMBER, FORGET, UPDATE_PLAN, NOTIFY_USER, LIST_SCHEDULED_TASKS, LIST_RUNS ->
                 SecurityAssessment(RiskLevel.LOW, "Agent bookkeeping")
             WEB_SEARCH -> {
                 if (a["query"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A search query is required.")
@@ -401,6 +498,9 @@ object AgentTools {
                 }
             }
             CANCEL_SCHEDULED_TASK -> SecurityAssessment(RiskLevel.LOW, "Cancelling a background task")
+            FINISH_TASK -> if (a["summary"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A summary is required.")
+                else SecurityAssessment(RiskLevel.LOW, "Ends the run with a report")
+            ASK_USER -> SecurityAssessment(RiskLevel.LOW, "Records a question (nobody can answer unattended)")
             SCHEDULE_TASK -> {
                 if (a["prompt"].isNullOrBlank()) SecurityAssessment(RiskLevel.BLOCKED, "A prompt is required.")
                 else SecurityAssessment(RiskLevel.MEDIUM, "Scheduling unattended background work")

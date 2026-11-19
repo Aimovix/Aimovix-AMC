@@ -50,7 +50,9 @@ class TelegramGateway(
     private val approvalTimeoutMs: Long = 10 * 60_000L,
     private val pollTimeoutSeconds: Int = 50,
     private val onPaired: (PairedUser) -> Unit = {},
-    private val onTurnActive: (Boolean) -> Unit = {}
+    private val onTurnActive: (Boolean) -> Unit = {},
+    /** First wait before retrying a failed approval message (doubles per retry). */
+    private val sendRetryBaseMs: Long = 1_000L
 ) {
     sealed class Status {
         object Stopped : Status()
@@ -119,6 +121,25 @@ class TelegramGateway(
         }
     }
 
+    /**
+     * Forgets an account that was unpaired outside the chat (in the app): its running task stops,
+     * its agent is closed and its conversation mapping is dropped, so nothing more reaches it (#39).
+     * Private chats have the user's id as chat id.
+     */
+    fun forget(userId: Long) {
+        store.update { st -> st.copy(paired = st.paired.filterNot { it.id == userId }, sessions = st.sessions - userId) }
+        approvals.entries.removeIf { (_, pending) ->
+            (pending.chatId == userId).also { if (it) pending.decision.complete(false) }
+        }
+        chats.remove(userId)?.let { slot ->
+            val job = slot.job
+            if (job == null || !job.isActive) slot.agent.close() else {
+                job.invokeOnCompletion { slot.agent.close() }
+                job.cancel()
+            }
+        }
+    }
+
     /** True while the agent works on a message from [chatId]. */
     fun isTurnActive(chatId: Long): Boolean = chats[chatId]?.job?.isActive == true
 
@@ -165,6 +186,7 @@ class TelegramGateway(
                     }
                     initialized = true
                     _status.value = Status.Running(me.username)
+                    resumePendingTurns()
                 }
                 val updates = api.getUpdates(store.get().offset, pollTimeoutSeconds)
                 backoffMs = 2_000L
@@ -208,6 +230,22 @@ class TelegramGateway(
 
     private suspend fun currentCoroutineIsActive(): Boolean = currentCoroutineContext().isActive
 
+    /** Messages that were in work when AMC stopped (#7): continue them in their conversation. */
+    internal suspend fun resumePendingTurns() {
+        val pending = store.get().pendingTurns
+        for ((chatId, text) in pending) {
+            if (!store.get().isPaired(chatId) || chats[chatId]?.job?.isActive == true) {
+                store.update { it.copy(pendingTurns = it.pendingTurns - chatId) }
+                continue
+            }
+            send(chatId, "♻️ AMC was restarted while working on your message. Continuing it now.")
+            val m = TelegramBotApi.Message(messageId = 0, chatId = chatId, chatType = "private", fromId = chatId, fromName = "", text = "")
+            val note = "${com.agent.mobile.agent.ResumeRequest.RESTART_NOTE}\n\nThe message you were working on: $text"
+            val slot = chats.getOrPut(chatId) { ChatSlot(agentFactory(chatId)) }
+            slot.job = scope.launch { runTurn(m, note, slot) }
+        }
+    }
+
     // -------------------------------------------------------------------------------------------
     // Updates
     // -------------------------------------------------------------------------------------------
@@ -239,9 +277,13 @@ class TelegramGateway(
             }
             "/stop" -> {
                 val job = chats[m.chatId]?.job
+                // The emergency brake also reaches unattended background runs (scheduled, triggers).
+                val background = com.agent.mobile.agent.RunRegistry.stopAll(unattendedOnly = true)
                 if (job?.isActive == true) {
                     job.cancel()
-                    send(m.chatId, "🛑 Stopping the current task…")
+                    send(m.chatId, "🛑 Stopping the current task…" + if (background > 0) " Also stopped $background background run(s)." else "")
+                } else if (background > 0) {
+                    send(m.chatId, "🛑 Stopped $background background run(s).")
                 } else {
                     send(m.chatId, "Nothing is running.")
                 }
@@ -349,6 +391,9 @@ class TelegramGateway(
                 delay(4_500L)
             }
         }
+        // Remembered until the turn ends: if AMC dies meanwhile, the next start continues it (#7).
+        store.update { it.copy(pendingTurns = it.pendingTurns + (chatId to text.ifBlank { "(photo)" }.take(2_000))) }
+        var finishedNormally = false
         try {
             var imageBase64: String? = null
             m.photoFileId?.let { fileId ->
@@ -373,7 +418,8 @@ class TelegramGateway(
                     attachments = AttachmentSink { name, bytes, caption ->
                         api.sendFile(chatId, name, bytes, caption)
                         "Sent $name to the user's Telegram chat."
-                    }
+                    },
+                    progress = { note -> trySend(chatId, note) }
                 )
             )
             result.sessionId?.let { sid -> store.update { it.copy(sessions = it.sessions + (chatId to sid)) } }
@@ -384,16 +430,27 @@ class TelegramGateway(
                     append("\n\nSkipped (needs approval): ")
                     append(result.skippedApprovals.take(3).joinToString("; ") { it.take(80) })
                 }
+                // Unattended runs: what the fixed rules refused and why the run ended.
+                if (result.autoDenied.isNotEmpty()) {
+                    append("\n\nRefused by the unattended rules (${result.autoDenied.size}): ")
+                    append(result.autoDenied.take(3).joinToString("; ") { it.take(160) })
+                }
+                result.limitReached?.let { append("\n\nRun ended: limit reached ($it).") }
             }
             sendReply(chatId, reply)
+            finishedNormally = true
         } catch (e: CancellationException) {
-            withContext(NonCancellable) { trySend(chatId, "🛑 Stopped.") }
+            // /stop or unpairing: the user ended it, nothing to continue later.
+            finishedNormally = true
+            if (store.get().isPaired(m.fromId)) withContext(NonCancellable) { trySend(chatId, "🛑 Stopped.") }
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Telegram turn failed: ${e.message}", e)
             trySend(chatId, "⚠️ Something went wrong: ${e.message}")
+            finishedNormally = true
         } finally {
             typing.cancel()
+            if (finishedNormally) store.update { it.copy(pendingTurns = it.pendingTurns - chatId) }
             onTurnActive(false)
         }
     }
@@ -413,25 +470,38 @@ class TelegramGateway(
         }
         val decision = CompletableDeferred<Boolean>()
         approvals[id] = PendingApproval(chatId, text, decision)
-        val messageId = try {
-            api.sendMessage(
-                chatId, text,
-                buttons = listOf(
-                    TelegramBotApi.Button("✅ Approve", "ap:$id:y"),
-                    TelegramBotApi.Button("❌ Reject", "ap:$id:n")
+        // A short network hiccup must not count as "rejected": retry with backoff, and if the
+        // question cannot be delivered at all, say so instead of rejecting (#28).
+        var messageId: Long? = null
+        var lastError: Exception? = null
+        for (attempt in 0 until SEND_ATTEMPTS) {
+            try {
+                messageId = api.sendMessage(
+                    chatId, text,
+                    buttons = listOf(
+                        TelegramBotApi.Button("✅ Approve", "ap:$id:y"),
+                        TelegramBotApi.Button("❌ Reject", "ap:$id:n")
+                    )
                 )
+                break
+            } catch (e: CancellationException) {
+                approvals.remove(id)
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(TAG, "Could not send approval request (attempt ${attempt + 1}): ${e.message}")
+                if (attempt < SEND_ATTEMPTS - 1) delay(sendRetryBaseMs * (1L shl attempt))
+            }
+        }
+        if (messageId == null) {
+            approvals.remove(id)
+            throw com.agent.mobile.agent.ApprovalUnreachableException(
+                "The approval request could not be sent to Telegram (${lastError?.message ?: "network error"})."
             )
-        } catch (e: CancellationException) {
-            approvals.remove(id)
-            throw e
-        } catch (e: Exception) {
-            approvals.remove(id)
-            Log.w(TAG, "Could not send approval request: ${e.message}")
-            return false
         }
         return try {
             val answer = withTimeoutOrNull(approvalTimeoutMs) { decision.await() }
-            if (answer == null) tryEdit(chatId, messageId, "$text\n\n⌛ No answer: not executed.")
+            if (answer == null) tryEdit(chatId, messageId!!, "$text\n\n⌛ No answer: not executed.")
             answer ?: false
         } finally {
             approvals.remove(id)
@@ -550,6 +620,7 @@ class TelegramGateway(
     companion object {
         private const val TAG = "TelegramGateway"
         private const val NOTICE_INTERVAL_MS = 10 * 60_000L
+        private const val SEND_ATTEMPTS = 3
 
         /** Callback data prefix of buttons for approvals parked by background runs. */
         const val PARKED_PREFIX = "pk:"

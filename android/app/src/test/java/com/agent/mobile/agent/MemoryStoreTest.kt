@@ -39,6 +39,66 @@ class MemoryStoreTest {
         assertFalse(s.asPromptText().contains("fact number 0 "))
     }
 
+    /** #24: facts stay, lessons rotate. */
+    @Test
+    fun lessonsRotateBeforeFacts() {
+        val s = store(maxChars = 300)
+        s.remember("The user's phone is a Pixel 8")
+        s.remember("Home folder is /data/data/com.termux/files/home")
+        repeat(5) { s.rememberLesson("Problem: step $it failed. Cause: cause $it. Works: approach $it") }
+        assertTrue(s.asPromptText().length <= 300)
+        assertTrue(s.entries().any { it.contains("Pixel 8") })
+        assertTrue(s.entries().any { it.contains("Home folder") })
+        assertTrue(s.lessons().isNotEmpty())
+        assertTrue(s.lessons().last().contains("approach 4"))
+        assertFalse(s.asPromptText().contains("approach 0"))
+        assertTrue(s.lessons().all { it.contains(MemoryStore.LESSON_TAG) })
+    }
+
+    @Test
+    fun aLessonNeverPushesOutAFact() {
+        val s = store(maxChars = 120)
+        s.remember("fact one with quite a lot of padding text here")
+        s.remember("fact two with some padding")
+        assertEquals("Not saved: the memory is full of facts.", s.rememberLesson("Problem: x failed. Cause: y. Works: z"))
+        assertEquals(2, s.entries().size)
+        assertTrue(s.lessons().isEmpty())
+    }
+
+    @Test
+    fun aNewLessonAboutTheSameProblemReplacesTheOldOne() {
+        val s = store()
+        s.rememberLesson("Problem: pip install fails. Cause: managed env. Works: use pkg")
+        s.rememberLesson("Problem: pip install fails. Cause: managed env. Works: use a venv")
+        assertEquals(1, s.lessons().size)
+        assertTrue(s.lessons().single().contains("venv"))
+        repeat(MemoryStore.MAX_LESSONS + 3) { s.rememberLesson("Problem: case $it. Works: way $it") }
+        assertEquals(MemoryStore.MAX_LESSONS, s.lessons().size)
+        assertTrue(s.lessons().last().contains("way ${MemoryStore.MAX_LESSONS + 2}"))
+    }
+
+    @Test
+    fun reflectorOnlyAcceptsLessonsInTheRequiredForm() {
+        assertNull(LessonReflector.parse("NONE"))
+        assertNull(LessonReflector.parse("All good, nothing to learn."))
+        assertNull(LessonReflector.parse("Problem: something"))
+        assertEquals(
+            "Problem: a. Cause: b. Works: c",
+            LessonReflector.parse("Here is the lesson:\nProblem: a.  Cause: b.\nWorks: c")
+        )
+        assertTrue(LessonReflector.parse("Problem: " + "x".repeat(1000) + " Works: y")!!.length <= LessonReflector.MAX_LESSON_CHARS)
+
+        fun reflect(success: Boolean = true, status: String? = null, failed: Int = 0, budget: Boolean = false, parked: Boolean = false, stopped: Boolean = false) =
+            LessonReflector.shouldReflect(success, status, failed, budget, parked, stopped, providerFailed = false)
+        assertFalse("A clean run teaches nothing", reflect())
+        assertTrue(reflect(status = "partial"))
+        assertTrue(reflect(success = false, status = "blocked"))
+        assertTrue(reflect(failed = LessonReflector.MIN_FAILED_STEPS))
+        assertFalse("A slot that only ran out of budget continues", reflect(success = false, budget = true))
+        assertFalse("A parked run is not over", reflect(success = false, parked = true))
+        assertFalse("Stopped by the user", reflect(success = false, stopped = true))
+    }
+
     @Test
     fun replaceAllNormalisesLines() {
         val s = store()

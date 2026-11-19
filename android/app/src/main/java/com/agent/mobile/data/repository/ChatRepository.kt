@@ -23,7 +23,9 @@ class ChatRepository(
     private val database: AppDatabase
 ) {
     val allSessions: Flow<List<ChatSession>> = database.chatSessionDao().getAllSessions()
-    val allAudits: Flow<List<CommandAuditEntity>> = database.commandAuditDao().getAllAudits()
+
+    /** Tamper-evident log of every tool call (replaces command_audits, whose rows were copied over). */
+    val auditLogger = com.agent.mobile.audit.AuditLogger(database)
 
     fun getMessagesForSession(sessionId: String): Flow<List<ChatMessage>> {
         return database.chatMessageDao().getMessagesForSession(sessionId).map { list ->
@@ -34,6 +36,9 @@ class ChatRepository(
     suspend fun getMessagesForSessionSync(sessionId: String): List<ChatMessage> = withContext(Dispatchers.IO) {
         database.chatMessageDao().getMessagesForSessionSync(sessionId).map { it.toDomain() }
     }
+
+    /** Latest agent runs (background, handed-off chat runs), newest first, for the run overview. */
+    fun recentRunsFlow(limit: Int = 30) = database.agentQueueDao().recentRunsFlow(limit)
 
     suspend fun getSessionById(sessionId: String): ChatSession? = withContext(Dispatchers.IO) {
         database.chatSessionDao().getSessionById(sessionId)

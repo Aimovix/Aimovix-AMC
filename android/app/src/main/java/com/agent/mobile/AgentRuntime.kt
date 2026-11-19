@@ -27,13 +27,13 @@ class AgentRuntime private constructor(context: Context) {
     /** The user's persona and standing instructions for the agent (like OpenClaw's SOUL.md). */
     val personaStore = TextFileStore(File(appContext.filesDir, "agent/SOUL.md"))
     val scheduler = SchedulerManager(appContext)
-    val platform: AgentPlatform = AndroidAgentPlatform(appContext, scheduler) { title, message ->
+    val platform: AgentPlatform = AndroidAgentPlatform(appContext, scheduler, database, { title, message ->
         telegram.deliver(title, message)
-    }
+    })
     /** Phone control layer (screen, notifications, intents, Shizuku) shared by every engine. */
     val phoneController: com.agent.mobile.agent.PhoneController =
         com.agent.mobile.phone.AndroidPhoneController(appContext, preferenceManager) { title, prompt ->
-            scheduler.scheduleAgentTask(title, prompt, delayMinutes = 0, repeatEveryMinutes = 0)
+            scheduler.scheduleAgentTask(title, prompt, delayMinutes = 0, repeatEveryMinutes = 0, trigger = com.agent.mobile.agent.RunTrigger.NOTIFICATION)
         }
     val telegram: TelegramChannelManager by lazy { TelegramChannelManager(this) }
     /** Background-run approvals waiting for the user; answering one resumes its task. */
@@ -42,6 +42,14 @@ class AgentRuntime private constructor(context: Context) {
     ) { approvalId -> scheduler.enqueueResume(approvalId) }.also { queue ->
         queue.remoteAsker = { entity -> telegram.askParkedApproval(entity) }
     }
+    /** Checkpoints of chat runs: hand-off when the app closes, continuation after a restart (#7). */
+    val runCheckpointer = com.agent.mobile.agent.RoomRunCheckpointer(database.agentQueueDao()) { sessionId, title, note ->
+        scheduler.enqueueContinuation(
+            sessionId, title, chain = 1, originKind = com.agent.mobile.agent.RoomRunCheckpointer.KIND,
+            trigger = com.agent.mobile.agent.RunTrigger.RESUME, note = note
+        )
+    }
+
     /** Starts the Termux bridge through RUN_COMMAND when it is not reachable. */
     val bridgeStarter = com.agent.mobile.core.termux.BridgeStarter(appContext)
 
@@ -59,6 +67,7 @@ class AgentRuntime private constructor(context: Context) {
 class AndroidAgentPlatform(
     private val context: Context,
     private val scheduler: SchedulerManager,
+    private val database: AppDatabase? = null,
     /** Second place for agent messages (paired Telegram accounts, when switched on). */
     private val alsoDeliver: (title: String, message: String) -> Unit = { _, _ -> }
 ) : AgentPlatform {
@@ -87,6 +96,15 @@ class AndroidAgentPlatform(
 
     override fun scheduleAgentTask(title: String, prompt: String, delayMinutes: Long, repeatEveryMinutes: Long): String =
         scheduler.scheduleAgentTask(title, prompt, delayMinutes, repeatEveryMinutes)
+
+    override fun scheduleAgentTask(
+        title: String, prompt: String, delayMinutes: Long, repeatEveryMinutes: Long, conditions: com.agent.mobile.agent.TaskConditions
+    ): String = scheduler.scheduleAgentTask(title, prompt, delayMinutes, repeatEveryMinutes, conditions = conditions)
+
+    override suspend fun listRecentRuns(limit: Int): String = withContext(Dispatchers.IO) {
+        val db = database ?: return@withContext ""
+        com.agent.mobile.agent.RunHistory.format(db, limit)
+    }
 
     override suspend fun listAgentTasks(): String = withContext(Dispatchers.IO) { scheduler.describeAgentTasks() }
 

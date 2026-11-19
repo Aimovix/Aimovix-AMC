@@ -555,6 +555,77 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.1)
 
 
+    # --- #15: a client reattaches only its own executions. #13: background jobs outlive connections.
+
+    async def auth(self, client, **extra):
+        await client.send(json.dumps({"action": "auth", "token": bridge.AUTH_TOKEN, **extra}))
+        msg = await self.receive(client)
+        self.assertEqual(msg["type"], "auth_ok")
+        return msg
+
+    async def test_claim_own_reattaches_only_the_matching_execution(self):
+        owner = await self.connect()
+        cmd = make_python_cmd("-u", "-c", "import time; print('one', flush=True); time.sleep(0.6); print('two', flush=True)")
+        await self.execute(owner, cmd, execution_id="mine")
+        self.assertIn("one", (await self.receive(owner))["data"])
+        await owner.close()
+        self.clients.remove(owner)
+        await asyncio.sleep(0.05)
+
+        # Another client (e.g. a background worker) must not take over this session.
+        stranger = await websockets.connect(self.url)
+        self.clients.append(stranger)
+        hello = await self.auth(stranger, claim="own", execution_ids=["someone-else"])
+        self.assertEqual(hello["reattached"], [])
+
+        again = await websockets.connect(self.url)
+        self.clients.append(again)
+        back = await self.auth(again, claim="own", execution_ids=["mine"])
+        self.assertEqual(back["reattached"], ["mine"])
+        messages = await self.until(again, "completed")
+        self.assertIn("two", "".join(m.get("data", "") for m in messages))
+        self.assertEqual(messages[-1]["execution_id"], "mine")
+        self.assertEqual(messages[-1]["exit_code"], 0)
+
+    async def test_background_job_survives_reconnect_and_reports_new_output(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(bridge, "JOBS_DIR", Path(tmp)):
+            client = await self.connect()
+            cmd = make_python_cmd("-u", "-c", "import time\nfor i in range(3):\n    print('tick', i, flush=True)\n    time.sleep(0.2)")
+            await client.send(json.dumps({"action": "job_start", "command": cmd, "name": "ticker", "request_id": "r1"}))
+            started = await self.until(client, "job_result")
+            job_id = started[-1]["job"]["job_id"]
+            self.assertEqual(started[-1]["job"]["state"], "running")
+
+            # The connection goes away; the job keeps running.
+            await client.close()
+            self.clients.remove(client)
+            await asyncio.sleep(0.9)
+            client2 = await self.connect()
+            await client2.send(json.dumps({"action": "job_status", "job_id": job_id, "request_id": "r2"}))
+            status = (await self.until(client2, "job_result"))[-1]["job"]
+            self.assertEqual(status["state"], "done")
+            self.assertEqual(status["exit_code"], 0)
+            self.assertIn("tick 2", status["new_output"])
+            await client2.send(json.dumps({"action": "job_status", "job_id": job_id, "request_id": "r3"}))
+            self.assertEqual((await self.until(client2, "job_result"))[-1]["job"]["new_output"], "")
+
+    async def test_background_job_can_be_stopped_and_listed(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(bridge, "JOBS_DIR", Path(tmp)):
+            client = await self.connect()
+            cmd = make_python_cmd("-u", "-c", "import time; print('up', flush=True); time.sleep(30)")
+            await client.send(json.dumps({"action": "job_start", "command": cmd, "request_id": "a"}))
+            job_id = (await self.until(client, "job_result"))[-1]["job"]["job_id"]
+            await asyncio.sleep(0.3)
+            await client.send(json.dumps({"action": "job_stop", "job_id": job_id, "request_id": "b"}))
+            stopped = (await self.until(client, "job_result"))[-1]["job"]
+            self.assertEqual(stopped["state"], "stopped")
+            await client.send(json.dumps({"action": "job_list", "request_id": "c"}))
+            jobs = (await self.until(client, "job_result"))[-1]["jobs"]
+            self.assertTrue(any(j["job_id"] == job_id for j in jobs))
+            await client.send(json.dumps({"action": "job_status", "job_id": "nope", "request_id": "d"}))
+            self.assertFalse((await self.until(client, "job_result"))[-1]["ok"])
+
+
 class ServiceOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_start_preserves_running_pid(self):
         with tempfile.TemporaryDirectory() as directory:

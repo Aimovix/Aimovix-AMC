@@ -26,4 +26,8 @@ interface CommandAuditDao {
 
     @Query("DELETE FROM command_audits")
     suspend fun clearAudits()
+
+    /** Retention of the legacy table (kept next to the chained audit log). */
+    @Query("DELETE FROM command_audits WHERE timestamp < :before")
+    suspend fun deleteBefore(before: Long): Int
 }

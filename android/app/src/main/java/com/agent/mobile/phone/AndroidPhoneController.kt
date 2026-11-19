@@ -141,7 +141,7 @@ class AndroidPhoneController(
     }
 
     private fun riskContextOnPhoneThread(call: ToolCall, state: RunState): PhoneRiskContext {
-        val blocklist = prefs.loadPhoneBlocklist()
+        val blocklist = prefs.loadEffectivePhoneBlocklist()
         val svc = PhoneControlService.instance
         val a = call.arguments
         val (targetPkg, targetLabel) = when (call.name) {
@@ -230,7 +230,7 @@ class AndroidPhoneController(
     ): PhoneActionResult {
         val a = call.arguments
         if (call.name == PhoneTools.APPS_LIST) {
-            return PhoneActionResult(AppMatcher.format(installedApps(), a["filter"], prefs.loadPhoneBlocklist()))
+            return PhoneActionResult(AppMatcher.format(installedApps(), a["filter"], prefs.loadEffectivePhoneBlocklist()))
         }
         if (call.name in PhoneTools.NOTIFICATION_TOOLS) return notificationTool(call, grants, state)
         when (call.name) {
@@ -269,7 +269,7 @@ class AndroidPhoneController(
             PhoneTools.OPEN_APP -> openApp(svc, a["name"].orEmpty(), grants, state)
             PhoneTools.WAIT_FOR -> waitFor(svc, call, grants, state)
             PhoneTools.SCREEN_CAPTURE -> screenshot(svc, call, grants)
-            PhoneTools.SCREEN_BATCH -> ActionBatchExecutor(this, svc, grants, context.packageName)
+            PhoneTools.SCREEN_BATCH -> ActionBatchExecutor(this, svc, grants, context.packageName, prefs.loadEffectivePhoneBlocklist())
                 .run(call.id, a, state.toBatchContext(), expected, approved)
             else -> fail("Unknown phone tool '${call.name}'.")
         }
@@ -468,7 +468,7 @@ class AndroidPhoneController(
 
     private suspend fun openApp(svc: PhoneControlService, name: String, grants: Set<String>, state: RunState): PhoneActionResult {
         val app = resolveApp(name) ?: return fail("No installed app matches \"$name\". Use apps_list to find it.")
-        prefs.loadPhoneBlocklist().blockReason(app.packageName, app.label)?.let {
+        prefs.loadEffectivePhoneBlocklist().blockReason(app.packageName, app.label)?.let {
             return fail("$it. AMC does not open it; the user can release it in Settings → Phone control.")
         }
         val intent = pm.getLaunchIntentForPackage(app.packageName)
@@ -543,7 +543,7 @@ class AndroidPhoneController(
         if (call.name == PhoneTools.NOTIFICATION_TRIGGER) return triggerTool(call)
         val listener = AmcNotificationListener.instance
             ?: return fail("Notification access is off. Ask the user to allow it in AMC → Setup.")
-        val blocklist = prefs.loadPhoneBlocklist()
+        val blocklist = prefs.loadEffectivePhoneBlocklist()
         if (call.name == PhoneTools.NOTIFICATIONS_LIST) {
             val items = listener.snapshot(::labelOf)
             lastNotifications = items.associate { it.second.id to it.second }
@@ -591,7 +591,7 @@ class AndroidPhoneController(
                 "add" -> {
                     if (triggers.size >= NotificationTriggers.MAX_TRIGGERS) return fail("At most ${NotificationTriggers.MAX_TRIGGERS} triggers. Remove one first.")
                     val app = resolveApp(a["app"].orEmpty()) ?: return fail("No installed app matches \"${a["app"]}\".")
-                    prefs.loadPhoneBlocklist().blockReason(app.packageName, app.label)?.let { return fail("$it.") }
+                    prefs.loadEffectivePhoneBlocklist().blockReason(app.packageName, app.label)?.let { return fail("$it.") }
                     val trigger = NotificationTrigger(
                         packageName = app.packageName,
                         appLabel = app.label,
@@ -616,7 +616,7 @@ class AndroidPhoneController(
         synchronized(triggerLock) {
             val triggers = prefs.loadNotificationTriggers()
             if (triggers.isEmpty()) return
-            val blocklist = prefs.loadPhoneBlocklist()
+            val blocklist = prefs.loadEffectivePhoneBlocklist()
             val now = System.currentTimeMillis()
             val updated = triggers.map { t ->
                 if (NotificationTriggers.matches(t, packageName, title, text) && NotificationTriggers.shouldFire(t, now) &&
@@ -729,7 +729,7 @@ class AndroidPhoneController(
         val name = snap.appLabel
         if (pkg == context.packageName) return "AMC itself is in front. Its screen is not read. Use screen_global home or open_app."
         if (pkg in PhoneToolPolicy.TERMINAL_PACKAGES) return "$name is in front. ${PhoneToolPolicy.TERMINAL_REASON}"
-        val blocklist = prefs.loadPhoneBlocklist()
+        val blocklist = prefs.loadEffectivePhoneBlocklist()
         blocklist.blockReason(pkg, name, windowClass)?.let {
             return "$name is in front. $it, so its screen is not shown. Use screen_global back or home."
         }

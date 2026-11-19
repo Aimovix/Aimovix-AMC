@@ -61,6 +61,10 @@ data class ResumeRequest(
             "[AMC] Continuation: the previous background slot ended (step or time budget). Look at what is " +
                 "already done above and continue the task from there. Do not redo finished steps."
 
+        const val HANDOFF_NOTE =
+            "[AMC] The app was closed while you worked on this task; AMC continues it in the background now. Look at " +
+                "what is already done above and continue. Repeat a step only when its result is missing."
+
         const val RESTART_NOTE =
             "[AMC] AMC was restarted (app closed or phone rebooted) while you worked on this task. Look at what " +
                 "is already done above and continue. Repeat a step only when its result is missing."

@@ -1,6 +1,6 @@
 # AMC privacy notice
 
-_Version 3. This document is not legal advice._
+_Version 4. This document is not legal advice._
 
 ## 1. Who is responsible
 
@@ -12,7 +12,7 @@ The developers do not receive any of your data: AMC has no servers of its own. F
 
 | Data | Purpose | Where | How to delete |
 | --- | --- | --- | --- |
-| Chats, tool output, audit log | Conversation history, traceability | App database (private app storage) | Delete chats / clear audit log in the app, or uninstall |
+| Chats, tool output, audit log | Conversation history, traceability; the audit log records every agent action (time, run, trigger, tool, redacted arguments, decision and rule, short result) chained by hashes so changes are visible | App database (private app storage) | Delete chats in the app; the audit log is kept for 30, 90 (default) or 365 days as you choose, older entries are removed automatically; uninstall removes everything |
 | Long-term memory (`MEMORY.md`) | Facts the agent should remember | Private app storage | Settings → Autonomy → Memory → Clear all |
 | API keys, bridge token, settings | Connecting to services | Encrypted preferences (Android Keystore, AES-256) | Remove in Settings, or uninstall |
 | Scheduled tasks | Background runs you or the agent scheduled | Android WorkManager | Settings → Autonomy, or uninstall |
@@ -32,6 +32,8 @@ Android app backups are disabled for AMC (`allowBackup=false`). AMC contains no 
 - **DuckDuckGo** receives the search terms of the `web_search` tool and your IP address.
 - **Apps you let the agent operate** receive taps and typed text as if you entered them. Replies sent through notifications go to the app that showed the notification.
 - **Telegram** (only if you enable the Telegram channel): messages you send to your bot, the agent's replies, approval requests and files the agent sends you are transmitted through Telegram's servers and processed under Telegram's privacy policy, possibly outside the EU/EEA. Only Telegram accounts you pair with a one-time code can talk to the agent.
+- **Text-to-speech engine** (only when you use *Read aloud*): the reply's text goes to the speech engine installed on your phone; depending on that engine it may be processed by its provider.
+- **Shared content**: text, links or images you share to AMC from other apps only fill the chat input; they reach your AI provider only when you send them.
 - **Termux bridge**: runs only on your phone (`127.0.0.1`) and requires a token. No data leaves the device through it.
 
 ## 4. Other people's data

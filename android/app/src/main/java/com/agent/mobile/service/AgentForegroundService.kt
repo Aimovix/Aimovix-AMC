@@ -17,6 +17,8 @@ import android.util.Log
 
 import android.os.PowerManager
 import com.agent.mobile.data.network.TermuxBridgeClient
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class AgentForegroundService : Service {
 
@@ -68,6 +70,40 @@ class AgentForegroundService : Service {
     }
 
     private var serviceWakeLock: PowerManager.WakeLock? = null
+    private val serviceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+    private var runsJob: kotlinx.coroutines.Job? = null
+
+    /** True while the CPU is kept awake for an agent run (for tests and the notification). */
+    internal val holdsWakeLock: Boolean get() = serviceWakeLock?.isHeld == true
+
+    /**
+     * Keeps the CPU awake only while an agent run works (#20): idle, AMC holds no wake lock. The
+     * notification names the running task and offers the emergency brake.
+     */
+    private fun followRuns() {
+        if (runsJob?.isActive == true) return
+        runsJob = serviceScope.launch {
+            com.agent.mobile.agent.RunRegistry.active.collect { runs ->
+                if (runs.isEmpty()) {
+                    releaseWakeLock()
+                    updateOngoing("AMC – AI Mobile Center", "Ready. No agent is working.")
+                } else {
+                    acquireWakeLock()
+                    val first = runs.first().title.ifBlank { "Agent task" }
+                    updateOngoing("AMC is working", if (runs.size == 1) first else "$first (+${runs.size - 1} more)")
+                }
+            }
+        }
+    }
+
+    private fun updateOngoing(title: String, message: String) {
+        try {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.notify(NOTIFICATION_ID, buildNotification(title, message))
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not update the notification: ${e.message}")
+        }
+    }
 
     private fun acquireWakeLock() {
         if (serviceWakeLock == null) {
@@ -81,7 +117,7 @@ class AgentForegroundService : Service {
         }
         try {
             if (serviceWakeLock?.isHeld == false) {
-                serviceWakeLock?.acquire(6 * 60 * 60 * 1000L) // Safe 6h max timeout
+                serviceWakeLock?.acquire(2 * 60 * 60 * 1000L) // re-acquired while runs continue
                 Log.d(TAG, "Foreground service WakeLock acquired")
             }
         } catch (e: Exception) {
@@ -103,7 +139,7 @@ class AgentForegroundService : Service {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        acquireWakeLock()
+        followRuns()
         try {
             TermuxBridgeClient.getInstance(applicationContext)
         } catch (e: Exception) {
@@ -118,7 +154,7 @@ class AgentForegroundService : Service {
             return START_NOT_STICKY
         }
 
-        acquireWakeLock()
+        followRuns()
 
         val title = intent?.getStringExtra(EXTRA_TITLE) ?: "AMC – AI Mobile Center"
         val message = intent?.getStringExtra(EXTRA_MESSAGE) ?: "Autonomous agent ready"
@@ -145,6 +181,11 @@ class AgentForegroundService : Service {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        // Emergency brake: stops every agent run (chat, background tasks, Telegram, triggers).
+        val stopAll = PendingIntent.getBroadcast(
+            this, 1, Intent(this, StopAllRunsReceiver::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(statusText)
@@ -152,6 +193,7 @@ class AgentForegroundService : Service {
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(android.R.drawable.ic_media_pause, "Stop all agents", stopAll)
             .build()
     }
 
@@ -172,11 +214,16 @@ class AgentForegroundService : Service {
     override fun onTimeout(startId: Int, fgsType: Int) {
         super.onTimeout(startId, fgsType)
         Log.w(TAG, "Foreground service timed out (startId: $startId, fgsType: $fgsType). Stopping cleanly.")
+        // Chat runs are checkpointed: if the process is frozen or killed now, they continue in the
+        // background on the next start (#7). Background runs are WorkManager work and go on anyway.
+        runsJob?.cancel()
         releaseWakeLock()
         stopSelf(startId)
     }
 
     override fun onDestroy() {
+        runsJob?.cancel()
+        serviceScope.cancel()
         releaseWakeLock()
         super.onDestroy()
     }

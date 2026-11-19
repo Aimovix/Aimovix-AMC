@@ -105,4 +105,77 @@ class DatabaseMigrationTest {
             db.close()
         }
     }
+
+    /** CREATE statements of every version 2 table, from the exported schema. */
+    private fun version2Statements(): List<String> {
+        val schema = JSONObject(File("schemas/com.agent.mobile.data.storage.db.AppDatabase/2.json").readText())
+        val entities = schema.getJSONObject("database").getJSONArray("entities")
+        val out = mutableListOf<String>()
+        for (i in 0 until entities.length()) {
+            val e = entities.getJSONObject(i)
+            val table = e.getString("tableName")
+            out += e.getString("createSql").replace("\${TABLE_NAME}", table)
+            val indices = e.optJSONArray("indices") ?: continue
+            for (j in 0 until indices.length()) out += indices.getJSONObject(j).getString("createSql").replace("\${TABLE_NAME}", table)
+        }
+        return out
+    }
+
+    /** v3: the old command audits stay and are copied, oldest first, into a valid audit chain. */
+    @Test
+    fun migrationFrom2To3CopiesCommandAuditsIntoAValidChain() = runBlocking {
+        val helper = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbName)
+                .callback(object : SupportSQLiteOpenHelper.Callback(2) {
+                    override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                        version2Statements().forEach { db.execSQL(it) }
+                    }
+                    override fun onUpgrade(db: androidx.sqlite.db.SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+                })
+                .build()
+        )
+        helper.writableDatabase.apply {
+            execSQL(
+                "INSERT INTO command_audits (sessionId, command, riskLevel, riskReason, executionDurationMs, exitCode, " +
+                    "stdout, stderr, timestamp, wasApproved) VALUES ('s1', 'ls', 'LOW', 'r', 1, 0, 'a b', '', 40, 1)"
+            )
+            execSQL(
+                "INSERT INTO command_audits (sessionId, command, riskLevel, riskReason, executionDurationMs, exitCode, " +
+                    "stdout, stderr, timestamp, wasApproved) VALUES ('s1', 'rm -rf /', 'BLOCKED', 'catastrophic', 0, -1, '', 'no', 20, 0)"
+            )
+            execSQL(
+                "INSERT INTO command_audits (sessionId, command, riskLevel, riskReason, executionDurationMs, exitCode, " +
+                    "stdout, stderr, timestamp, wasApproved) VALUES (NULL, 'export API_KEY=abc123', 'HIGH', 'x', 2, 0, '', '', 30, 1)"
+            )
+        }
+        helper.close()
+
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
+            .addMigrations(*AppDatabase.MIGRATIONS)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            assertEquals("Old rows stay where they were", 3, db.commandAuditDao().getAllAuditsSync().size)
+            val logger = com.agent.mobile.audit.AuditLogger(db)
+            val copied = logger.since(0)
+            assertEquals(3, copied.size)
+            assertEquals("Oldest first", listOf(20L, 30L, 40L), copied.map { it.timestamp })
+            assertTrue(copied.all { it.origin == "LEGACY" })
+            assertEquals("BLOCKED", copied[0].decision)
+            assertFalse("Secrets in old commands are masked", copied[1].arguments.contains("abc123"))
+            assertTrue(logger.verify().ok)
+            // New entries continue the same chain.
+            logger.log(
+                com.agent.mobile.audit.AuditEntry(
+                    runId = "r", sessionId = null, trigger = "USER", mode = "INTERACTIVE", preset = "AUTONOMOUS",
+                    tool = "read_file", decision = com.agent.mobile.audit.AuditDecision.ALLOWED, rule = "preset:AUTONOMOUS", reason = "ok"
+                )
+            )
+            assertEquals(copied.last().hash, logger.since(0).last().prevHash)
+            assertTrue(logger.verify().ok)
+        } finally {
+            db.close()
+        }
+    }
 }

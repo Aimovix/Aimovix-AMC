@@ -10,8 +10,11 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -28,15 +31,19 @@ import com.agent.mobile.data.model.ChatMessage
 import com.agent.mobile.ui.theme.*
 
 /**
- * Long-press menu for one message. Copying is always offered. Sending again is offered for the
- * user's own messages only; it sends the same request as a new one.
+ * Long-press menu for one message. Copying is always offered. For the user's own messages:
+ * edit (puts the text back into the input) and send again (the same request as a new one).
+ * For replies: read aloud, or stop reading.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MessageActionsSheet(
     message: ChatMessage,
     onResend: (() -> Unit)?,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onEdit: (() -> Unit)? = null,
+    onReadAloud: (() -> Unit)? = null,
+    onStopReading: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val preview = message.text.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
@@ -63,8 +70,16 @@ fun MessageActionsSheet(
                 Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
                 onDismiss()
             }
+            if (onEdit != null) {
+                SheetAction(label = "Edit and send", icon = Icons.Default.Edit) { onEdit() }
+            }
             if (onResend != null) {
                 SheetAction(label = "Send again", icon = Icons.Default.Replay) { onResend() }
+            }
+            if (onStopReading != null) {
+                SheetAction(label = "Stop reading", icon = Icons.Default.Stop) { onStopReading() }
+            } else if (onReadAloud != null) {
+                SheetAction(label = "Read aloud", icon = Icons.AutoMirrored.Filled.VolumeUp) { onReadAloud() }
             }
         }
     }
