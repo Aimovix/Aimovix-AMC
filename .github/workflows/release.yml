@@ -74,7 +74,9 @@ jobs:
           AMC_KEYSTORE_PASSWORD: ${{ secrets.AMC_KEYSTORE_PASSWORD }}
           AMC_KEY_ALIAS: ${{ secrets.AMC_KEY_ALIAS }}
           AMC_KEY_PASSWORD: ${{ secrets.AMC_KEY_PASSWORD }}
-        run: ./gradlew testReleaseUnitTest assembleRelease --no-daemon
+        # Unit tests already ran on the debug variant above (same code; release is not minified).
+        # Compose UI tests need ui-test-manifest, which is debug-only so it never ships in a release.
+        run: ./gradlew assembleRelease --no-daemon
       - name: Verify signatures and package downloads
         env:
           SIGNED_RELEASE: ${{ steps.signing.outputs.ready }}
