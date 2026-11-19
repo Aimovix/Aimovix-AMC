@@ -99,3 +99,23 @@ Reihenfolge laut Auftrag: Teil D (Fehlerprüfung) → Teil A + B (Unattended-Mod
 **Tests:** Gradle 415 Unit-Tests grün (u. a. 60-Schritte-Kontext-Test, Fenster-/Edit-Tests, Reconnect mit echtem Ergebnis genau einmal, Ordner nach Reconnect, Job-Werkzeuge, Hand-off beim Schließen, Wiederaufnahme nach Neustart, Telegram-Fortsetzung, WakeLock-Service-Test); Python 54 (+3 Daemon-Tests für Claim und Jobs); `bash -n`; E2E 236 – alles grün.
 
 **Offen in Teil C:** #23, #24, #19, #25, #28, #11 (Ablaufzeit für geparkte Freigaben in anderen Modi) und der große Lauf-Test.
+
+## 2026-11-19 08:40 – Teil C, zweiter Block: Lernen, Fortsetzen, Parallelität, großer Lauf-Test (df998cc, 3bf14d7)
+
+**Was (in Alltagssprache):**
+- **#23 Bedingungen und Lauf-Rückblick:** Geplante Aufgaben können an Bedingungen hängen („nur mit WLAN", „nur beim Laden", „Akku nicht schwach"); Android startet sie erst dann. Das neue Werkzeug `list_runs` zeigt dem Agenten die letzten Läufe mit Status (erledigt, fehlgeschlagen, fortgesetzt, wartend) und Kurzfazit – damit kann z. B. der Heartbeat fehlgeschlagene Aufgaben finden.
+- **#28 Telegram nicht erreichbar ≠ abgelehnt:** Scheitert das Senden einer Freigabe-Anfrage, versucht AMC es dreimal mit wachsender Pause. Klappt es nicht, erfährt das Modell „Nutzer nicht erreichbar" (darf später erneut fragen) statt „abgelehnt, nie wiederholen".
+- **#24 Aus Fehlern lernen:** Das Gedächtnis kennt jetzt zwei Arten von Einträgen: Fakten und Lektionen. Ist es voll, gehen zuerst alte Lektionen, nie Fakten; eine Lektion verdrängt nie einen Fakt; höchstens 12 Lektionen; eine neue Lektion zum selben Problem ersetzt die alte. Nach einem unbeaufsichtigten Lauf, der scheiterte oder unvollständig endete, liest ein kurzer Modellaufruf das Ende des Protokolls und darf **eine** Lektion im Format „Problem: … Cause: … Works: …" speichern. Wiederholt die Lektion Text aus fremden Inhalten (Webseite, Datei …), wird sie verworfen (Schutz vor Injection). Beides steht im Audit.
+- **#19 Telegram-Läufe laufen weiter:** Ist das Schritt- oder Zeitbudget einer Telegram-Aufgabe aufgebraucht, setzt AMC sie in derselben Sitzung automatisch fort (höchstens drei weitere Runden) und schreibt dem Nutzer „Continuing on my own (round 1 of 3)…".
+- **#25 Sub-Agenten parallel:** Gibt das Modell in einem Schritt mehrere Teilaufgaben ab, laufen bis zu drei Sub-Agenten gleichzeitig; ihre Freigabe-Anfragen kommen nacheinander beim Nutzer an.
+- **Großer Lauf-Test** (`LongUnattendedRunTest`): eine unbeaufsichtigte Aufgabe über drei Hintergrund-Slots mit über 60 Werkzeugschritten, Budget-Fortsetzung, Bridge-Neustart während eines laufenden Befehls, App-Neustart mitten im zweiten Slot, einem gesperrten `rm -rf /`, einem automatisch abgelehnten Anruf und einer Injection-Zeile in einer Webseite. Ergebnis: Aufgabe endet erfolgreich, **keine einzige** Freigabe-Anfrage, nichts geparkt, Audit-Kette gültig, der Bericht nennt Abgelehntes und Gesperrtes, das Gedächtnis bleibt sauber.
+
+**Entscheidungen:**
+- Lektionen nur nach **unbeaufsichtigten** Läufen: In anderen Modi bleibt das Verhalten exakt wie vorher; ein Lauf, der nur sein Budget aufgebraucht hat (und fortgesetzt wird), wird nicht bewertet.
+- „Zusammenfassen statt löschen" für Lektionen: ersetzt durch „gleiches Problem → neuere Lektion ersetzt ältere" – einfacher, ohne zusätzlichen Modellaufruf, gleiches Ziel (keine Dubletten, Fakten bleiben).
+- #19 Pro-App-Freigabe in beaufsichtigten Modi nicht umgesetzt: würde deren Freigabeverhalten ändern (Hard Rule). Im Unbeaufsichtigt-Modus entfällt Tap-für-Tap ohnehin.
+- #11 Ablaufzeit für geparkte Freigaben: im Unbeaufsichtigt-Modus wird nie geparkt; für andere Modi offen (gleicher Grund).
+
+**Tests:** Gradle 430 Unit-Tests grün (+15: Lektionen rotieren/ersetzen/verdrängen keine Fakten, Reflexions-Format, Lauf erzeugt Lektion, Lektion aus Webinhalt verworfen, Telegram-Fortsetzung bis fertig/max. drei Runden/keine bei fertigem Lauf, Sub-Agenten überlappen nachweislich, Gruppierung, Scheduler-Bedingungen, Telegram-Sendewiederholung, großer Lauf-Test ~18 s); Debug-APK gebaut; Python 54; `bash -n` ok; E2E 236 – alles grün.
+
+**Review:** Alle 40 Befunde haben jetzt eine Statuszeile; #11 und #19 sind „teilweise" (Begründung dort).
